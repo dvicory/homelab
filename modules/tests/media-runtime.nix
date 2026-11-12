@@ -6,7 +6,9 @@
     { pkgs, ... }:
     let
       python = pkgs.python3.withPackages (ps: [ ps.pyyaml ]);
-      cluster = config.den.clusters.prod-home;
+      cluster = config.den.clusters.prod-home // {
+        routes = config.flake.clusterRoutes.prod-home.routes;
+      };
       compute =
         config.den.hosts.${cluster.hostSystem}.${cluster.hostName}.settings.virtualization.compute;
       computeResources = {
@@ -20,11 +22,13 @@
         targetCluster:
         (config.den.aspects.kubernetes.services.media.configuration."k8s-manifests" {
           cluster = targetCluster;
+          routes = targetCluster.routes;
           inherit computeResources;
         }).applications.media-configuration.objects;
       jellyfinApplications =
         (config.den.aspects.kubernetes.services.jellyfin."k8s-manifests" {
           cluster = fixtureCluster;
+          routes = fixtureCluster.routes;
           inherit computeResources;
         }).applications;
       objectFor =

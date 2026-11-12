@@ -9,7 +9,9 @@
     { pkgs, system, ... }:
     let
       oidcApps = config.flake.nixidyEnvs.${system}.prod-home.config.oidcApps;
-      cluster = config.den.clusters.prod-home;
+      cluster = config.den.clusters.prod-home // {
+        routes = config.flake.clusterRoutes.prod-home.routes;
+      };
       compute =
         config.den.hosts.${cluster.hostSystem}.${cluster.hostName}.settings.virtualization.compute;
       computeResources = config.flake.clusterResources.prod-home // {
@@ -31,6 +33,7 @@
         inventory:
         argocdAspect.k8s-manifests {
           cluster = inventory;
+          routes = inventory.routes;
           config = { inherit oidcApps; };
           charts = { };
           inherit lib;
@@ -41,6 +44,7 @@
         inventory:
         identity.k8s-manifests {
           cluster = inventory;
+          routes = inventory.routes;
           config = { inherit oidcApps; };
           inherit computeResources lib;
         };
@@ -50,6 +54,7 @@
         inventory:
         gateway.k8s-manifests {
           cluster = inventory;
+          routes = inventory.routes;
           charts = { };
           inherit computeResources lib;
         };
@@ -299,6 +304,7 @@
             builtins.deepSeq (provisionClients
               (identity.k8s-manifests {
                 cluster = withPhase "normal";
+                inherit (cluster) routes;
                 config.oidcApps = lib.recursiveUpdate oidcApps {
                   radarr.eligibleGroup = householdGroup;
                 };

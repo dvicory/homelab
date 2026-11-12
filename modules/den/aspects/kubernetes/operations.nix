@@ -33,7 +33,7 @@ let
           "not declared";
     in
     "| `${name}` | `${route.exposure}` | `${url (builtins.head route.hostnames)}` | `${secondary}` | `${route.namespace}/${route.service}:${toString route.port}` | `${route.auth}` |"
-  ) cluster.routes;
+  ) config.flake.clusterRoutes.prod-home.routes;
   stateRows = lib.mapAttrsToList (
     name: entry:
     let

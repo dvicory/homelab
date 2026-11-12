@@ -8,7 +8,9 @@
     { pkgs, system, ... }:
     let
       oidcApps = config.flake.nixidyEnvs.${system}.prod-home.config.oidcApps;
-      cluster = config.den.clusters.prod-home;
+      cluster = config.den.clusters.prod-home // {
+        routes = config.flake.clusterRoutes.prod-home.routes;
+      };
       compute =
         config.den.hosts.${cluster.hostSystem}.${cluster.hostName}.settings.virtualization.compute;
       homarr =
@@ -20,6 +22,7 @@
         inventory:
         homarr.k8s-manifests {
           cluster = inventory;
+          routes = inventory.routes;
           config = { inherit oidcApps; };
           computeResources = compute;
           charts.bjw-s-labs.app-template = { };
@@ -76,6 +79,7 @@
               objects =
                 (gateway.k8s-manifests {
                   cluster = inventory;
+                  routes = inventory.routes;
                   computeResources = compute;
                   charts = { };
                   inherit lib;

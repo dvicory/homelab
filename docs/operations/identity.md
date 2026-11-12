@@ -51,6 +51,12 @@ scopes and Secret references stay beside their owning service; the app,
 Gateway and Kanidm consume the same evaluated records.
 Callback and login-start paths must start with `/`.
 
+`home.nix` chooses which routes exist, their hostnames, access rules and rollout
+phases. Selected service aspects supply backend names, ports and pod selectors
+through Den's `route-metadata` class. Hosts and manifest renderers use the same
+resolved `flake.clusterRoutes.<cluster>.routes` inventory. Selecting a service
+does not publish a route.
+
 Argo CD and Grafana keep both sign-in checks. Both checks request the same
 permissions, so switching between them does not require another approval.
 The first sign-in after this update may ask for approval once; later sign-ins

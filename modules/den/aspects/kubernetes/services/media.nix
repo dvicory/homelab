@@ -1,4 +1,9 @@
-{ config, lib, den, ... }:
+{
+  config,
+  lib,
+  den,
+  ...
+}:
 let
   retained = {
     "argocd.argoproj.io/sync-options" = "Prune=false,Delete=false";
@@ -14,7 +19,12 @@ in
       den.aspects.kubernetes.services.seerr
     ];
     k8s-manifests =
-      { cluster, computeResources, ... }:
+      {
+        cluster,
+        routes,
+        computeResources,
+        ...
+      }:
       let
         settings = cluster.settings.kubernetes.services.media;
         prowlarr = cluster.settings.kubernetes.services.prowlarr.integration;
@@ -111,7 +121,7 @@ in
             route.namespace == "media"
             && lib.elem route.service loginlessServices
             && (route.auth != "admin" || route.sameNamespaceIngress)
-          ) cluster.routes
+          ) routes
         );
         ingressPolicy = app: {
           apiVersion = "networking.k8s.io/v1";
@@ -145,7 +155,8 @@ in
           name:
           map (secret: secret.key) (
             builtins.attrValues (
-              (config.den.aspects.kubernetes.services.${name}.compute-resources { inherit cluster; }).runtimeSecrets
+              (config.den.aspects.kubernetes.services.${name}.compute-resources { inherit cluster; })
+              .runtimeSecrets
             )
           )
         ) reserved;
@@ -264,9 +275,9 @@ in
       assert lib.assertMsg (
         lib.unique secretKeys == secretKeys
       ) "Media instances must not share private API credentials.";
-      assert lib.assertMsg (lib.all (
-        key: !(lib.elem key reservedSecretKeys)
-      ) secretKeys) "Media instance API credentials may not reuse credentials owned by another media service.";
+      assert lib.assertMsg (lib.all (key: !(lib.elem key reservedSecretKeys))
+        secretKeys
+      ) "Media instance API credentials may not reuse credentials owned by another media service.";
       assert lib.assertMsg (
         !unapprovedRootOverlap instances
       ) "Overlapping library roots require both instances to grant a common library path below /data.";
@@ -286,14 +297,14 @@ in
       {
         applications = {
           media-access = {
-            namespace = cluster.routes.jellyfin.namespace;
+            namespace = routes.jellyfin.namespace;
             objects = [
               {
                 apiVersion = "networking.k8s.io/v1";
                 kind = "NetworkPolicy";
                 metadata = {
                   name = "media-jellyfin-ingress";
-                  namespace = cluster.routes.jellyfin.namespace;
+                  namespace = routes.jellyfin.namespace;
                 };
                 spec = {
                   podSelector.matchLabels = {
@@ -313,7 +324,7 @@ in
                       ports = [
                         {
                           protocol = "TCP";
-                          port = cluster.routes.jellyfin.port;
+                          port = routes.jellyfin.port;
                         }
                       ];
                     }

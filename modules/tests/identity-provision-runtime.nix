@@ -20,7 +20,9 @@
   ...
 }:
 let
-  cluster = config.den.clusters."prod-home";
+  cluster = config.den.clusters.prod-home // {
+    routes = config.flake.clusterRoutes.prod-home.routes;
+  };
   domain = builtins.head cluster.routes.idm.hostnames;
   compute =
     config.den.hosts.${cluster.hostSystem}.${cluster.hostName}.settings.virtualization.compute;
@@ -48,6 +50,7 @@ in
             }).den.aspects.kubernetes.services.identity.k8s-manifests
             {
               inherit cluster lib;
+              inherit (cluster) routes;
               config = { inherit oidcApps; };
               computeResources = compute;
             }

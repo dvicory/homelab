@@ -7,6 +7,7 @@
   den.aspects.kubernetes.oidc.k8s-manifests =
     {
       cluster,
+      routes,
       oidc,
       lib,
       ...
@@ -43,7 +44,7 @@
               apply =
                 scopes:
                 lib.unique (
-                  lib.optionals (cluster.routes.${config.routeKey}.auth == "admin") [
+                  lib.optionals (routes.${config.routeKey}.auth == "admin") [
                     "openid"
                     "profile"
                     "email"
@@ -92,7 +93,7 @@
         [
           (lib.mapAttrs (name: _: {
             routeKey = lib.mkDefault name;
-          }) (lib.filterAttrs (_: route: route.auth == "admin") cluster.routes))
+          }) (lib.filterAttrs (_: route: route.auth == "admin") routes))
         ]
         ++ oidc
       );

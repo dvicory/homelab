@@ -6,6 +6,11 @@
 }:
 let
   namespace = "jellyfin";
+  labels = {
+    "app.kubernetes.io/controller" = "main";
+    "app.kubernetes.io/instance" = "jellyfin";
+    "app.kubernetes.io/name" = "jellyfin";
+  };
   integration = {
     inherit namespace;
     service = "jellyfin";
@@ -80,6 +85,19 @@ in
     default = integration;
     description = "Read-only Jellyfin endpoint, administrator Secret reference and configured libraries for consumers.";
   };
+  den.aspects.kubernetes.services.jellyfin.route-metadata = _: {
+    routes.jellyfin =
+      lib.mapAttrs (_: lib.mkDefault) {
+        inherit (integration) namespace service port;
+        backendPodSelector = labels;
+      }
+      // {
+        timeouts = {
+          request = lib.mkDefault "0s";
+          backendRequest = lib.mkDefault "0s";
+        };
+      };
+  };
 
   den.aspects.kubernetes.services.jellyfin.settings.administrator = lib.mkOption {
     # Jellyfin 12.1 UserManager.ThrowIfInvalidUsername accepts
@@ -125,6 +143,7 @@ in
   den.aspects.kubernetes.services.jellyfin.k8s-manifests =
     {
       cluster,
+      routes,
       computeResources,
       ...
     }:
@@ -161,8 +180,10 @@ in
       # already knows by a local password keep it; see
       # docs/operations/jellyfin.md.
       identitySettings = cluster.settings.kubernetes.services.identity;
-      directoryHost = builtins.head cluster.routes.idm.hostnames;
-      directoryBase = lib.concatMapStringsSep "," (part: "dc=${part}") (lib.splitString "." directoryHost);
+      directoryHost = builtins.head routes.idm.hostnames;
+      directoryBase = lib.concatMapStringsSep "," (part: "dc=${part}") (
+        lib.splitString "." directoryHost
+      );
       memberOf = group: "(memberof=spn=${group}@${directoryHost},${directoryBase})";
       ldapConfiguration = {
         LdapServer = directoryHost;
@@ -188,13 +209,8 @@ in
         EnableLdapProfileImageSync = false;
       };
       initialSeerr = cluster.settings.kubernetes.services.seerr.phase == "initial";
-      route = cluster.routes.jellyfin;
+      route = routes.jellyfin;
       prefix = lib.optionalString (route.pathPrefix != "/") (lib.removeSuffix "/" route.pathPrefix);
-      labels = {
-        "app.kubernetes.io/controller" = "main";
-        "app.kubernetes.io/instance" = "jellyfin";
-        "app.kubernetes.io/name" = "jellyfin";
-      };
       configurationLabels = {
         "app.kubernetes.io/instance" = "jellyfin-configuration";
         "app.kubernetes.io/name" = "jellarr";
@@ -339,9 +355,9 @@ in
       }
     ) "Jellyfin release declaration differs from the reviewed coupled release";
     # A plugin built for another Jellyfin major release does not load.
-    assert lib.assertMsg (
-      lib.versions.major ldapPlugin.targetAbi == lib.versions.major provisionerRelease.version
-    ) "Jellyfin LDAP plugin targets Jellyfin ${ldapPlugin.targetAbi}, not ${provisionerRelease.version}";
+    assert lib.assertMsg
+      (lib.versions.major ldapPlugin.targetAbi == lib.versions.major provisionerRelease.version)
+      "Jellyfin LDAP plugin targets Jellyfin ${ldapPlugin.targetAbi}, not ${provisionerRelease.version}";
     {
       applications.jellyfin-retained = {
         inherit namespace;

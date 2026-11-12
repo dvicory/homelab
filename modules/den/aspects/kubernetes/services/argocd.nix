@@ -1,6 +1,16 @@
 { lib, ... }:
 {
   den.aspects.kubernetes.services.argocd = {
+    route-metadata.routes.argocd = lib.mapAttrs (_: lib.mkDefault) {
+      namespace = "argocd";
+      service = "argocd-server";
+      port = 80;
+      backendPodSelector = {
+        "app.kubernetes.io/instance" = "argocd";
+        "app.kubernetes.io/name" = "argocd-server";
+      };
+      displayName = "Argo CD";
+    };
     oidc =
       { cluster, ... }:
       lib.optionalAttrs (cluster.routes ? argocd) {
@@ -44,14 +54,15 @@
         config,
         charts,
         lib,
+        routes,
         ...
       }:
       let
         identity = cluster.settings.kubernetes.services.identity;
         oidc = config.oidcApps.argocd;
         identityNormal = identity.phase == "normal";
-        idmHostname = builtins.head cluster.routes.idm.hostnames;
-        route = cluster.routes.${oidc.routeKey};
+        idmHostname = builtins.head routes.idm.hostnames;
+        route = routes.${oidc.routeKey};
         urls = map (hostname: "https://${hostname}") route.hostnames;
         # Argo CD parses oidc.config as YAML; JSON is valid YAML.
         # Kanidm 1.11 requires PKCE; Argo CD 3.5 performs it server-side

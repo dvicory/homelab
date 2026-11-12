@@ -38,6 +38,18 @@ in
     };
     description = "Read-only port of Kanidm's LDAPS gateway on its Service, for directory consumers.";
   };
+  den.aspects.kubernetes.services.identity.route-metadata =
+    { cluster, ... }:
+    {
+      routes.idm = lib.mapAttrs (_: lib.mkDefault) {
+        namespace = "identity";
+        service = "kanidm";
+        port = 443;
+        backendPodSelector."app.kubernetes.io/name" = "kanidm";
+        backendTLS = true;
+        backendHostname = builtins.head cluster.routes.idm.hostnames;
+      };
+    };
   den.aspects.kubernetes.services.identity.compute-resources =
     { cluster, ... }:
     let
@@ -73,6 +85,7 @@ in
       config,
       computeResources,
       lib,
+      routes,
       ...
     }:
     let
@@ -81,10 +94,10 @@ in
       activated = phase != "initial";
       normal = phase == "normal";
       provisionObjectNames = [ "kanidm-provision" ];
-      domain = builtins.head cluster.routes.idm.hostnames;
+      domain = builtins.head routes.idm.hostnames;
       inherit (cluster.settings.kubernetes.services.identity) adminGroup householdGroup directory;
-      jellyfinRoute = cluster.routes.jellyfin;
-      adminRoutes = lib.filterAttrs (_: route: route.auth == "admin") cluster.routes;
+      jellyfinRoute = routes.jellyfin;
+      adminRoutes = lib.filterAttrs (_: route: route.auth == "admin") routes;
       routeUrls =
         route:
         map (hostname: "https://${hostname}${lib.removeSuffix "/" route.pathPrefix}") route.hostnames;
@@ -110,7 +123,7 @@ in
         lib.mapAttrs' (
           _: app:
           let
-            route = cluster.routes.${app.routeKey};
+            route = routes.${app.routeKey};
             urls = routeUrls route;
             admin = route.auth == "admin";
             native = app.callbackPath != null;
@@ -369,12 +382,12 @@ in
       selected.system == linuxSystem
     ) "Selected helper release must target the identity compute guest's system";
     assert lib.assertMsg (
-      cluster.routes.idm.namespace == namespace
-      && cluster.routes.idm.service == "kanidm"
-      && cluster.routes.idm.port == 443
-      && cluster.routes.idm.backendTLS
-      && cluster.routes.idm.backendHostname == domain
-      && cluster.routes.idm.pathPrefix == "/"
+      routes.idm.namespace == namespace
+      && routes.idm.service == "kanidm"
+      && routes.idm.port == 443
+      && routes.idm.backendTLS
+      && routes.idm.backendHostname == domain
+      && routes.idm.pathPrefix == "/"
     ) "Identity route must target the hostname-root HTTPS Service identity/kanidm:443";
     {
       # Contribute one identity-owned rewrite to the platform-owned ConfigMap.
@@ -723,7 +736,7 @@ in
                   map (
                     app:
                     let
-                      route = cluster.routes.${app.routeKey};
+                      route = routes.${app.routeKey};
                     in
                     {
                       from = [

@@ -7,7 +7,9 @@
   self,
 }:
 let
-  cluster = config.den.clusters.prod-home;
+  cluster = config.den.clusters.prod-home // {
+    routes = config.flake.clusterRoutes.prod-home.routes;
+  };
   oidcApps = config.flake.nixidyEnvs.${pkgs.stdenv.hostPlatform.system}.prod-home.config.oidcApps;
   instance = "compute-1";
   gateway =
@@ -57,6 +59,7 @@ let
     inventory:
     gateway.k8s-manifests {
       cluster = inventory;
+      routes = inventory.routes;
       computeResources = config.flake.clusterResources.prod-home // {
         inherit instance;
       };
@@ -101,6 +104,7 @@ let
     in
     identity.k8s-manifests {
       cluster = inventory;
+      routes = inventory.routes;
       config.oidcApps = lib.filterAttrs (_: app: builtins.hasAttr app.routeKey inventory.routes) oidcApps;
       computeResources = config.flake.clusterResources.prod-home // {
         inherit instance;

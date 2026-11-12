@@ -15,6 +15,17 @@ let
 in
 {
   den.aspects.kubernetes.services.monitoring.dashboards = {
+    route-metadata.routes.grafana = lib.mapAttrs (_: lib.mkDefault) {
+      inherit namespace;
+      service = "grafana";
+      port = 80;
+      backendPodSelector = {
+        "app.kubernetes.io/instance" = "grafana";
+        "app.kubernetes.io/name" = "grafana";
+      };
+      displayName = "Grafana";
+    };
+
     oidc =
       { cluster, ... }:
       lib.optionalAttrs (cluster.routes ? grafana) {
@@ -57,16 +68,17 @@ in
         config,
         computeResources,
         lib,
+        routes,
         ...
       }:
       let
         identity = cluster.settings.kubernetes.services.identity;
-        identityHostname = builtins.head cluster.routes.idm.hostnames;
+        identityHostname = builtins.head routes.idm.hostnames;
         oidc = config.oidcApps.grafana;
-        route = cluster.routes.${oidc.routeKey};
+        route = routes.${oidc.routeKey};
         hostname = builtins.head route.hostnames;
         url = "https://${hostname}";
-        enabled = cluster.routes ? grafana && identity.phase == "normal";
+        enabled = routes ? grafana && identity.phase == "normal";
         dashboards = lib.mapAttrs (
           file: record:
           let

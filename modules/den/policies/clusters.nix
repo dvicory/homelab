@@ -89,6 +89,32 @@ in
           lib.asserts.checkAssertWarn evaluated.config.assertions evaluated.config.warnings evaluated.config;
       };
 
+    den.policies.cluster-to-routes =
+      { cluster, ... }:
+      den.lib.policy.instantiate {
+        inherit (cluster) name;
+        class = "route-metadata";
+        intoAttr = [
+          "clusterRoutes"
+          cluster.name
+        ];
+        instantiate =
+          { modules, ... }:
+          let
+            evaluated = lib.evalModules {
+              specialArgs = { inherit cluster; };
+              modules = modules ++ [ (inputs.nixpkgs + "/nixos/modules/misc/assertions.nix") ];
+            };
+            checked =
+              lib.asserts.checkAssertWarn evaluated.config.assertions evaluated.config.warnings
+                evaluated.config;
+          in
+          {
+            # Selecting a service supplies defaults, not permission to publish it.
+            routes = lib.getAttrs (builtins.attrNames cluster.routes) checked.routes;
+          };
+      };
+
     den.policies.cluster-to-nixidy =
       { cluster, environment, ... }:
       let
@@ -161,6 +187,7 @@ in
                     environment
                     ;
                   inherit computeResources;
+                  routes = config.flake.clusterRoutes.${cluster.name}.routes;
                 };
               }
             );
@@ -170,6 +197,7 @@ in
     den.policies.cluster-aspect = clusterAspect;
     den.schema.environment.includes = [ den.policies.environment-to-clusters ];
     den.schema.cluster.includes = [
+      den.policies.cluster-to-routes
       den.policies.cluster-to-resources
       den.policies.cluster-to-nixidy
       den.policies.cluster-aspect

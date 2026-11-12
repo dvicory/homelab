@@ -31,7 +31,12 @@
   };
 
   den.aspects.kubernetes.services.media.configuration.k8s-manifests =
-    { cluster, computeResources, ... }:
+    {
+      cluster,
+      routes,
+      computeResources,
+      ...
+    }:
     let
       settings = cluster.settings.kubernetes.services.media;
       initialSeerr = cluster.settings.kubernetes.services.seerr.phase == "initial";
@@ -42,9 +47,8 @@
       policySource = builtins.fromJSON (
         builtins.readFile (inputs.self + "/assets/media-policy/source.json")
       );
-      localPolicy = name: builtins.fromJSON (
-        builtins.readFile (inputs.self + "/assets/media-policy/${name}.json")
-      );
+      localPolicy =
+        name: builtins.fromJSON (builtins.readFile (inputs.self + "/assets/media-policy/${name}.json"));
       requiredFormats = localPolicy "required-formats";
       preferredProfile = localPolicy "hd-preferred";
       profileData = kind: key: policySource.profiles.${kind}.${key};
@@ -60,7 +64,7 @@
           apiSecretKey ? null,
         }:
         let
-          route = if routeKey == null then null else builtins.getAttr routeKey cluster.routes;
+          route = if routeKey == null then null else builtins.getAttr routeKey routes;
           prefix = routePrefix route;
         in
         {
@@ -119,8 +123,9 @@
         let
           fact = services.${kind}.${instanceName};
         in
-        assert lib.assertMsg (cfg.role != "4k")
-          "Homelab-managed HD quality profiles cannot serve Seerr's 4k role (${kind}/${instanceName}).";
+        assert lib.assertMsg (
+          cfg.role != "4k"
+        ) "Homelab-managed HD quality profiles cannot serve Seerr's 4k role (${kind}/${instanceName}).";
         {
           url = endpoint fact;
           externalUrl = fact.externalUrl;
@@ -181,15 +186,22 @@
               # Native required groups otherwise add audio/UHD/extra services.
               trash_cfgroup_exclude_cfs = map (id: { inherit id; }) requiredFormats.${kind}.excludeNativeGroups;
             }) cfg.qualityProfiles;
-            profiles = map (key: {
-              name = (profileData kind key).name;
-              # Native include merging otherwise resets unrelated UI scores.
-              reset_unmatched_scores.enabled = false;
-              upgrade.min_format_score = 1;
-            } // lib.optionalAttrs (key == "hd-preferred") preferredProfile) cfg.qualityProfiles;
-            renames = lib.concatMap (key:
-              let profile = profileData kind key;
-              in lib.optional (profile.name != profile.upstreamName) {
+            profiles = map (
+              key:
+              {
+                name = (profileData kind key).name;
+                # Native include merging otherwise resets unrelated UI scores.
+                reset_unmatched_scores.enabled = false;
+                upgrade.min_format_score = 1;
+              }
+              // lib.optionalAttrs (key == "hd-preferred") preferredProfile
+            ) cfg.qualityProfiles;
+            renames = lib.concatMap (
+              key:
+              let
+                profile = profileData kind key;
+              in
+              lib.optional (profile.name != profile.upstreamName) {
                 from = profile.upstreamName;
                 to = profile.name;
               }
@@ -319,10 +331,10 @@
         '';
 
       policyConfig =
-        cluster:
+        cluster: routes:
         let
           settings = cluster.settings.kubernetes.services.media;
-          jellyfinRoute = cluster.routes.jellyfin;
+          jellyfinRoute = routes.jellyfin;
         in
         {
           seerr = builtins.toJSON {
@@ -481,110 +493,114 @@
           ++ builtins.attrValues cluster.settings.kubernetes.services.media.sonarr
         )
       );
-      generatedPolicy = policyConfig cluster;
+      generatedPolicy = policyConfig cluster routes;
       configurationData = {
         "config.yml" = configarrConfig cluster;
         "seerr.json" = generatedPolicy.seerr;
       };
-      seerrJob = bootstrap: baseJob {
-        name = "media-config-seerr";
-        image = images.node;
-        command = [
-          # Both entry points lock the same local inode. --no-fork carries the
-          # kernel lock through Node's lifetime, including failure/SIGTERM;
-          # never unlink the lock file or use Seerr's private state for it.
-          "/usr/bin/flock"
-          "--no-fork"
-          "--wait"
-          "900"
-          "/coordination/seerr.lock"
-          "node"
-          "/configuration/seerr.mjs"
-        ];
-        secretName = secretName;
-        secretKeys = arrSecretKeys ++ [ apps.seerr.apiSecretKey ];
-        serviceAccountName = if bootstrap then "media-config-seerr-bootstrap" else "media-config-seerr";
-        nodeSelector."kubernetes.io/hostname" = computeResources.instance;
-        env = lib.optionals bootstrap [
-          {
-            name = "SEERR_INITIAL_OWNER";
-            value = "true";
-          }
-          {
-            name = "NODE_EXTRA_CA_CERTS";
-            value = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt";
-          }
-        ];
-        mounts = [
-          {
-            name = "configuration";
-            mountPath = "/configuration";
-            readOnly = true;
-          }
-          {
-            name = "secrets";
-            mountPath = "/secrets";
-            readOnly = true;
-          }
-          {
-            name = "coordination";
-            mountPath = "/coordination";
-          }
-        ] ++ lib.optionals bootstrap [
-          {
-            name = "seerr-state";
-            mountPath = "/seerr-state";
-            readOnly = true;
-          }
-          {
-            name = "kubernetes-api";
-            mountPath = "/var/run/secrets/kubernetes.io/serviceaccount";
-            readOnly = true;
-          }
-        ];
-        volumes = [
-          {
-            name = "configuration";
-            configMap = {
-              name = "media-configuration";
-            };
-          }
-          {
-            name = "coordination";
-            persistentVolumeClaim.claimName = "media-seerr-configuration";
-          }
-        ] ++ lib.optionals bootstrap [
-          {
-            name = "seerr-state";
-            persistentVolumeClaim.claimName = "media-seerr";
-          }
-          {
-            name = "kubernetes-api";
-            projected = {
-              defaultMode = 292;
-              sources = [
-                {
-                  serviceAccountToken = {
-                    path = "token";
-                    expirationSeconds = 600;
-                  };
-                }
-                {
-                  configMap = {
-                    name = "kube-root-ca.crt";
-                    items = [
-                      {
-                        key = "ca.crt";
-                        path = "ca.crt";
-                      }
-                    ];
-                  };
-                }
-              ];
-            };
-          }
-        ];
-      };
+      seerrJob =
+        bootstrap:
+        baseJob {
+          name = "media-config-seerr";
+          image = images.node;
+          command = [
+            # Both entry points lock the same local inode. --no-fork carries the
+            # kernel lock through Node's lifetime, including failure/SIGTERM;
+            # never unlink the lock file or use Seerr's private state for it.
+            "/usr/bin/flock"
+            "--no-fork"
+            "--wait"
+            "900"
+            "/coordination/seerr.lock"
+            "node"
+            "/configuration/seerr.mjs"
+          ];
+          secretName = secretName;
+          secretKeys = arrSecretKeys ++ [ apps.seerr.apiSecretKey ];
+          serviceAccountName = if bootstrap then "media-config-seerr-bootstrap" else "media-config-seerr";
+          nodeSelector."kubernetes.io/hostname" = computeResources.instance;
+          env = lib.optionals bootstrap [
+            {
+              name = "SEERR_INITIAL_OWNER";
+              value = "true";
+            }
+            {
+              name = "NODE_EXTRA_CA_CERTS";
+              value = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt";
+            }
+          ];
+          mounts = [
+            {
+              name = "configuration";
+              mountPath = "/configuration";
+              readOnly = true;
+            }
+            {
+              name = "secrets";
+              mountPath = "/secrets";
+              readOnly = true;
+            }
+            {
+              name = "coordination";
+              mountPath = "/coordination";
+            }
+          ]
+          ++ lib.optionals bootstrap [
+            {
+              name = "seerr-state";
+              mountPath = "/seerr-state";
+              readOnly = true;
+            }
+            {
+              name = "kubernetes-api";
+              mountPath = "/var/run/secrets/kubernetes.io/serviceaccount";
+              readOnly = true;
+            }
+          ];
+          volumes = [
+            {
+              name = "configuration";
+              configMap = {
+                name = "media-configuration";
+              };
+            }
+            {
+              name = "coordination";
+              persistentVolumeClaim.claimName = "media-seerr-configuration";
+            }
+          ]
+          ++ lib.optionals bootstrap [
+            {
+              name = "seerr-state";
+              persistentVolumeClaim.claimName = "media-seerr";
+            }
+            {
+              name = "kubernetes-api";
+              projected = {
+                defaultMode = 292;
+                sources = [
+                  {
+                    serviceAccountToken = {
+                      path = "token";
+                      expirationSeconds = 600;
+                    };
+                  }
+                  {
+                    configMap = {
+                      name = "kube-root-ca.crt";
+                      items = [
+                        {
+                          key = "ca.crt";
+                          path = "ca.crt";
+                        }
+                      ];
+                    };
+                  }
+                ];
+              };
+            }
+          ];
+        };
       readinessTargets = builtins.toJSON (
         lib.concatMap
           (
@@ -786,7 +802,8 @@
           };
           automountServiceAccountToken = false;
         }
-      ] ++ lib.optionals initialSeerr [
+      ]
+      ++ lib.optionals initialSeerr [
         {
           apiVersion = "v1";
           kind = "ServiceAccount";
@@ -796,7 +813,8 @@
           };
           automountServiceAccountToken = false;
         }
-      ] ++ [
+      ]
+      ++ [
         {
           apiVersion = "v1";
           kind = "ConfigMap";
@@ -812,8 +830,10 @@
       seerrScript = builtins.readFile ./seerr.mjs;
     in
     assert lib.assertMsg (
-      coordination.uid == 1000 && coordination.gid == 1000
-      && coordination.mode == "0700" && !coordination.readOnly
+      coordination.uid == 1000
+      && coordination.gid == 1000
+      && coordination.mode == "0700"
+      && !coordination.readOnly
     ) "Media configuration coordination must be private writable integration-owned storage.";
     {
       applications.media-seerr-configuration-storage = {

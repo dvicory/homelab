@@ -14,7 +14,12 @@
     };
   };
   den.aspects.kubernetes.services.cert-manager.k8s-manifests =
-    { cluster, charts, ... }:
+    {
+      cluster,
+      charts,
+      routes,
+      ...
+    }:
     let
       issuer = "letsencrypt-prod";
       version = "v1.21.1";
@@ -90,7 +95,7 @@
             "*.${cluster.domain}"
             "*.${cluster.backupDomain}"
           ])
-          (certificate "identity" "kanidm-tls" cluster.routes.idm.hostnames)
+          (certificate "identity" "kanidm-tls" routes.idm.hostnames)
         ];
       };
     };

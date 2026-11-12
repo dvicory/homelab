@@ -1,7 +1,13 @@
 { lib, ... }:
 let
   namespace = "portal";
+  service = "homarr";
   port = 7575;
+  labels = {
+    "app.kubernetes.io/controller" = "main";
+    "app.kubernetes.io/instance" = service;
+    "app.kubernetes.io/name" = service;
+  };
   retain = {
     "argocd.argoproj.io/sync-options" = "Prune=false,Delete=false";
   };
@@ -14,6 +20,20 @@ in
     ];
     default = "initial";
     description = "Publish Home only after private onboarding, admin-group assignment and board permissions are complete.";
+  };
+  den.aspects.kubernetes.services.homarr.route-metadata = _: {
+    routes.home =
+      lib.mapAttrs (_: lib.mkDefault) {
+        inherit namespace service port;
+        displayName = "Home";
+        backendPodSelector = labels;
+      }
+      // {
+        timeouts = {
+          request = lib.mkDefault "0s";
+          backendRequest = lib.mkDefault "0s";
+        };
+      };
   };
   den.aspects.kubernetes.services.homarr.oidc =
     { cluster, ... }:
@@ -56,6 +76,7 @@ in
   den.aspects.kubernetes.services.homarr.k8s-manifests =
     {
       cluster,
+      routes,
       config,
       computeResources,
       charts,
@@ -64,13 +85,8 @@ in
     let
       state = computeResources.retainedPaths.homarr;
       oidc = config.oidcApps.homarr;
-      route = cluster.routes.${oidc.routeKey};
+      route = routes.${oidc.routeKey};
       ready = cluster.settings.kubernetes.services.homarr.phase == "ready";
-      labels = {
-        "app.kubernetes.io/controller" = "main";
-        "app.kubernetes.io/instance" = "homarr";
-        "app.kubernetes.io/name" = "homarr";
-      };
     in
     assert lib.assertMsg (!state.readOnly) "Homarr retained state must be writable.";
     {
@@ -118,7 +134,7 @@ in
       applications.homarr =
         assert lib.assertMsg (
           route.namespace == namespace
-          && route.service == "homarr"
+          && route.service == service
           && route.port == port
           && route.pathPrefix == "/"
           && route.auth == "native"
@@ -157,7 +173,7 @@ in
           helm.releases.homarr = {
             chart = charts.bjw-s-labs.app-template;
             values = {
-              fullnameOverride = "homarr";
+              fullnameOverride = service;
               defaultPodOptions = {
                 nodeSelector."kubernetes.io/hostname" = computeResources.instance;
                 automountServiceAccountToken = false;
@@ -178,7 +194,7 @@ in
                     PGID = toString state.gid;
                     AUTH_PROVIDERS = "oidc";
                     AUTH_SESSION_EXPIRY_TIME = "1h";
-                    AUTH_OIDC_ISSUER = "https://${builtins.head cluster.routes.idm.hostnames}/oauth2/openid/${oidc.clientID}";
+                    AUTH_OIDC_ISSUER = "https://${builtins.head routes.idm.hostnames}/oauth2/openid/${oidc.clientID}";
                     AUTH_OIDC_CLIENT_ID = oidc.clientID;
                     AUTH_OIDC_CLIENT_NAME = "Homelab";
                     AUTH_OIDC_CLIENT_SECRET.valueFrom.secretKeyRef = {
