@@ -4,7 +4,9 @@
   ...
 }:
 let
-  cluster = config.den.clusters.prod-home;
+  cluster = config.den.clusters.prod-home // {
+    routes = config.flake.clusterRoutes.prod-home.routes;
+  };
   compute =
     config.den.hosts.${cluster.hostSystem}.${cluster.hostName}.settings.virtualization.compute;
   homarr =
@@ -16,6 +18,7 @@ let
     inventory:
     homarr.k8s-manifests {
       cluster = inventory;
+      routes = inventory.routes;
       computeResources = compute;
       charts.bjw-s-labs.app-template = { };
     };
@@ -71,6 +74,7 @@ let
           objects =
             (gateway.k8s-manifests {
               cluster = inventory;
+              routes = inventory.routes;
               computeResources = compute;
               charts = { };
               inherit lib;

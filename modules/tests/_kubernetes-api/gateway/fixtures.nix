@@ -7,7 +7,9 @@
   self,
 }:
 let
-  cluster = config.den.clusters.prod-home;
+  cluster = config.den.clusters.prod-home // {
+    routes = config.flake.clusterRoutes.prod-home.routes;
+  };
   instance = "compute-1";
   gateway =
     (import ../../../den/aspects/kubernetes/services/gateway.nix { })
@@ -56,6 +58,7 @@ let
     inventory:
     gateway.k8s-manifests {
       cluster = inventory;
+      routes = inventory.routes;
       computeResources = config.flake.clusterResources.prod-home // {
         inherit instance;
       };
@@ -90,13 +93,17 @@ let
     ) (renderGateway inventory).applications.gateway.objects;
   renderIdentity =
     phase:
-    identity.k8s-manifests {
-      cluster = lib.recursiveUpdate fixtureCluster {
+    let
+      inventory = lib.recursiveUpdate fixtureCluster {
         # Keep backend peer selectors without publishing more Gateway routes.
         routes.jellyfin = cluster.routes.jellyfin;
         routes.home = cluster.routes.home;
         settings.kubernetes.services.identity.phase = phase;
       };
+    in
+    identity.k8s-manifests {
+      cluster = inventory;
+      routes = inventory.routes;
       computeResources = config.flake.clusterResources.prod-home // {
         inherit instance;
       };

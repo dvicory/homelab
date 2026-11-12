@@ -10,7 +10,9 @@
   perSystem =
     { pkgs, system, ... }:
     let
-      cluster = config.den.clusters.prod-home;
+      cluster = config.den.clusters.prod-home // {
+        routes = config.flake.clusterRoutes.prod-home.routes;
+      };
       environment = config.den.environments.${cluster.environment};
       compute =
         config.den.hosts.${cluster.hostSystem}.${cluster.hostName}.settings.virtualization.compute;
@@ -61,7 +63,9 @@
               }
             ];
           };
-          inventory = fixture.config.den.clusters.prod-home;
+          inventory = fixture.config.den.clusters.prod-home // {
+            routes = fixture.config.flake.clusterRoutes.prod-home.routes;
+          };
           rendered = fixture.config.flake.nixidyEnvs.${system}.prod-home;
         in
         {

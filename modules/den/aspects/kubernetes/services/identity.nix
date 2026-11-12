@@ -35,6 +35,18 @@
     };
     description = "Read-only port of Kanidm's LDAPS gateway on its Service, for directory consumers.";
   };
+  den.aspects.kubernetes.services.identity.route-metadata =
+    { cluster, ... }:
+    {
+      routes.idm = lib.mapAttrs (_: lib.mkDefault) {
+        namespace = "identity";
+        service = "kanidm";
+        port = 443;
+        backendPodSelector."app.kubernetes.io/name" = "kanidm";
+        backendTLS = true;
+        backendHostname = builtins.head cluster.routes.idm.hostnames;
+      };
+    };
   den.aspects.kubernetes.services.identity.compute-resources =
     { cluster, ... }:
     let
@@ -69,6 +81,7 @@
       cluster,
       computeResources,
       lib,
+      routes,
       ...
     }:
     let
@@ -77,10 +90,10 @@
       activated = phase != "initial";
       normal = phase == "normal";
       provisionObjectNames = [ "kanidm-provision" ];
-      domain = builtins.head cluster.routes.idm.hostnames;
+      domain = builtins.head routes.idm.hostnames;
       inherit (cluster.settings.kubernetes.services.identity) adminGroup householdGroup directory;
-      jellyfinRoute = cluster.routes.jellyfin;
-      adminRoutes = lib.filterAttrs (_: route: route.auth == "admin") cluster.routes;
+      jellyfinRoute = routes.jellyfin;
+      adminRoutes = lib.filterAttrs (_: route: route.auth == "admin") routes;
       routeUrls =
         route:
         map (hostname: "https://${hostname}${lib.removeSuffix "/" route.pathPrefix}") route.hostnames;
@@ -122,7 +135,7 @@
       # Argo CD signs users in itself; its aspect owns those settings. It
       # shares its route's client, so Kanidm lists Argo CD once.
       argocdOidc = cluster.settings.kubernetes.services.argocd.oidc;
-      argocdRoute = cluster.routes.argocd;
+      argocdRoute = routes.argocd;
       argocdUrls = routeUrls argocdRoute;
       # Argo CD's callback path is fixed at /auth/callback, so Argo CD must
       # be served at the hostname root.
@@ -136,7 +149,7 @@
       # lists Grafana once.
       hasGrafana = adminRoutes ? grafana;
       grafanaOidc = cluster.settings.kubernetes.services.monitoring.grafana.oidc;
-      grafanaRoute = cluster.routes.grafana;
+      grafanaRoute = routes.grafana;
       grafanaUrls = routeUrls grafanaRoute;
       # Grafana's generic OAuth callback path is fixed at /login/generic_oauth.
       grafanaCallbacks =
@@ -161,7 +174,7 @@
           ];
         };
       };
-      homarrRoute = cluster.routes.home;
+      homarrRoute = routes.home;
       homarrUrls = routeUrls homarrRoute;
       clients =
         assert lib.assertMsg (
@@ -432,12 +445,12 @@
       selected.system == linuxSystem
     ) "Selected helper release must target the identity compute guest's system";
     assert lib.assertMsg (
-      cluster.routes.idm.namespace == namespace
-      && cluster.routes.idm.service == "kanidm"
-      && cluster.routes.idm.port == 443
-      && cluster.routes.idm.backendTLS
-      && cluster.routes.idm.backendHostname == domain
-      && cluster.routes.idm.pathPrefix == "/"
+      routes.idm.namespace == namespace
+      && routes.idm.service == "kanidm"
+      && routes.idm.port == 443
+      && routes.idm.backendTLS
+      && routes.idm.backendHostname == domain
+      && routes.idm.pathPrefix == "/"
     ) "Identity route must target the hostname-root HTTPS Service identity/kanidm:443";
     {
       # Contribute one identity-owned rewrite to the platform-owned ConfigMap.

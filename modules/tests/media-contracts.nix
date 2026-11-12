@@ -10,7 +10,9 @@
     let
       environment = ../../generated/manifests/prod-home;
       policyDirectory = ../../assets/media-policy;
-      cluster = config.den.clusters.prod-home;
+      cluster = config.den.clusters.prod-home // {
+        routes = config.flake.clusterRoutes.prod-home.routes;
+      };
       compute =
         config.den.hosts.${cluster.hostSystem}.${cluster.hostName}.settings.virtualization.compute;
       computeResources = {
@@ -35,12 +37,14 @@
           fixtureInit =
             (sabnzbdAspect."k8s-manifests" {
               cluster = fixtureCluster;
+              routes = fixtureCluster.routes;
               inherit computeResources;
               charts = inputs.nixhelm.chartsDerivations.${system};
             }).applications.sabnzbd.helm.releases.sabnzbd.values.controllers.main.initContainers.config;
           removalInit =
             (sabnzbdAspect."k8s-manifests" {
               inherit cluster computeResources;
+              routes = cluster.routes;
               charts = inputs.nixhelm.chartsDerivations.${system};
             }).applications.sabnzbd.helm.releases.sabnzbd.values.controllers.main.initContainers.config;
           providerChecks =
@@ -101,7 +105,11 @@
           apiSecretKey,
           root,
           category,
-          qualityProfiles ? [ "hd-preferred" "web-1080p" "remux-web-1080p" ],
+          qualityProfiles ? [
+            "hd-preferred"
+            "web-1080p"
+            "remux-web-1080p"
+          ],
           defaultQualityProfile ? "hd-preferred",
           role ? null,
         }:
@@ -161,7 +169,9 @@
       fixtureClusterWith =
         overrides:
         let
-          media = lib.recursiveUpdate (cluster.settings.kubernetes.services.media // fixtureDefinitions) overrides;
+          media = lib.recursiveUpdate (
+            cluster.settings.kubernetes.services.media // fixtureDefinitions
+          ) overrides;
           evaluated =
             (lib.evalModules {
               modules = [
@@ -174,13 +184,22 @@
               ];
             }).config;
         in
-        cluster // {
-          settings = lib.recursiveUpdateUntil (path: _: _: path == [ "kubernetes" "services" "media" ])
-            cluster.settings
-            { kubernetes.services.media = media // evaluated; };
+        cluster
+        // {
+          settings = lib.recursiveUpdateUntil (
+            path: _: _:
+            path == [
+              "kubernetes"
+              "services"
+              "media"
+            ]
+          ) cluster.settings { kubernetes.services.media = media // evaluated; };
         };
       fixtureCluster = fixtureClusterWith { };
-      fixtureInstances = lib.getAttrs [ "radarr" "sonarr" ] fixtureCluster.settings.kubernetes.services.media;
+      fixtureInstances = lib.getAttrs [
+        "radarr"
+        "sonarr"
+      ] fixtureCluster.settings.kubernetes.services.media;
       fixtureCompute = computeResources // {
         retainedPaths =
           computeResources.retainedPaths
@@ -206,6 +225,7 @@
         let
           rendered = config.den.aspects.kubernetes.services.media.arr.provides.${kind}."k8s-manifests" {
             cluster = targetCluster;
+            routes = targetCluster.routes;
             computeResources = targetCompute;
             inherit charts;
           };
@@ -231,18 +251,17 @@
         targetCluster:
         (config.den.aspects.kubernetes.services.media."k8s-manifests" {
           cluster = targetCluster;
+          routes = targetCluster.routes;
           computeResources = fixtureCompute;
         });
       mediaWith =
-        overrides:
-        builtins.tryEval (
-          builtins.deepSeq (mediaManifests (fixtureClusterWith overrides)) true
-        );
+        overrides: builtins.tryEval (builtins.deepSeq (mediaManifests (fixtureClusterWith overrides)) true);
       configurationWith =
         overrides:
         builtins.tryEval (
           builtins.deepSeq ((config.den.aspects.kubernetes.services.media.configuration."k8s-manifests" {
             cluster = fixtureClusterWith overrides;
+            routes = (fixtureClusterWith overrides).routes;
             computeResources = fixtureCompute;
           }).applications.media-configuration.objects
           ) true
@@ -306,6 +325,7 @@
           configuration =
             (config.den.aspects.kubernetes.services.media.configuration."k8s-manifests" {
               cluster = target;
+              routes = target.routes;
               computeResources = fixtureCompute;
             }).applications.media-configuration.objects;
         };
@@ -417,6 +437,7 @@
             };
           };
           inherit computeResources;
+          routes = cluster.routes;
         }).applications
       );
       fixture = pkgs.writeText "media-instance-fixtures.json" (
@@ -436,34 +457,54 @@
           seerrRoleAccepted = (configurationWith { }).success;
           noStandardRejected = !mediaNoStandard.success;
           ambiguousStandardRejected = !mediaAmbiguousStandard.success;
-          unsupportedFourKRejected = lib.all (
-            kind:
-            let
-              name = if kind == "radarr" then "remux" else "anime";
-            in
-            lib.all (
-              profile:
-              let
-                selection = {
-                  qualityProfiles = [ profile ];
-                  defaultQualityProfile = profile;
-                };
-              in
-              (configurationWith { ${kind}.${name} = selection; }).success
-              && !(configurationWith {
-                ${kind}.${name} = selection // { role = "4k"; };
-              }).success
-            ) [ "hd-preferred" "web-1080p" "remux-web-1080p" ]
-          ) [ "radarr" "sonarr" ];
-          emptyQualityProfilesRejected = !(configurationWith {
-            radarr.radarr.qualityProfiles = [ ];
-          }).success;
-          duplicateQualityProfilesRejected = !(configurationWith {
-            radarr.radarr.qualityProfiles = [ "hd-preferred" "hd-preferred" ];
-          }).success;
-          missingDefaultProfileRejected = !(configurationWith {
-            radarr.radarr.qualityProfiles = [ "web-1080p" ];
-          }).success;
+          unsupportedFourKRejected =
+            lib.all
+              (
+                kind:
+                let
+                  name = if kind == "radarr" then "remux" else "anime";
+                in
+                lib.all
+                  (
+                    profile:
+                    let
+                      selection = {
+                        qualityProfiles = [ profile ];
+                        defaultQualityProfile = profile;
+                      };
+                    in
+                    (configurationWith { ${kind}.${name} = selection; }).success
+                    && !(configurationWith {
+                      ${kind}.${name} = selection // {
+                        role = "4k";
+                      };
+                    }).success
+                  )
+                  [
+                    "hd-preferred"
+                    "web-1080p"
+                    "remux-web-1080p"
+                  ]
+              )
+              [
+                "radarr"
+                "sonarr"
+              ];
+          emptyQualityProfilesRejected =
+            !(configurationWith {
+              radarr.radarr.qualityProfiles = [ ];
+            }).success;
+          duplicateQualityProfilesRejected =
+            !(configurationWith {
+              radarr.radarr.qualityProfiles = [
+                "hd-preferred"
+                "hd-preferred"
+              ];
+            }).success;
+          missingDefaultProfileRejected =
+            !(configurationWith {
+              radarr.radarr.qualityProfiles = [ "web-1080p" ];
+            }).success;
           noSharingRejected = !mediaNoSharing.success;
           stateCollisionRejected = !mediaStateCollision.success;
           secretCollisionRejected = !mediaSecretCollision.success;

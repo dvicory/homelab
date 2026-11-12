@@ -6,6 +6,7 @@
       computeResources,
       charts,
       lib,
+      routes,
       ...
     }:
     let
@@ -33,9 +34,9 @@
         && (
           name != "home" || (identityNormal && cluster.settings.kubernetes.services.homarr.phase == "ready")
         )
-      ) cluster.routes;
+      ) routes;
       adminPublishedRoutes =
-        if identityNormal then lib.filterAttrs (_: route: route.auth == "admin") cluster.routes else { };
+        if identityNormal then lib.filterAttrs (_: route: route.auth == "admin") routes else { };
       retained = {
         "argocd.argoproj.io/sync-options" = "Prune=false,Delete=false";
       };
@@ -179,7 +180,7 @@
               ];
           }
         ) (lib.filterAttrs (_: route: route.manageBackendIngress) routeSet);
-      routes = routeObjects publishedRoutes;
+      publishedRouteObjects = routeObjects publishedRoutes;
       backendGrants = grantObjects publishedRoutes;
       backendTLS = tlsObjects publishedRoutes;
       backendIsolation = isolationObjects publishedRoutes;
@@ -205,11 +206,11 @@
           );
       backendSelectorsValid = lib.all (
         route: route ? backendPodSelector && route.backendPodSelector != { }
-      ) (builtins.attrValues cluster.routes);
+      ) (builtins.attrValues routes);
     in
     assert lib.assertMsg backendSelectorsValid "Gateway routes require a non-empty backendPodSelector";
     assert lib.assertMsg (lib.all (route: !route.backendTLS || route.backendHostname != null) (
-      builtins.attrValues cluster.routes
+      builtins.attrValues routes
     )) "TLS Gateway routes require backendHostname";
     assert lib.assertMsg originModeValid "Gateway ingress mode and trusted edge CIDRs disagree";
     {
@@ -364,7 +365,7 @@
                     {
                       group = "";
                       kind = "Secret";
-                      namespace = cluster.routes.idm.namespace;
+                      namespace = routes.idm.namespace;
                       name = "kanidm-tls";
                     }
                   ];
@@ -373,7 +374,7 @@
             ];
           })
           (object "gateway.networking.k8s.io/v1beta1" "ReferenceGrant" "gateway-identity-certificate"
-            cluster.routes.idm.namespace
+            routes.idm.namespace
             {
               from = [
                 {
@@ -423,7 +424,7 @@
             ];
           }
         )
-        ++ routes
+        ++ publishedRouteObjects
         ++ backendGrants
         ++ backendTLS
         ++ backendIsolation;

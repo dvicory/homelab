@@ -5,7 +5,9 @@
   ...
 }:
 let
-  cluster = config.den.clusters.prod-home;
+  cluster = config.den.clusters.prod-home // {
+    routes = config.flake.clusterRoutes.prod-home.routes;
+  };
   compute =
     config.den.hosts.${cluster.hostSystem}.${cluster.hostName}.settings.virtualization.compute;
   computeResources = config.flake.clusterResources.prod-home // {
@@ -27,6 +29,7 @@ let
     inventory:
     argocdAspect.k8s-manifests {
       cluster = inventory;
+      routes = inventory.routes;
       charts = { };
       inherit lib;
     };
@@ -36,6 +39,7 @@ let
     inventory:
     identity.k8s-manifests {
       cluster = inventory;
+      routes = inventory.routes;
       inherit computeResources lib;
     };
   gateway =
@@ -44,6 +48,7 @@ let
     inventory:
     gateway.k8s-manifests {
       cluster = inventory;
+      routes = inventory.routes;
       charts = { };
       inherit computeResources lib;
     };

@@ -20,7 +20,9 @@
   ...
 }:
 let
-  cluster = config.den.clusters."prod-home";
+  cluster = config.den.clusters.prod-home // {
+    routes = config.flake.clusterRoutes.prod-home.routes;
+  };
   domain = builtins.head cluster.routes.idm.hostnames;
   compute =
     config.den.hosts.${cluster.hostSystem}.${cluster.hostName}.settings.virtualization.compute;
@@ -43,6 +45,7 @@ let
     inventory:
     (identityAspect.k8s-manifests {
       cluster = inventory;
+      routes = inventory.routes;
       inherit lib;
       computeResources = compute;
     }).applications.identity.objects;

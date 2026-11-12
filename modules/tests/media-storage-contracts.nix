@@ -8,7 +8,9 @@
   perSystem =
     { pkgs, system, ... }:
     let
-      cluster = config.den.clusters.prod-home;
+      cluster = config.den.clusters.prod-home // {
+        routes = config.flake.clusterRoutes.prod-home.routes;
+      };
       compute =
         config.den.hosts.${cluster.hostSystem}.${cluster.hostName}.settings.virtualization.compute;
       computeResources = {
@@ -29,6 +31,7 @@
         declared:
         (sab {
           cluster = declared;
+          routes = declared.routes;
           inherit computeResources charts;
         }).applications.sabnzbd;
       fixture = pkgs.writeText "media-storage-contract.json" (
