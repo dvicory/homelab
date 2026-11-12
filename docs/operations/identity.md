@@ -50,6 +50,8 @@ administrator routes and applies the shared type. App-specific callbacks,
 scopes and Secret references stay beside their owning service; the app,
 Gateway and Kanidm consume the same evaluated records.
 Callback and login-start paths must start with `/`.
+Two clients must not write to the same key in the same Secret. Different keys
+in one Secret are allowed.
 
 `home.nix` chooses which routes exist, their hostnames, access rules and rollout
 phases. Selected service aspects supply backend names, ports and pod selectors

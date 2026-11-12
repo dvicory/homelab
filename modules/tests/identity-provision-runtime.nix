@@ -232,6 +232,7 @@ in
                   scopes: list[str]
                   urls: list[str]
                   callback: str
+                  published: dict[str, str] | None
 
               kubectl = "${k3sPackage}/bin/k3s kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml"
               identity = "${manifests}/identity"
@@ -517,18 +518,23 @@ in
                   assert_kanidm(members)
 
               with subtest("5: native apps and their Gateway checks reuse one approval"):
-                  argo_cm = manifest("argocd/ConfigMap-argocd-cm.yaml")["data"]
+                  argo_manifest = manifest("argocd/ConfigMap-argocd-cm.yaml")
+                  argo_cm = argo_manifest["data"]
                   argo_oidc = json.loads(argo_cm["oidc.config"])
+                  assert argo_oidc["clientSecret"].startswith("$")
+                  secret_name, secret_key = argo_oidc["clientSecret"][1:].split(":", 1)
                   grafana_ini = configparser.ConfigParser(interpolation=None)
                   grafana_ini.read_string(manifest("monitoring/ConfigMap-grafana.yaml")["data"]["grafana.ini"])
                   grafana_oidc = grafana_ini["auth.generic_oauth"]
                   native_apps = {
                       "argocd": NativeOidcApp(client=argo_oidc["clientID"], scopes=argo_oidc["requestedScopes"],
                                      urls=[argo_cm["url"]] + json.loads(argo_cm["additionalUrls"]),
-                                     callback="${oidcApps.argocd.callbackPath}"),
+                                     callback="${oidcApps.argocd.callbackPath}",
+                                     published={"namespace": argo_manifest["metadata"]["namespace"],
+                                                "name": secret_name, "key": secret_key}),
                       "grafana": NativeOidcApp(client=grafana_oidc["client_id"], scopes=grafana_oidc["scopes"].split(),
                                      urls=[grafana_ini["server"]["root_url"]],
-                                     callback="${oidcApps.grafana.callbackPath}"),
+                                     callback="${oidcApps.grafana.callbackPath}", published=None),
                   }
                   journeys = []
                   all_requests = []
@@ -540,7 +546,8 @@ in
                       for url in native["urls"]:
                           requests += [
                               dict(client=native["client"], scopes=native["scopes"],
-                                   redirect=url.rstrip("/") + native["callback"]),
+                                   redirect=url.rstrip("/") + native["callback"],
+                                   published=native["published"]),
                               entrance,
                           ]
                       # A real permission change still needs approval; repeating it does not.

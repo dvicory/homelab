@@ -93,6 +93,26 @@
       normalOidc = builtins.fromJSON normalArgocd.cm."oidc.config";
       argocdRoute = cluster.routes.argocd;
       clientSecrets = clients: lib.concatMap (client: client.secrets) clients;
+      sharedSecretObjects =
+        key:
+        (identity.k8s-manifests {
+          cluster = withPhase "normal";
+          routes = cluster.routes // {
+            collision-peer = argocdRoute // {
+              hostnames = [ "collision-peer.test" ];
+            };
+          };
+          config.oidcApps = oidcApps // {
+            collision-peer = oidcApps.argocd // {
+              clientID = "collision-peer";
+              routeKey = "collision-peer";
+              secret = oidcApps.argocd.secret // {
+                inherit key;
+              };
+            };
+          };
+          inherit computeResources lib;
+        }).applications.identity.objects;
       kanidmIngress =
         objects: (findObject objects "NetworkPolicy" namespace "kanidm-private").spec.ingress;
       namespace = "identity";
@@ -146,6 +166,20 @@
           else
             throw "Unsupported Kubernetes selector operator"
         ) (selector.matchExpressions or [ ]);
+      admitsPort =
+        number: name: rule:
+        let
+          ports = rule.ports or [ ];
+          admits =
+            port:
+            (port.protocol or "TCP") == "TCP"
+            && (
+              !(port ? port)
+              || port.port == name
+              || (builtins.isInt port.port && port.port <= number && number <= (port.endPort or port.port))
+            );
+        in
+        ports == [ ] || lib.any admits ports;
       directoryPeers =
         objects:
         lib.unique (
@@ -154,22 +188,7 @@
               policy:
               lib.concatMap (
                 rule:
-                let
-                  ports = rule.ports or [ ];
-                  admits =
-                    port:
-                    (port.protocol or "TCP") == "TCP"
-                    && (
-                      !(port ? port)
-                      || port.port == "ldaps"
-                      || (
-                        builtins.isInt port.port
-                        && port.port <= directory.port
-                        && directory.port <= (port.endPort or port.port)
-                      )
-                    );
-                in
-                if ports == [ ] || lib.any admits ports then
+                if admitsPort directory.port "ldaps" rule then
                   if rule.from or [ ] == [ ] then [ "anyone" ] else rule.from
                 else
                   [ ]
@@ -187,7 +206,8 @@
         );
       allowsArgocdServer = lib.any (
         rule:
-        lib.any (
+        admitsPort 8443 "https" rule
+        && lib.any (
           peer:
           (peer.namespaceSelector.matchLabels."kubernetes.io/metadata.name" or null) == argocdRoute.namespace
           && (peer.podSelector.matchLabels or null) == argocdRoute.backendPodSelector
@@ -299,6 +319,10 @@
           lib.sort builtins.lessThan (map (client: client.name) normalClients)
           == builtins.attrNames normalState.systems.oauth2
           && lib.all (publicationIntact normalObjects) (clientSecrets normalClients);
+        client-secret-destinations-distinct =
+          (builtins.tryEval (builtins.deepSeq (sharedSecretObjects "other-client-secret") true)).success
+          && !(builtins.tryEval (builtins.deepSeq (sharedSecretObjects oidcApps.argocd.secret.key) true))
+          .success;
         administrator-eligibility-restricted =
           !(builtins.tryEval (
             builtins.deepSeq (provisionClients

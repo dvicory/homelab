@@ -158,61 +158,73 @@ in
         inherit name;
         inherit (client) eligibleGroup scopes secrets;
       }) clients;
+      secretDestinations = lib.concatMap (
+        client:
+        map (secret: [
+          secret.namespace
+          secret.name
+          secret.key
+        ]) client.secrets
+      ) oauth2Clients;
       # This Application declares each client Secret without data, so the
       # Job never needs `create`, which Kubernetes cannot limit by name.
       # Argo's server-side apply owns only metadata and type; the Job's
       # server-side apply (field manager identity-provisioner) owns `data`.
       # Fields owned by another manager produce no Argo drift.
-      secretPublication = lib.concatMap (secret: [
-        {
-          apiVersion = "v1";
-          kind = "Secret";
-          metadata = {
-            inherit (secret) name namespace;
+      secretPublication =
+        assert lib.assertMsg (
+          lib.length (lib.unique secretDestinations) == lib.length secretDestinations
+        ) "OIDC client Secret destinations must have distinct namespace, name, and key";
+        lib.concatMap (secret: [
+          {
+            apiVersion = "v1";
+            kind = "Secret";
+            metadata = {
+              inherit (secret) name namespace;
+            }
+            // lib.optionalAttrs (secret.labels != { }) { inherit (secret) labels; };
+            type = "Opaque";
           }
-          // lib.optionalAttrs (secret.labels != { }) { inherit (secret) labels; };
-          type = "Opaque";
-        }
-        {
-          apiVersion = "rbac.authorization.k8s.io/v1";
-          kind = "Role";
-          metadata = {
-            name = "kanidm-client-secret-${secret.name}";
-            inherit (secret) namespace;
-          };
-          rules = [
-            {
-              apiGroups = [ "" ];
-              resources = [ "secrets" ];
-              resourceNames = [ secret.name ];
-              verbs = [
-                "get"
-                "patch"
-              ];
-            }
-          ];
-        }
-        {
-          apiVersion = "rbac.authorization.k8s.io/v1";
-          kind = "RoleBinding";
-          metadata = {
-            name = "kanidm-client-secret-${secret.name}";
-            inherit (secret) namespace;
-          };
-          roleRef = {
-            apiGroup = "rbac.authorization.k8s.io";
+          {
+            apiVersion = "rbac.authorization.k8s.io/v1";
             kind = "Role";
-            name = "kanidm-client-secret-${secret.name}";
-          };
-          subjects = [
-            {
-              kind = "ServiceAccount";
-              name = "kanidm-provision";
-              inherit namespace;
-            }
-          ];
-        }
-      ]) (lib.concatMap (client: client.secrets) oauth2Clients);
+            metadata = {
+              name = "kanidm-client-secret-${secret.name}";
+              inherit (secret) namespace;
+            };
+            rules = [
+              {
+                apiGroups = [ "" ];
+                resources = [ "secrets" ];
+                resourceNames = [ secret.name ];
+                verbs = [
+                  "get"
+                  "patch"
+                ];
+              }
+            ];
+          }
+          {
+            apiVersion = "rbac.authorization.k8s.io/v1";
+            kind = "RoleBinding";
+            metadata = {
+              name = "kanidm-client-secret-${secret.name}";
+              inherit (secret) namespace;
+            };
+            roleRef = {
+              apiGroup = "rbac.authorization.k8s.io";
+              kind = "Role";
+              name = "kanidm-client-secret-${secret.name}";
+            };
+            subjects = [
+              {
+                kind = "ServiceAccount";
+                name = "kanidm-provision";
+                inherit namespace;
+              }
+            ];
+          }
+        ]) (lib.concatMap (client: client.secrets) oauth2Clients);
       adminPolicies = lib.mapAttrsToList (
         name: route:
         let
