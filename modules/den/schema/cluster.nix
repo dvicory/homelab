@@ -7,10 +7,9 @@
 let
   inherit (lib) mkOption types;
   settingsType = import ./_settings-type.nix { inherit lib den; };
-  routeOptions = (import ./_route.nix { inherit lib; }).options;
   routeType = types.submodule {
     freeformType = types.attrsOf types.anything;
-    options = lib.getAttrs [ "hostnames" "auth" "exposure" ] routeOptions;
+    options = lib.getAttrs [ "hostnames" "auth" "exposure" ] den.lib.homelab.routeOptions;
   };
 in
 {

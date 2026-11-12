@@ -5,7 +5,11 @@
     { cluster, lib, ... }:
     {
       options.routes = lib.mkOption {
-        type = lib.types.attrsOf (lib.types.submodule ../../schema/_route.nix);
+        type = lib.types.attrsOf (
+          lib.types.submodule {
+            options = den.lib.homelab.routeOptions;
+          }
+        );
         default = { };
         description = "Service backend defaults merged with explicit site routes and overrides.";
       };

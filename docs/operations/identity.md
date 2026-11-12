@@ -60,6 +60,8 @@ phases. Selected service aspects supply backend names, ports and pod selectors
 through Den's `route-metadata` class. Hosts and manifest renderers use the same
 resolved `flake.clusterRoutes.<cluster>.routes` inventory. Selecting a service
 does not publish a route.
+Both route views use `den.lib.homelab.routeOptions`, exported by the auto-imported
+`modules/den/schema/route.nix` module.
 
 Argo CD and Grafana keep both sign-in checks. Both checks request the same
 permissions, so switching between them does not require another approval.

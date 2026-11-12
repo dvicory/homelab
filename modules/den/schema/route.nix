@@ -3,7 +3,7 @@ let
   inherit (lib) mkOption types;
 in
 {
-  options = {
+  den.lib.homelab.routeOptions = {
     namespace = mkOption { type = types.str; };
     service = mkOption { type = types.str; };
     displayName = mkOption {
