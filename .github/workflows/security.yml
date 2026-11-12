@@ -19,12 +19,19 @@ permissions:
 jobs:
   zizmor:
     name: Audit GitHub Actions
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Reject tracked Python bytecode
+        run: |
+          set -euo pipefail
+          bytecode=$(git ls-files -- '*.pyc' '*.pyo')
+          printf '%s\n' "$bytecode"
+          test -z "$bytecode"
 
       # Native locking covers actions, not external reusable workflows or images.
       # Verify the immutable verifier release's signed asset attestation before execution.
