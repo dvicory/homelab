@@ -6,31 +6,64 @@ Define the durable routing, trust, lifecycle, ownership, and evidence boundaries
 
 ### Requirement: Declared service route inventory
 
-The system SHALL derive every managed service entrance from one declarative route inventory. Each declared route SHALL contain one or more non-empty hostnames, a backend service, an authentication mode, an exposure class, a backend protocol/TLS declaration, and a request-timeout policy. A TLS declaration SHALL name the backend certificate hostname and select the platform-declared system trust source unless a future contract adds another supported source. Route presence is the declaration; this contract SHALL NOT require a separate boolean presence flag or impose a universal hostname count, order, or domain-family rule. Each consuming edge SHALL validate any additional hostname shape or cardinality it requires before emitting an entrance.
+The system SHALL derive every managed service entrance from one declarative route inventory. Each declared route SHALL contain one or more non-empty hostnames, a backend service, an authentication mode, an exposure class, a backend protocol/TLS declaration, and a request-timeout policy. A TLS declaration SHALL name the backend certificate hostname and select the platform-declared system trust source unless a future contract adds another supported source. Route presence is the declaration; service selection or default metadata alone SHALL NOT publish a route. Exposure SHALL express intended public access independently of bootstrap readiness. The contract SHALL NOT impose a universal hostname count, order, or domain-family rule.
 
 #### Scenario: A declared route is rendered for an internal entrance
 
 - **WHEN** a route is present in the declarative inventory
 - **THEN** the internal entrance uses that route's declared hostnames, backend service, authentication, exposure, trust, and timeout policy
 
+#### Scenario: Public permission precedes bootstrap completion
+
+- **WHEN** a declared public route has unmet bootstrap requirements
+- **THEN** public permission remains declared while the required safety gate withholds access
+
 ### Requirement: Independent public entrances
 
-The system SHALL publish only routes explicitly classified as public through an independent public entrance. A route classified as private SHALL remain available through the internal entrance without being published by that public entrance. A public-edge consumer SHALL omit a route or fail closed if its own hostname cardinality or domain-family policy rejects the declaration.
+The gateway SHALL provide separate public and private application entries and own TLS termination, HTTP routing, and authentication policy. The public entry SHALL serve only routes explicitly classified as public and permitted by their bootstrap gates. A private route whose bootstrap requirements are met SHALL remain available through its authorized private entry without becoming reachable through public entry. A public transport relay SHALL carry encrypted application connections without terminating their TLS or owning their HTTP policy.
 
-#### Scenario: A private route shares the internal gateway
+#### Scenario: Public entry receives a private hostname
 
-- **WHEN** a private and a public route use the same internal gateway
-- **THEN** the public entrance forwards the public route and omits the private route
+- **WHEN** a public connection names a private route through SNI, HTTP authority, or forwarding headers
+- **THEN** the request cannot reach that route's backend
 
-#### Scenario: A public edge rejects route hostname shape
+#### Scenario: A public hostname is undeclared
 
-- **WHEN** a public route does not satisfy the cardinality or domain-family policy declared by a consuming edge
-- **THEN** that edge emits no entrance for the route or fails closed rather than guessing a hostname
+- **WHEN** a public connection names a hostname absent from the permitted public route inventory
+- **THEN** public entry rejects the connection or request without selecting a fallback application
 
 #### Scenario: An unrelated application workload is unavailable
 
 - **WHEN** one routed application workload other than shared ingress or identity is stopped or unhealthy
 - **THEN** shared ingress, identity, and independently routed healthy workloads remain operable without depending on the failed workload
+
+### Requirement: A transport peer cannot reach private services
+
+The system SHALL limit each public transport peer to its declared public application receiver over an authenticated private link. That peer SHALL NOT gain network access to private application entry, application backends, the cluster API, or host and guest management services. A reported client address SHALL NOT grant application or administrator authority.
+
+#### Scenario: A transport peer attempts a bypass
+
+- **WHEN** the peer attempts a connection outside its declared public application receiver
+- **THEN** the network boundary denies the connection even if the peer controls its own transport metadata
+
+#### Scenario: A peer reports an administrator's network address
+
+- **WHEN** the peer reports a client address associated with an administrator
+- **THEN** the application still requires its declared authentication and authorization
+
+### Requirement: Private access is independent of public transport
+
+The private application entry SHALL retain its authorized direct access when the public relay or its private link is unavailable. Private classification SHALL NOT require a particular VPN product. A direct entry SHALL NOT require or trust relay-supplied client-address metadata.
+
+#### Scenario: Public transport is unavailable
+
+- **WHEN** the public relay or its link stops
+- **THEN** authorized private clients can still use the private entry and its normal sign-in
+
+#### Scenario: A direct client sends transport metadata
+
+- **WHEN** an ordinary direct client sends a relay metadata preamble instead of its normal TLS connection
+- **THEN** the private entry does not accept the claimed client identity
 
 ### Requirement: Public administrator exposure follows identity phase
 
@@ -48,17 +81,22 @@ An administrator-authenticated route classified as public SHALL NOT be published
 
 ### Requirement: Explicit origin and backend trust
 
-The system SHALL distinguish direct internal ingress from ingress through configured trusted public edges. In trusted-edge mode, only configured peers may supply forwarded client-address metadata. Client-supplied end-user identity and request identifiers SHALL be discarded at the first trusted proxy. For a TLS backend, the gateway SHALL verify the declared backend certificate hostname and certificate chain against platform system roots; verification SHALL NOT be disabled.
+The system SHALL separate ordinary direct connections from connections carrying trusted transport metadata. Only an authenticated declared relay peer on its restricted receiver SHALL supply a reported client address. The gateway SHALL reject missing or malformed metadata on that receiver and SHALL NOT use HTTP forwarding headers as evidence of the original client address. For a TLS backend, the gateway SHALL verify the declared backend certificate hostname and certificate chain against platform system roots; verification SHALL NOT be disabled.
 
-#### Scenario: A trusted-edge entrance is declared
+#### Scenario: A relay reports a client address
 
-- **WHEN** an independent public entrance forwards a request to the internal gateway
-- **THEN** the gateway accepts forwarded client-address metadata only from configured trusted edge peers
+- **WHEN** an authenticated declared peer supplies valid transport metadata on its receiver
+- **THEN** the gateway records that reported client address without treating it as application authorization
 
-#### Scenario: Direct ingress is declared
+#### Scenario: Relay metadata is missing or malformed
 
-- **WHEN** a request reaches the internal gateway without a declared trusted public edge
-- **THEN** the gateway derives the client address directly from its downstream peer connection
+- **WHEN** a connection to the relay receiver lacks valid transport metadata
+- **THEN** the connection is rejected without falling back to a direct-client mode
+
+#### Scenario: Direct ingress is used
+
+- **WHEN** an authorized client reaches the private entry directly
+- **THEN** the gateway derives the client address from its downstream connection, not client-supplied headers
 
 #### Scenario: A TLS backend route is declared
 
@@ -76,22 +114,22 @@ The first identity-route hostname SHALL be Kanidm's canonical issuer, SNI, and c
 
 ### Requirement: Trusted client address and request-ID reconstruction
 
-The first trusted public proxy SHALL discard client-supplied forwarding, end-user identity, and request-ID metadata, reconstruct trusted client-address metadata from its peer connection, and generate a fresh request identifier. The internal gateway SHALL accept forwarded client-address metadata only from configured edge peers and SHALL preserve the edge-generated request identifier unchanged; direct mode SHALL derive the client address from the gateway's peer connection. Access logs SHALL omit URL query strings.
+The gateway, as the first HTTP policy owner, SHALL discard client-supplied forwarding, end-user identity, and request-ID metadata and generate a fresh request identifier. It SHALL derive client-address metadata from the direct connection or the declared trusted transport source. Backend requests and gateway access records SHALL use the same generated identifier. Access logs SHALL omit URL query strings. The encrypted TCP relay SHALL NOT be required to inspect HTTP or generate an HTTP request identifier.
 
 #### Scenario: A client spoofs forwarding or request-ID headers
 
-- **WHEN** a request supplies forwarding, end-user identity, or request-ID headers
-- **THEN** the first trusted proxy discards the supplied values and creates trusted client-address metadata plus a fresh request identifier
+- **WHEN** a direct or relayed request supplies forwarding, end-user identity, or request-ID headers
+- **THEN** the gateway discards those values, uses the declared client-address source, and generates a fresh request identifier
 
-#### Scenario: A trusted request identifier traverses both proxies
+#### Scenario: A request is traced through the gateway
 
-- **WHEN** one request enters through an independent public edge and reaches the internal gateway
-- **THEN** the gateway forwards the same non-empty edge-generated request identifier without replacing it
+- **WHEN** a relayed request reaches an application backend
+- **THEN** the backend and gateway access record contain the same non-empty identifier generated by the gateway, not the value supplied by the client
 
 #### Scenario: A request contains credentials in its query
 
 - **WHEN** a routed request contains a query string
-- **THEN** proxy access logs record the path without the query string
+- **THEN** gateway access logs record the path without the query string
 
 ### Requirement: Canonical identity lifecycle
 
@@ -171,14 +209,19 @@ For every generated desired-state object identity `(apiGroup, kind, namespace, n
 
 Static evaluation SHALL prove route inventory and exposure filtering, trust policy, lifecycle and administrator-route gating, exact image identity, Argo wave and child-health declarations, bootstrap guidance, and unique declared desired-state ownership. The system SHALL NOT treat those structural checks as evidence of live cluster ownership, DNS, certificate, proxy, authentication, logging, request-ID propagation, or failure-isolation behavior.
 
-Deployment acceptance SHALL exercise both layers of the public path. For one request carrying a spoofed request identifier, live evidence SHALL capture a non-empty trusted identifier generated at the public edge, the same identifier at the internal gateway, queryless logs at both layers, and the expected authenticated response; DNS, certificates, long requests, and unrelated-application failure isolation SHALL be recorded separately.
+Disposable runtime acceptance SHALL exercise the rendered gateway, real TCP transport, and enforced network boundaries without requiring a production edge, provider account, or production credentials. It SHALL verify public/private isolation, transport-peer containment, metadata handling, TLS, administrator and application authentication, and continued direct private access. Deployment acceptance SHALL separately verify the real link, DNS, certificates, client behavior, long requests, logging, and failure isolation before public activation.
 
 #### Scenario: Configuration checks pass before deployment
 
 - **WHEN** structural checks pass without exercising the deployed request path
 - **THEN** live end-to-end acceptance remains open and is reported separately
 
-#### Scenario: The deployed two-layer request proof runs
+#### Scenario: A disposable transport proof runs
 
-- **WHEN** a request traverses the public edge and internal gateway with a client-supplied request-ID value
-- **THEN** evidence shows that the client value was discarded, one fresh identifier appears unchanged in both layers' logs, queries are absent, and the authenticated response succeeds
+- **WHEN** the relay and gateway run in owned test networks with fixture credentials
+- **THEN** acceptance exercises the actual TLS and request path, rejects private-route and management bypasses, verifies trusted client-address handling and gateway-generated request identifiers, and checks authentication without claiming production acceptance
+
+#### Scenario: The deployed path is accepted
+
+- **WHEN** public activation is proposed
+- **THEN** the real endpoint, link, DNS, certificates, authorized and denied sign-ins, long requests, and independent private access are verified separately from disposable results
