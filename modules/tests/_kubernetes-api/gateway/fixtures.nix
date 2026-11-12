@@ -10,7 +10,8 @@ let
   cluster = config.den.clusters.prod-home // {
     routes = config.flake.clusterRoutes.prod-home.routes;
   };
-  oidcApps = config.flake.nixidyEnvs.${pkgs.stdenv.hostPlatform.system}.prod-home.config.oidcApps;
+  oidcClients =
+    config.flake.nixidyEnvs.${pkgs.stdenv.hostPlatform.system}.prod-home.config.oidcClients;
   instance = "compute-1";
   gateway =
     (import ../../../den/aspects/kubernetes/services/gateway.nix { })
@@ -105,7 +106,9 @@ let
     identity.k8s-manifests {
       cluster = inventory;
       routes = inventory.routes;
-      config.oidcApps = lib.filterAttrs (_: app: builtins.hasAttr app.routeKey inventory.routes) oidcApps;
+      config.oidcClients = lib.filterAttrs (
+        _: app: builtins.hasAttr app.routeKey inventory.routes
+      ) oidcClients;
       computeResources = config.flake.clusterResources.prod-home // {
         inherit instance;
       };

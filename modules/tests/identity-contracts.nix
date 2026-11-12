@@ -8,7 +8,7 @@
   perSystem =
     { pkgs, system, ... }:
     let
-      oidcApps = config.flake.nixidyEnvs.${system}.prod-home.config.oidcApps;
+      oidcClients = config.flake.nixidyEnvs.${system}.prod-home.config.oidcClients;
       cluster = config.den.clusters.prod-home // {
         routes = config.flake.clusterRoutes.prod-home.routes;
       };
@@ -34,7 +34,7 @@
         argocdAspect.k8s-manifests {
           cluster = inventory;
           routes = inventory.routes;
-          config = { inherit oidcApps; };
+          config = { inherit oidcClients; };
           charts = { };
           inherit lib;
         };
@@ -45,7 +45,7 @@
         identity.k8s-manifests {
           cluster = inventory;
           routes = inventory.routes;
-          config = { inherit oidcApps; };
+          config = { inherit oidcClients; };
           inherit computeResources lib;
         };
       gateway =
@@ -102,11 +102,11 @@
               hostnames = [ "collision-peer.test" ];
             };
           };
-          config.oidcApps = oidcApps // {
-            collision-peer = oidcApps.argocd // {
+          config.oidcClients = oidcClients // {
+            collision-peer = oidcClients.argocd // {
               clientID = "collision-peer";
               routeKey = "collision-peer";
-              secret = oidcApps.argocd.secret // {
+              secret = oidcClients.argocd.secret // {
                 inherit key;
               };
             };
@@ -321,7 +321,7 @@
           && lib.all (publicationIntact normalObjects) (clientSecrets normalClients);
         client-secret-destinations-distinct =
           (builtins.tryEval (builtins.deepSeq (sharedSecretObjects "other-client-secret") true)).success
-          && !(builtins.tryEval (builtins.deepSeq (sharedSecretObjects oidcApps.argocd.secret.key) true))
+          && !(builtins.tryEval (builtins.deepSeq (sharedSecretObjects oidcClients.argocd.secret.key) true))
           .success;
         administrator-eligibility-restricted =
           !(builtins.tryEval (
@@ -329,7 +329,7 @@
               (identity.k8s-manifests {
                 cluster = withPhase "normal";
                 inherit (cluster) routes;
-                config.oidcApps = lib.recursiveUpdate oidcApps {
+                config.oidcClients = lib.recursiveUpdate oidcClients {
                   radarr.eligibleGroup = householdGroup;
                 };
                 inherit computeResources lib;

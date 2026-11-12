@@ -108,17 +108,17 @@ in
         labels = { };
       };
       appsByRoute = lib.listToAttrs (
-        lib.mapAttrsToList (_: app: lib.nameValuePair app.routeKey app) config.oidcApps
+        lib.mapAttrsToList (_: app: lib.nameValuePair app.routeKey app) config.oidcClients
       );
       routeClientID = name: appsByRoute.${name}.clientID;
       clients =
         assert lib.assertMsg (
-          lib.length (lib.unique (map (app: app.clientID) (lib.attrValues config.oidcApps)))
-          == lib.length (lib.attrValues config.oidcApps)
+          lib.length (lib.unique (map (app: app.clientID) (lib.attrValues config.oidcClients)))
+          == lib.length (lib.attrValues config.oidcClients)
         ) "OIDC applications must have distinct client IDs";
         assert lib.assertMsg (
           builtins.length (builtins.attrNames appsByRoute)
-          == builtins.length (builtins.attrNames config.oidcApps)
+          == builtins.length (builtins.attrNames config.oidcClients)
         ) "Each route must have at most one OIDC application";
         lib.mapAttrs' (
           _: app:
@@ -150,7 +150,7 @@ in
               lib.optional admin (gatewaySecret app.routeKey)
               ++ lib.optional native (app.secret // { inherit (route) namespace; });
           }
-        ) config.oidcApps;
+        ) config.oidcClients;
       # The provisioning Job grants each client's scopes to its eligibleGroup,
       # publishes each Kanidm-generated client secret to every listed Secret,
       # and deletes Kanidm clients that this list does not name.
@@ -764,7 +764,7 @@ in
                         }
                       ];
                     }
-                  ) (lib.filter (app: app.callbackPath != null) (lib.attrValues config.oidcApps))
+                  ) (lib.filter (app: app.callbackPath != null) (lib.attrValues config.oidcClients))
                 );
               };
             }

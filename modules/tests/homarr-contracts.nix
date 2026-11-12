@@ -7,7 +7,7 @@
   perSystem =
     { pkgs, system, ... }:
     let
-      oidcApps = config.flake.nixidyEnvs.${system}.prod-home.config.oidcApps;
+      oidcClients = config.flake.nixidyEnvs.${system}.prod-home.config.oidcClients;
       cluster = config.den.clusters.prod-home // {
         routes = config.flake.clusterRoutes.prod-home.routes;
       };
@@ -23,7 +23,7 @@
         homarr.k8s-manifests {
           cluster = inventory;
           routes = inventory.routes;
-          config = { inherit oidcApps; };
+          config = { inherit oidcClients; };
           computeResources = compute;
           charts.bjw-s-labs.app-template = { };
         };

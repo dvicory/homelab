@@ -1,6 +1,6 @@
 { den, ... }:
 {
-  den.quirks.oidc.description = "OIDC application declarations collected from selected aspects";
+  den.quirks.oidc.description = "Native OIDC client metadata collected from selected service aspects";
 
   den.schema.cluster.includes = [ den.aspects.kubernetes.oidc ];
 
@@ -14,7 +14,7 @@
     }:
     let
       inherit (lib) mkOption types;
-      oidcAppType = types.submodule (
+      oidcClientType = types.submodule (
         { name, config, ... }:
         {
           options = {
@@ -84,12 +84,12 @@
       );
     in
     {
-      options.oidcApps = mkOption {
-        type = types.attrsOf oidcAppType;
-        default = { };
-        description = "Declared OIDC consumers. Gateway administrator routes register automatically; native applications opt in.";
+      options.oidcClients = mkOption {
+        type = types.attrsOf oidcClientType;
+        readOnly = true;
+        description = "Derived OIDC clients from selected service metadata and administrator routes. Configure those inputs, not this view.";
       };
-      config.oidcApps = lib.mkMerge (
+      config.oidcClients = lib.zipAttrsWith (_: lib.mkMerge) (
         [
           (lib.mapAttrs (name: _: {
             routeKey = lib.mkDefault name;

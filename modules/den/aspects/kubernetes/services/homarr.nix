@@ -84,7 +84,7 @@ in
     }:
     let
       state = computeResources.retainedPaths.homarr;
-      oidc = config.oidcApps.homarr;
+      oidc = config.oidcClients.homarr;
       route = routes.${oidc.routeKey};
       ready = cluster.settings.kubernetes.services.homarr.phase == "ready";
     in

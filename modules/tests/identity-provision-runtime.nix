@@ -51,7 +51,7 @@ in
             {
               inherit cluster lib;
               inherit (cluster) routes;
-              config = { inherit oidcApps; };
+              config = { inherit oidcClients; };
               computeResources = compute;
             }
           ).applications.identity.objects;
@@ -144,7 +144,7 @@ in
                   ]
                 ) identityObjects
               );
-        oidcApps = config.flake.nixidyEnvs.${system}.prod-home.config.oidcApps;
+        oidcClients = config.flake.nixidyEnvs.${system}.prod-home.config.oidcClients;
         manifestSet =
           name: objects:
           pkgs.linkFarm name (
@@ -529,12 +529,12 @@ in
                   native_apps = {
                       "argocd": NativeOidcApp(client=argo_oidc["clientID"], scopes=argo_oidc["requestedScopes"],
                                      urls=[argo_cm["url"]] + json.loads(argo_cm["additionalUrls"]),
-                                     callback="${oidcApps.argocd.callbackPath}",
+                                     callback="${oidcClients.argocd.callbackPath}",
                                      published={"namespace": argo_manifest["metadata"]["namespace"],
                                                 "name": secret_name, "key": secret_key}),
                       "grafana": NativeOidcApp(client=grafana_oidc["client_id"], scopes=grafana_oidc["scopes"].split(),
                                      urls=[grafana_ini["server"]["root_url"]],
-                                     callback="${oidcApps.grafana.callbackPath}", published=None),
+                                     callback="${oidcClients.grafana.callbackPath}", published=None),
                   }
                   journeys = []
                   all_requests = []

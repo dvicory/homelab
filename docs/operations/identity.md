@@ -43,12 +43,14 @@ native sign-in, and provisioning publishes the same secret to
 `monitoring/grafana-oidc`. Both native callbacks coexist with the Gateway callback;
 neither application's entrance sign-in alone grants application access.
 
-OIDC consumers share `config.oidcApps` in each Nixidy environment.
-Selected service aspects contribute native client declarations through Den's
-`oidc` metadata channel. One common collector adds Gateway clients for
-administrator routes and applies the shared type. App-specific callbacks,
-scopes and Secret references stay beside their owning service; the app,
-Gateway and Kanidm consume the same evaluated records.
+`config.oidcClients` is a read-only view in each Nixidy environment, not another
+way to declare apps. Selected service aspects contribute native client settings
+through Den's `oidc` metadata channel. The common collector adds Gateway clients
+for administrator routes and applies the shared type.
+
+App-specific callbacks, scopes and Secret references stay beside their owning
+service. Change those inputs to configure a client; normal Nix overrides still
+apply there. The app, Gateway and Kanidm consume the same evaluated records.
 Callback and login-start paths must start with `/`.
 Two clients must not write to the same key in the same Secret. Different keys
 in one Secret are allowed.

@@ -74,7 +74,7 @@ in
       let
         identity = cluster.settings.kubernetes.services.identity;
         identityHostname = builtins.head routes.idm.hostnames;
-        oidc = config.oidcApps.grafana;
+        oidc = config.oidcClients.grafana;
         route = routes.${oidc.routeKey};
         hostname = builtins.head route.hostnames;
         url = "https://${hostname}";

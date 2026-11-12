@@ -59,7 +59,7 @@
       }:
       let
         identity = cluster.settings.kubernetes.services.identity;
-        oidc = config.oidcApps.argocd;
+        oidc = config.oidcClients.argocd;
         identityNormal = identity.phase == "normal";
         idmHostname = builtins.head routes.idm.hostnames;
         route = routes.${oidc.routeKey};
