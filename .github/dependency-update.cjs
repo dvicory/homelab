@@ -42,10 +42,6 @@ manager(`/^${owner}monitoring/default\\.nix$/`,
 manager(`/^${owner}monitoring/default\\.nix$/`,
   'registry = "(?<registry>[^"\\s]+)";\\s+repository = "(?<repository>[^"\\s]+)";\\s+tag = "' + value + '";\\s+digest = "' + digest + '";',
   'docker', { depNameTemplate: '{{{registry}}}/{{{repository}}}', versioningTemplate: 'docker' });
-// Keep a canonical digest in Nix; the chart still receives bare hex via removePrefix.
-manager(`/^${owner}monitoring/dashboards\\.nix$/`,
-  'repository = "grafana/grafana";\\s+tag = "' + value + '";[\\s\\S]*?sha = lib\\.removePrefix "sha256:" "' + digest + '";',
-  'docker', { depNameTemplate: 'docker.io/grafana/grafana', versioningTemplate: 'docker' });
 image('argocd.nix', 'global\\.image\\.tag = ', 'quay.io/argoproj/argocd');
 image('argocd.nix', 'redis\\.image\\.tag = ', 'docker.io/library/redis');
 // One shared version: Renovate updates controller/version atomically, and the hook

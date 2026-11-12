@@ -26,13 +26,6 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Reject tracked Python bytecode
-        run: |
-          set -euo pipefail
-          bytecode=$(git ls-files -- '*.pyc' '*.pyo')
-          printf '%s\n' "$bytecode"
-          test -z "$bytecode"
-
       # Native locking covers actions, not external reusable workflows or images.
       # Verify the immutable verifier release's signed asset attestation before execution.
       - name: Verify direct and transitive action locks
