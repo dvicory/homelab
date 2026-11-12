@@ -21,21 +21,22 @@ NixOS homelab and nix-darwin workstation configuration, composed with
 - **Persistent state:** `/var/lib/homelab/compute-1/state` on [`hvn-hyp1`](modules/den/hosts/hvn-hyp1/default.nix), mounted at `/srv/state` in the guest. [Paths and owners](docs/operations.md#retained-state).
 - **GitOps:** [generated manifests](generated/manifests/prod-home/), tracked from `main` by Argo CD. [Deployment runbook](docs/operations.md#deploy-configuration).
 
-| Backend | Canonical hostname | Exposure | Sign-in | In manifests |
+| Backend | Canonical hostname | Public entry allowed | Sign-in | Gateway route generated |
 | --- | --- | --- | --- | --- |
-| `argocd/argocd-server` | [`argocd.plus2.danielvicory.dev`](https://argocd.plus2.danielvicory.dev/) | `public` | Gateway admin | yes |
-| `monitoring/grafana` | [`grafana.plus2.danielvicory.dev`](https://grafana.plus2.danielvicory.dev/) | `public` | Gateway admin | yes |
-| `portal/homarr` | `home.plus2.danielvicory.dev` | `public` | Application | no |
-| `identity/kanidm` | [`id.bzfx.net`](https://id.bzfx.net/) | `public` | Application | yes |
-| `jellyfin/jellyfin` | [`jellyfin.plus2.danielvicory.dev`](https://jellyfin.plus2.danielvicory.dev/) | `private` | Application | yes |
-| `media/prowlarr` | [`prowlarr.plus2.danielvicory.dev`](https://prowlarr.plus2.danielvicory.dev/) | `public` | Gateway admin | yes |
-| `media/radarr` | [`radarr.plus2.danielvicory.dev`](https://radarr.plus2.danielvicory.dev/) | `public` | Gateway admin | yes |
-| `media/seerr` | [`requests.plus2.danielvicory.dev`](https://requests.plus2.danielvicory.dev/) | `public` | Application | yes |
-| `media/sabnzbd` | [`sabnzbd.plus2.danielvicory.dev`](https://sabnzbd.plus2.danielvicory.dev/) | `public` | Gateway admin | yes |
-| `media/sonarr` | [`sonarr.plus2.danielvicory.dev`](https://sonarr.plus2.danielvicory.dev/) | `public` | Gateway admin | yes |
+| `argocd/argocd-server` | [`argocd.plus2.danielvicory.dev`](https://argocd.plus2.danielvicory.dev/) | yes | Gateway admin | yes |
+| `monitoring/grafana` | [`grafana.plus2.danielvicory.dev`](https://grafana.plus2.danielvicory.dev/) | yes | Gateway admin | yes |
+| `portal/homarr` | `home.plus2.danielvicory.dev` | yes | Application | no |
+| `identity/kanidm` | [`id.bzfx.net`](https://id.bzfx.net/) | yes | Application | yes |
+| `jellyfin/jellyfin` | [`jellyfin.plus2.danielvicory.dev`](https://jellyfin.plus2.danielvicory.dev/) | no | Application | yes |
+| `media/prowlarr` | [`prowlarr.plus2.danielvicory.dev`](https://prowlarr.plus2.danielvicory.dev/) | yes | Gateway admin | yes |
+| `media/radarr` | [`radarr.plus2.danielvicory.dev`](https://radarr.plus2.danielvicory.dev/) | yes | Gateway admin | yes |
+| `media/seerr` | [`requests.plus2.danielvicory.dev`](https://requests.plus2.danielvicory.dev/) | yes | Application | yes |
+| `media/sabnzbd` | [`sabnzbd.plus2.danielvicory.dev`](https://sabnzbd.plus2.danielvicory.dev/) | yes | Gateway admin | yes |
+| `media/sonarr` | [`sonarr.plus2.danielvicory.dev`](https://sonarr.plus2.danielvicory.dev/) | yes | Gateway admin | yes |
 
-Routes reflect generated manifests, not live health.
-[Route details and publication gates](docs/operations.md#declared-routes) explain aliases and onboarding.
+Bootstrap requirements can withhold a route even when public access is allowed.
+[Route details and bootstrap requirements](docs/operations.md#declared-routes)
+explain aliases and onboarding.
 
 ## Operate and recover
 
