@@ -7,6 +7,8 @@
 let
   inherit (lib) mkOption types;
   settingsType = import ./_settings-type.nix { inherit lib den; };
+  publicIngress = import ./_public-ingress.nix { inherit lib; };
+  tailnetAddress = types.addCheck types.str publicIngress.tailnetIPv4;
   routeType = types.submodule {
     freeformType = types.attrsOf types.anything;
     options = lib.getAttrs [ "hostnames" "auth" "exposure" ] den.lib.homelab.routeOptions;
@@ -52,24 +54,34 @@ in
             description = "Git ref or branch containing the generated production manifests Argo CD tracks.";
           };
           ingress = mkOption {
-            type = types.submodule {
+            type = types.addCheck (types.submodule {
               options = {
                 nodePort = mkOption {
                   type = types.port;
                   default = 30443;
                 };
-                mode = mkOption {
-                  type = types.enum [
-                    "direct"
-                    "trustedEdges"
-                  ];
-                };
-                trustedProxyCIDRs = mkOption {
-                  type = types.listOf types.str;
-                  default = [ ];
+                public = mkOption {
+                  type = types.nullOr (
+                    types.submodule {
+                      options = {
+                        nodePort = mkOption {
+                          type = types.ints.between 30000 32767;
+                          default = 30444;
+                        };
+                        originAddress = mkOption { type = tailnetAddress; };
+                        peerAddress = mkOption { type = tailnetAddress; };
+                        peerIPv6Address = mkOption {
+                          type = types.addCheck types.str publicIngress.tailnetIPv6;
+                          description = "Relay Tailnet IPv6 address, denied on alternate management paths.";
+                        };
+                      };
+                    }
+                  );
+                  default = null;
+                  description = "Optional restricted PROXYv2 receiver on the compute guest's Tailnet address and exact relay addresses; never enables a public entrance by default.";
                 };
               };
-            };
+            }) publicIngress.valid;
             default = { };
           };
           routes = mkOption {

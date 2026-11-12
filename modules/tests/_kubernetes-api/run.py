@@ -152,7 +152,7 @@ def capture_envoy_dns(kubectl_command, docker_command, env, node, pod):
     return witness
 
 
-def capture_envoy_readiness(kubectl_command, env, workloads, docker_command, node):
+def capture_envoy_readiness(kubectl_command, env, workloads, docker_command, node, gateway):
     """One owned proxy, readonly fixed endpoints, bounded localhost-only forwarding."""
     import re
     import selectors
@@ -161,7 +161,7 @@ def capture_envoy_readiness(kubectl_command, env, workloads, docker_command, nod
     _, pods = gateway_owned_workloads(workloads)
     proxies = [pod for pod in pods if all(
         ((pod.get("metadata") or {}).get("labels") or {}).get(key) == value for key, value in (
-            ("gateway.envoyproxy.io/owning-gateway-name", "household"),
+            ("gateway.envoyproxy.io/owning-gateway-name", gateway),
             ("gateway.envoyproxy.io/owning-gateway-namespace", "gateway"),
         )) and any(container.get("name") == "envoy" for container in
                    (pod.get("spec") or {}).get("containers") or [])]
@@ -695,7 +695,9 @@ def main():
             unavailable = {}
             for key, resource in (
                 ("resources", ["gatewayclass/envoy", "gateway/household", "envoyproxy/household",
-                               "clienttrafficpolicy/trusted-edges", "-n", "gateway"]),
+                               "clienttrafficpolicy/private-origin", "gateway/household-public",
+                               "envoyproxy/household-public", "clienttrafficpolicy/public-origin",
+                               "networkpolicy/public-origin", "-n", "gateway"]),
                 ("workloads", ["deployments,replicasets,pods", "-n", "gateway"]),
                 ("node", ["node/compute-1"]),
             ):
@@ -726,8 +728,12 @@ def main():
                     "capturePhase": "before-cleanup",
                 }
             try:
-                report["gatewayEnvoyReadinessWitness"] = capture_envoy_readiness(
-                    [settings["kubectl"], "--context", name], env, observed.get("workloads", {}), docker, name)
+                report["gatewayEnvoyReadinessWitness"] = {
+                    gateway: capture_envoy_readiness(
+                        [settings["kubectl"], "--context", name], env,
+                        observed.get("workloads", {}), docker, name, gateway)
+                    for gateway in ("household", "household-public")
+                }
             except Exception as witness_error:
                 report["gatewayEnvoyReadinessWitness"] = {
                     "status": "unavailable", "type": type(witness_error).__name__,

@@ -425,6 +425,99 @@ class Guest:
         }
 
 
+def stage_tailnet_auth(lib, descriptor: dict, agenix: Path) -> None:
+    """The native host stages enrollment separately from Kubernetes Secrets."""
+    root = Path(descriptor["devices"]["secrets"]["source"])
+    auth = agenix / f'{descriptor["instance"]}-tailscale-auth-key'
+    raw = root / "tailscale-auth-key"
+
+    def stage():
+        result = lib.completed("systemctl", "restart", "compute-stage-secrets.service", timeout=300)
+        # These deliberate failures must not rate-limit the next input case.
+        lib.run("systemctl", "reset-failed", "compute-stage-secrets.service")
+        return result
+
+    def readonly():
+        lib.check("ro" in lib.run("findmnt", "-n", "-o", "VFS-OPTIONS", "-M", str(root)).split(","),
+                  "credential staging restores the read-only tmpfs")
+        lib.check(not any(path.name.startswith(".agenix.") or path.name.endswith(".new")
+                          for path in root.iterdir()), "credential staging removes temporary inputs")
+
+    lib.check(stage().returncode != 0 and not raw.exists(),
+              "enabled enrollment fails closed without its separate decrypted input")
+    readonly()
+    auth.write_bytes(b"")
+    auth.chmod(0o400)
+    lib.check(stage().returncode != 0 and not raw.exists(), "empty enrollment input is refused")
+    readonly()
+    value = b"tskey-auth-disposable-fixture-only"
+    auth.write_bytes(value)
+    lib.check(stage().returncode == 0 and raw.read_bytes() == value, "nonempty enrollment input is staged raw")
+    metadata = raw.stat()
+    lib.check((metadata.st_uid, metadata.st_gid, metadata.st_mode & 0o7777)
+              == (descriptor["idmapBase"], descriptor["idmapBase"], 0o400),
+              "raw enrollment is readable only by translated guest root")
+    bundle = {name: (root / name).read_bytes() for name in
+              ("runtime-secrets.yaml", "runtime-secrets.names", "runtime-secrets.commit")}
+    lib.check(all(value not in payload and b"tailscale-auth-key" not in payload for payload in bundle.values())
+              and all("tailscale-auth-key" not in source for source in descriptor["runtimeSecrets"]),
+              "enrollment is absent from Kubernetes Secret payload, inventory and descriptor")
+    auth.write_bytes(value + b"-rotated")
+    lib.check(stage().returncode == 0 and raw.read_bytes() == value + b"-rotated"
+              and all((root / name).read_bytes() == payload for name, payload in bundle.items()),
+              "enrollment rotation leaves the Kubernetes generation unchanged")
+    auth.unlink()
+    lib.check(stage().returncode != 0 and raw.read_bytes() == value + b"-rotated"
+              and all((root / name).read_bytes() == payload for name, payload in bundle.items()),
+              "failed enrollment staging preserves the previous complete publication")
+    readonly()
+    lib.run("systemctl", "start", "compute-stage-secrets-disabled.service", timeout=300)
+    lib.check(not raw.exists() and all((root / name).read_bytes() == payload for name, payload in bundle.items()),
+              "disabling public ingress removes stale raw enrollment without changing Kubernetes inventory")
+    readonly()
+    auth.write_bytes(value)
+    auth.chmod(0o400)
+    lib.check(stage().returncode == 0, "the enabled enrollment fixture is restored")
+    readonly()
+
+
+def retain_tailnet_identity(lib, runtime, bundle: Path) -> None:
+    """A required writable identity disk survives a fresh instance root."""
+    device = runtime.descriptor["devices"]["tailscale-state"]
+    state = Path(device["source"])
+    lib.check(runtime.guest("stat", "-c", "%u:%g:%a", "/var/lib/tailscale") == "0:0:700",
+              "retained Tailscale state maps to guest root with mode 0700")
+    lib.check("rw" in lib.run("findmnt", "-n", "-o", "VFS-OPTIONS", "-M", str(state)).split(","),
+              "the required writable identity path is an actual host mount")
+    runtime.guest("sh", "-ec", "printf retained-node-identity > /var/lib/tailscale/identity-sentinel")
+    lib.check((state / "identity-sentinel").read_text() == "retained-node-identity",
+              "guest identity writes reach the independent host backing store")
+    runtime.guest("sh", "-ec",
+                  "test \"$(stat -c '%u:%g:%a' /srv/secrets/tailscale-auth-key)\" = 0:0:400; "
+                  "test -s /srv/secrets/tailscale-auth-key; "
+                  "if ( : >> /srv/secrets/tailscale-auth-key ); then exit 1; fi; "
+                  "if ( : > /srv/identity/guest-write ); then exit 1; fi; "
+                  "test ! -e /run/agenix")
+    runtime.guest("sh", "-ec", "! cat /srv/secrets/tailscale-auth-key", user=1000)
+    original = lib.instance_query(runtime.project, runtime.instance)["config"]["volatile.uuid"]
+    ssh_identity = runtime.guest("cat", "/srv/identity/ssh_host_ed25519_key.pub")
+    runtime.guest("touch", "/root/root-replacement-sentinel")
+    runtime.helper_run("replace", bundle=bundle, confirm=True, timeout=3_600)
+    lib.wait_for("K3s node after identity retention replacement", runtime.node_ready, timeout=600)
+    lib.check(lib.instance_query(runtime.project, runtime.instance)["config"]["volatile.uuid"] != original,
+              "identity retention is checked across an actual instance-root replacement")
+    runtime.guest("sh", "-ec",
+                  "test ! -e /root/root-replacement-sentinel; "
+                  "test \"$(cat /var/lib/tailscale/identity-sentinel)\" = retained-node-identity; "
+                  "test \"$(stat -c '%u:%g:%a' /var/lib/tailscale)\" = 0:0:700; "
+                  "printf still-writable >> /var/lib/tailscale/identity-sentinel")
+    lib.check(runtime.guest("cat", "/srv/identity/ssh_host_ed25519_key.pub") == ssh_identity
+              and (state / "identity-sentinel").read_text() == "retained-node-identitystill-writable",
+              "replacement retains writable node identity and the unchanged read-only SSH identity")
+    observe("tailnet_identity", {"host_state": str(state), "guest_state": device["path"],
+                                "fresh_root": True, "kubernetes_inventory_unchanged": True})
+
+
 def create_guest(lib, args, workspace: Path):
     descriptor = json.loads(Path("/etc/homelab/compute.json").read_text())
     lib.wait_for("Incus API", lambda: lib.completed("incus", "--force-local", "query", "/1.0").returncode == 0)
@@ -454,7 +547,7 @@ def create_guest(lib, args, workspace: Path):
     media.mkdir(parents=True, exist_ok=True)
     lib.run("mount", "-t", "tmpfs", "-o", "mode=2750,size=16m", "tmpfs", str(media))
     os.chown(media, 0, 505)
-    lib.run("systemctl", "start", "compute-stage-secrets.service", timeout=300)
+    stage_tailnet_auth(lib, descriptor, agenix)
     lib.run("systemctl", "start", "incus-preseed.service", timeout=600)
     result = lib.completed(str(args.helper), "--spec", str(spec), "create", "--bundle", str(args.bundle), timeout=3_600)
     lib.check(result.returncode == 0, f"the compute guest is created: {(result.stdout + result.stderr).strip()[-400:]}")
@@ -835,6 +928,8 @@ def run_scenario(args) -> None:
     workspace = Path(tempfile.mkdtemp(prefix="network-policy-"))
     with lib.phase("create the compute guest"):
         runtime = create_guest(lib, args, workspace)
+    with lib.phase("independent Tailnet identity survives root replacement"):
+        retain_tailnet_identity(lib, runtime, args.bundle)
     guest = Guest(lib, runtime, args.inputs, workspace)
     # Enforcement must work at the kernel's default buffer, not at a tuned one.
     lib.check(args.kernel_default_wmem == KERNEL_DEFAULT and int(WMEM.read_text()) == KERNEL_DEFAULT,

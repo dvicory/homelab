@@ -8,6 +8,8 @@ k() { "$KUBECTL" "$@"; }
 d() { "$FIXTURE_DOCKER" "$@"; }
 apply() { k apply -f "$(setting "$1")"; }
 node_port=$(setting nodePort)
+public_node_port=$(setting publicNodePort)
+active_entry=private
 idm=$(setting idmHost)
 admin=$(setting adminHost)
 grafana=$(setting grafanaHost)
@@ -53,25 +55,45 @@ condition() {
           ($reason == "" or .reason == $reason)))' >/dev/null
   rm -f "$g/condition-wait.json"
 }
-route_ready() { condition httproute "$1" gateway Accepted True; condition httproute "$1" gateway ResolvedRefs True; }
-proxy_ready() {
-  k rollout status deployment -n gateway -l gateway.envoyproxy.io/owning-gateway-name=household --timeout=180s
-  k wait pod -n gateway -l gateway.envoyproxy.io/owning-gateway-name=household --for=condition=Ready --timeout=180s
+route_ready() {
+  condition httproute "$1" gateway Accepted True
+  condition httproute "$1" gateway ResolvedRefs True
+  if [ "${2:-private}" = public ]; then
+    condition httproute "$1" gateway Accepted True '' household-public
+    condition httproute "$1" gateway ResolvedRefs True '' household-public
+  fi
 }
-trusted() {
+proxy_ready() {
+  local gateway=${1:-household}
+  k rollout status deployment -n gateway -l "gateway.envoyproxy.io/owning-gateway-name=$gateway" --timeout=180s
+  k wait pod -n gateway -l "gateway.envoyproxy.io/owning-gateway-name=$gateway" --for=condition=Ready --timeout=180s
+}
+public_entry() {
   jq --arg cidr "$FIXTURE_TRUSTED_IP/32" '
-    (.items[] | select(.kind == "ClientTrafficPolicy") | .spec.clientIPDetection.xForwardedFor.trustedCIDRs) = [$cidr] |
-    (.items[] | select(.kind == "NetworkPolicy" and .metadata.name == "private-origin") | .spec.ingress[0].from) = [{ipBlock:{cidr:$cidr}}]
-  ' "$(setting trusted)" > "$g/trusted.json"
-  k apply -f "$g/trusted.json"
-  condition clienttrafficpolicy trusted-edges gateway Accepted True
-  proxy_ready
+    (.items[] | select(.kind == "NetworkPolicy" and .metadata.name == "public-origin") | .spec.ingress[0].from) = [{ipBlock:{cidr:$cidr}}]
+  ' "$(setting public)" > "$g/public.json"
+  k apply -f "$g/public.json"
+  apply identityNormalIngress
+  condition clienttrafficpolicy public-origin gateway Accepted True '' household-public
+  proxy_ready household-public
+  active_entry=public
 }
 request() {
   local peer host path
   peer=$1 host=$2 path=$3; shift 3
-  d exec "$peer" curl -sS --connect-timeout 5 --max-time 10 --cacert /fixture/ca.crt \
-    --resolve "$host:$node_port:$FIXTURE_NODE_IP" "https://$host:$node_port/$path" "$@"
+  if [ "$active_entry" = public ] && [ "$peer" = "$FIXTURE_TRUSTED" ]; then
+    d exec "$peer" curl -sS --connect-timeout 5 --max-time 10 --cacert /fixture/ca.crt \
+      --haproxy-protocol --haproxy-clientip "${reported_ip:-198.51.100.7}" \
+      --connect-to "$host:$public_node_port:127.0.0.1:8443" "https://$host:$public_node_port/$path" "$@"
+  else
+    local port=$node_port
+    if [ "$active_entry" = public ]; then
+      port=$public_node_port
+      set -- --haproxy-protocol "$@"
+    fi
+    d exec "$peer" curl -sS --connect-timeout 5 --max-time 10 --cacert /fixture/ca.crt \
+      --resolve "$host:$port:$FIXTURE_NODE_IP" "https://$host:$port/$path" "$@"
+  fi
 }
 positive() {
   local peer host path
@@ -95,20 +117,39 @@ connection_denied() {
   echo 'Stranger probe failed without proving a connection-level CNI denial' >&2
   exit 1
 }
+transport_rejected() {
+  local port=$1 result
+  local -a metadata=()
+  if [ "$2" = proxy ]; then metadata=(--haproxy-protocol); fi
+  if d exec "$FIXTURE_TRUSTED" curl -sS --connect-timeout 5 --max-time 10 \
+    --cacert /fixture/ca.crt --resolve "origin.test:$port:$FIXTURE_NODE_IP" \
+    "${metadata[@]}" "https://origin.test:$port/" -o /fixture/transport-response -w '%{http_code}' \
+    > "$g/transport.out" 2> "$g/transport.err"; then
+    echo 'An entry accepted the wrong TLS transport contract' >&2
+    return 1
+  else
+    result=$?
+  fi
+  case "$result" in
+    7|28|35|52|56) test "$(cat "$g/transport.out")" = 000 ;;
+    *) return "$result" ;;
+  esac
+}
 snapshot() {
   # Envoy's file sink flushes asynchronously. Fence it before inspecting both
   # JSON access records and non-JSON error messages, without filtering either.
   sleep "${1:-3}"
-  k logs -n gateway -c envoy --tail=-1 -l gateway.envoyproxy.io/owning-gateway-name=household > "$g/envoy.log"
+  k logs -n gateway -c envoy --tail=-1 -l gateway.envoyproxy.io/owning-gateway-namespace=gateway > "$g/envoy.log"
 }
 entry() {
   local attempt result
   # Allow 30 one-second log-flush observations.
   for ((attempt=0; attempt<30; attempt++)); do
     snapshot 1
-    if jq -Rsec --arg path "/$1" --arg id "${2:-}" --arg code "${3:-}" '
+    if jq -Rsec --arg path "/$1" --arg id "${2:-}" --arg code "${3:-}" --argjson before "${4:-[]}" '
       [split("\n")[] | fromjson? | select(.path == $path and
-        ($id == "" or .request_id == $id) and ($code == "" or (.status|tostring) == $code))] |
+        ($id == "" or .request_id == $id) and ($code == "" or (.status|tostring) == $code) and
+        (.request_id as $request_id | $before | index($request_id) == null))] |
       if length > 0 then last else empty end
     ' "$g/envoy.log" > "$g/entry.json"; then
       return 0
@@ -122,7 +163,9 @@ entry() {
   return 1
 }
 idm_status() {
-  local expected=$1 id=$2 status= matched=false deadline=$((SECONDS + 120)) remaining
+  local expected=$1 id=$2 status= matched=false deadline=$((SECONDS + 120)) remaining before
+  snapshot 0
+  before=$(jq -Rsc '[split("\n")[] | fromjson? | .request_id]' "$g/envoy.log")
   # Controller status can precede Envoy's data-plane update. Require real HTTP
   # convergence within 120 s, not status-only success.
   while ((SECONDS < deadline)); do
@@ -138,7 +181,8 @@ idm_status() {
     sleep 1
   done
   test "$matched" = true
-  entry status "$id" "$expected"
+  entry status '' "$expected" "$before"
+  jq -e --arg supplied "$id" '.request_id != $supplied and .request_id != null and .request_id != "" and .request_id != "-"' "$g/entry.json" >/dev/null
   if [ "$expected" = 503 ]; then
     jq -e '.response_flags | contains("UF")' "$g/entry.json" >/dev/null
     jq -e '.upstream != null and .upstream != "" and .upstream != "-"' "$g/entry.json" >/dev/null
@@ -190,12 +234,12 @@ setup() {
     -- "$(setting identityDataPath)"
   apply identity
   k rollout status deployment/kanidm -n identity --timeout=300s
-  apply direct
+  apply private
   condition gatewayclass envoy gateway Accepted True
   condition gateway household gateway Accepted True
   condition gateway household gateway Programmed True
   condition envoyproxy household gateway Accepted True
-  condition clienttrafficpolicy trusted-edges gateway Accepted True
+  condition clienttrafficpolicy private-origin gateway Accepted True
   route_ready origin
   route_ready idm
   condition backendtlspolicy idm identity Accepted True
@@ -207,10 +251,28 @@ setup() {
     d exec "$peer" /bin/sh -c 'mkdir -p /fixture /root/.pki/nssdb /root/.local/share/pki/nssdb'
     d cp "$g/ca.crt" "$peer:/fixture/ca.crt"
   done
-  # The unchanged browser uses canonical https origins (443). The listener is
-  # client-local; its outbound socket traverses the owned Docker bridge, not NAT.
+  # The browser keeps canonical TLS origins. HAProxy changes neither TLS nor
+  # HTTP: only the public receiver sees its PROXY v2 transport preamble.
   d exec "$FIXTURE_TRUSTED" /bin/sh -c 'printf "127.0.0.1 %s %s\n" "$1" "$2" > /fixture/hosts; cat /etc/hosts >> /fixture/hosts; cat /fixture/hosts > /etc/hosts' sh "$idm" "$admin"
-  d exec -d "$FIXTURE_TRUSTED" socat TCP-LISTEN:443,bind=127.0.0.1,reuseaddr,fork "TCP:$FIXTURE_NODE_IP:$node_port"
+  cat > "$g/haproxy.cfg" <<EOF
+global
+  maxconn 128
+defaults
+  mode tcp
+  timeout connect 5s
+  timeout client 120s
+  timeout server 120s
+frontend browser
+  bind 127.0.0.1:443
+  default_backend public
+frontend metadata
+  bind 127.0.0.1:8443 accept-proxy
+  default_backend public
+backend public
+  server origin $FIXTURE_NODE_IP:$public_node_port send-proxy-v2
+EOF
+  d cp "$g/haproxy.cfg" "$FIXTURE_TRUSTED:/fixture/haproxy.cfg"
+  d exec -d "$FIXTURE_TRUSTED" haproxy -db -f /fixture/haproxy.cfg
   for nss in /root/.pki/nssdb /root/.local/share/pki/nssdb; do
     d exec "$FIXTURE_TRUSTED" certutil -N -d "sql:$nss" --empty-password
     d exec "$FIXTURE_TRUSTED" certutil -A -d "sql:$nss" -n fixture-ca -t 'C,,' -i /fixture/ca.crt
@@ -226,11 +288,13 @@ setup() {
   k rollout status deployment/envoy-gateway -n gateway --timeout=180s
   apply provision
   k wait job/kanidm-provision -n identity --for=condition=Complete --timeout=600s
+  public_entry
   apply adminPolicies
   apply adminRoutes
-  route_ready argocd
+  route_ready argocd public
   condition backendtlspolicy kanidm-oidc-tls identity Accepted True '' argocd-admin SecurityPolicy
   condition securitypolicy argocd-admin gateway Accepted True
+  condition securitypolicy argocd-admin gateway Accepted True '' household-public
   route_ready grafana
   condition securitypolicy grafana-admin gateway Accepted True
   condition backendtlspolicy kanidm-oidc-tls identity Accepted True '' grafana-admin SecurityPolicy
@@ -264,10 +328,15 @@ case "${1:?required gateway safety case}" in
     condition gateway household gateway Accepted True
     condition gateway household gateway Programmed True
     condition envoyproxy household gateway Accepted True
-    condition clienttrafficpolicy trusted-edges gateway Accepted True
-    route_ready origin; route_ready idm; route_ready argocd
+    condition clienttrafficpolicy private-origin gateway Accepted True
+    condition gateway household-public gateway Accepted True
+    condition gateway household-public gateway Programmed True
+    condition envoyproxy household-public gateway Accepted True '' household-public
+    condition clienttrafficpolicy public-origin gateway Accepted True '' household-public
+    route_ready origin public; route_ready idm public; route_ready argocd public
     condition backendtlspolicy idm identity Accepted True
     condition securitypolicy argocd-admin gateway Accepted True
+    condition securitypolicy argocd-admin gateway Accepted True '' household-public
     condition backendtlspolicy kanidm-oidc-tls identity Accepted True '' argocd-admin SecurityPolicy
     route_ready grafana
     condition securitypolicy grafana-admin gateway Accepted True
@@ -276,9 +345,8 @@ case "${1:?required gateway safety case}" in
       -o /fixture/grafana-response -w '%{http_code}')" = 302
     ;;
   direct)
-    apply direct
-    k delete networkpolicy private-origin -n gateway --ignore-not-found
-    condition clienttrafficpolicy trusted-edges gateway Accepted True
+    active_entry=private
+    condition clienttrafficpolicy private-origin gateway Accepted True
     proxy_ready
     test "$FIXTURE_TRUSTED_IP" != "$FIXTURE_STRANGER_IP"
     test "$(positive "$FIXTURE_STRANGER" origin.test 'direct-probe?token=query-secret' \
@@ -292,14 +360,16 @@ case "${1:?required gateway safety case}" in
     test "$(positive "$FIXTURE_STRANGER" "$idm" status -o /fixture/direct-idm-response -w '%{http_code}')" = 200
     ;;
   cni-prepare)
-    trusted
+    public_entry
     ;;
   cni-enforce)
+    active_entry=public
     # Wait up to 120s for actual negative enforcement. The Chainsaw step
     # timeout owns that deadline, not API status or a fixed sleep.
     until connection_denied; do sleep 1; done
     ;;
   cni-proof)
+    active_entry=public
     test "$(positive "$FIXTURE_TRUSTED" origin.test trusted-probe)" = origin
     # After convergence, require three failures even with a spoofed trusted IP.
     for attempt in 1 2 3; do
@@ -311,43 +381,63 @@ case "${1:?required gateway safety case}" in
     idm_status 200 trusted-identity-certificate
     ;;
   cni-forwarded)
-    # Permit 30 metadata convergence attempts, each with a fresh ID so an
-    # earlier access record cannot satisfy this one.
-    for attempt in $(seq 0 29); do
-      request_id="edge-request-$attempt"
-      test "$(request "$FIXTURE_TRUSTED" origin.test trusted-probe --fail \
-        -H 'X-Forwarded-For: 198.51.100.7' -H "X-Request-ID: $request_id")" = origin
-      entry trusted-probe '' 200
-      if jq -e --arg id "$request_id" '.client == "198.51.100.7" and .request_id == $id' "$g/entry.json" >/dev/null; then
-        exit 0
-      fi
-      sleep 1
-    done
-    echo 'Trusted-edge forwarded address and request ID did not converge in 30 attempts' >&2
-    exit 1
+    active_entry=public
+    positive "$FIXTURE_TRUSTED" origin.test headers \
+      -H 'X-Forwarded-For: 203.0.113.99' -H 'Forwarded: for=203.0.113.99' \
+      -H 'X-Real-IP: 203.0.113.99' -H 'X-Forwarded-User: administrator' \
+      -H 'X-Request-ID: client-supplied' > "$g/backend-headers.json"
+    jq -e '.headers | with_entries(.key |= ascii_downcase) |
+      .["x-forwarded-for"] == "198.51.100.7" and .["x-real-ip"] == null and
+      .forwarded == null and .["x-forwarded-user"] == null and
+      .["x-request-id"] != "client-supplied" and (.["x-request-id"] | length > 0)' "$g/backend-headers.json" >/dev/null
+    request_id=$(jq -er '.headers | with_entries(.key |= ascii_downcase) | .["x-request-id"]' "$g/backend-headers.json")
+    entry headers "$request_id" 200
+    jq -e '.client == "198.51.100.7"' "$g/entry.json" >/dev/null
+    transport_rejected "$public_node_port" plain
+    transport_rejected "$node_port" proxy
+    d exec "$FIXTURE_TRUSTED" "$(setting python)" -c '
+import socket,ssl,sys
+connection=socket.create_connection((sys.argv[1],int(sys.argv[2])),5)
+connection.settimeout(5)
+connection.sendall(b"PROXY invalid transport metadata\r\n")
+context=ssl.create_default_context(cafile="/fixture/ca.crt")
+try:
+    context.wrap_socket(connection,server_hostname="origin.test")
+except (ssl.SSLError,ConnectionError,TimeoutError):
+    pass
+else:
+    raise AssertionError("Public receiver accepted malformed PROXY metadata")
+' "$FIXTURE_NODE_IP" "$public_node_port"
+    # Neither the peer's forged client address nor HTTP authority may widen
+    # public route admission.
+    test "$(request "$FIXTURE_TRUSTED" origin.test index.html -H "Host: $grafana" -o /fixture/private-response -w '%{http_code}')" = 404
+    test "$(request "$FIXTURE_TRUSTED" origin.test index.html -H 'Host: undeclared.test' -o /fixture/unknown-response -w '%{http_code}')" = 404
+    reported_ip=10.0.0.1
+    test "$(request "$FIXTURE_TRUSTED" "$admin" index.html -o /fixture/address-spoof-response -w '%{http_code}')" = 302
     ;;
   grant)
-    trusted; idm_status 200 grant-before
+    public_entry; idm_status 200 grant-before
     generation=$(k get httproute idm -n gateway -o jsonpath='{.metadata.generation}')
     k delete referencegrant gateway-idm -n identity
     k patch httproute idm -n gateway --type=json -p '[{"op":"add","path":"/spec/rules/0/timeouts","value":{"request":"16s","backendRequest":"15s"}}]'
     condition httproute idm gateway Accepted True
     condition httproute idm gateway ResolvedRefs False RefNotPermitted
+    condition httproute idm gateway ResolvedRefs False RefNotPermitted household-public
     test "$(k get httproute idm -n gateway -o jsonpath='{.metadata.generation}')" -gt "$generation"
     idm_status 500 grant-missing
-    trusted; route_ready idm; idm_status 200 grant-restored
+    public_entry; route_ready idm public; idm_status 200 grant-restored
     ;;
   name)
-    trusted; idm_status 200 name-before
+    public_entry; idm_status 200 name-before
     generation=$(k get backendtlspolicy idm -n identity -o jsonpath='{.metadata.generation}')
     patch_validation '{"spec":{"validation":{"hostname":"wrong.test"}}}'
-    condition backendtlspolicy idm identity Accepted True
+    condition backendtlspolicy idm identity Accepted True '' household-public
     test "$(k get backendtlspolicy idm -n identity -o jsonpath='{.metadata.generation}')" -gt "$generation"
     idm_status 503 tls-wrong-name
-    trusted; condition backendtlspolicy idm identity Accepted True; idm_status 200 tls-name-restored
+    public_entry; condition backendtlspolicy idm identity Accepted True '' household-public; idm_status 200 tls-name-restored
     ;;
   ca)
-    trusted; idm_status 200 ca-before
+    public_entry; idm_status 200 ca-before
     openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj /CN=untrusted-ca \
       -addext basicConstraints=critical,CA:TRUE -addext keyUsage=critical,keyCertSign,cRLSign \
       -keyout "$g/wrong-ca.key" -out "$g/wrong-ca.crt" >/dev/null 2>&1
@@ -360,13 +450,14 @@ case "${1:?required gateway safety case}" in
       k patch deployment kanidm -n identity --type=strategic -p \
         "$(jq -cn --arg secret "$secret" '{spec:{template:{spec:{volumes:[{name:"tls",secret:{secretName:$secret}}]}}}}')"
       k rollout status deployment/kanidm -n identity --timeout=180s
-      route_ready idm; condition backendtlspolicy idm identity Accepted True
+      route_ready idm public; condition backendtlspolicy idm identity Accepted True '' household-public
       idm_status "$code" "tls-ca-$state"
     done
     k delete secret fixture-backend-tls -n identity
     ;;
   browser)
-    trusted; route_ready argocd; condition securitypolicy argocd-admin gateway Accepted True
+    public_entry; route_ready argocd public; condition securitypolicy argocd-admin gateway Accepted True
+    condition securitypolicy argocd-admin gateway Accepted True '' household-public
     browser_rc=0
     d exec "$FIXTURE_TRUSTED" "$(setting python)" /fixture/authorization.py \
       "https://$idm" "https://$admin" "$(setting administrator)" /fixture/recovery.json /fixture/ca.crt \
@@ -384,7 +475,7 @@ case "${1:?required gateway safety case}" in
     k delete secret kanidm-provision -n identity
     ;;
   privacy)
-    trusted
+    public_entry
     for spoof in anonymous bearer cookie identity; do
       case "$spoof" in
         anonymous) set -- ;;

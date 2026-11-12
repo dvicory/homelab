@@ -1,4 +1,5 @@
 """Disposable Kanidm/Envoy authorization scenario; never emit credentials or URLs."""
+import argparse
 import json
 import ssl
 import sys
@@ -10,7 +11,15 @@ from urllib.request import Request, urlopen
 
 from playwright.sync_api import sync_playwright
 
-idm, admin, administrator, recovery_file, ca_file, chromium, output_dir = sys.argv[1:]
+parser = argparse.ArgumentParser(description=__doc__)
+for name in ("idm", "admin", "administrator", "recovery_file", "ca_file", "chromium", "output_dir"):
+    parser.add_argument(name)
+parser.add_argument("--nonmember", default="fixture-nonmember")
+arguments = parser.parse_args()
+idm, admin, administrator = arguments.idm, arguments.admin, arguments.administrator
+recovery_file, ca_file = arguments.recovery_file, arguments.ca_file
+chromium, output_dir = arguments.chromium, arguments.output_dir
+nonmember = arguments.nonmember
 output = Path(output_dir)
 output.mkdir(mode=0o700, parents=True, exist_ok=True)
 phase = "bootstrap"
@@ -107,15 +116,15 @@ try:
     client, _ = api("GET", "/v1/oauth2/argocd", bearer=admin_token)
     assert client["attrs"]["oauth2_strict_redirect_uri"] == ["true"], "strict redirect policy absent"
     api("POST", "/v1/person", {"attrs": {
-        "name": ["fixture-nonmember"], "displayname": ["Fixture nonmember"]
+        "name": [nonmember], "displayname": ["Fixture nonmember"]
     }}, bearer=admin_token)
     members, _ = api("GET", "/v1/group/homelab-admin/_attr/member", bearer=admin_token)
-    assert not any("fixture-nonmember" in member for member in members), "nonmember received a grant"
+    assert not any(nonmember in member for member in members), "nonmember received a grant"
 
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(executable_path=chromium, headless=True)
         try:
-            for person, permitted in ((administrator, True), ("fixture-nonmember", False)):
+            for person, permitted in ((administrator, True), (nonmember, False)):
                 phase = "administrator" if permitted else "authenticated-nonmember"
                 context = browser.new_context()
                 context.on("request", observe_request)
@@ -153,8 +162,10 @@ try:
                     del token
                     login_ui(page, person)
                     if permitted:
-                        page.wait_for_selector("form[action='/ui/oauth2/consent'] button[type=submit]")
-                        page.locator("form[action='/ui/oauth2/consent'] button[type=submit]").click()
+                        consent = page.locator("form[action='/ui/oauth2/consent'] button[type=submit]")
+                        consent.or_(page.get_by_text("origin", exact=True)).first.wait_for()
+                        if consent.is_visible():
+                            consent.click()
                         page.wait_for_url(admin + "/index.html")
                         response = page.reload()
                         assert response.status == 200 and page.locator("body").inner_text().strip() == "origin", "administrator did not reach origin"

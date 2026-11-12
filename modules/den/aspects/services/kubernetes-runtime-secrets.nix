@@ -1,4 +1,5 @@
 {
+  config ? { },
   den,
   inputs,
   lib,
@@ -58,6 +59,8 @@ in
         cfg = host.settings.virtualization.compute;
         secretPath = "/run/homelab-compute/secrets";
         secretNames = builtins.attrNames cfg.runtimeSecrets;
+        publicEnabled = (config.den.clusters.prod-home.ingress.public or null) != null;
+        authKeyName = "${cfg.instance}-tailscale-auth-key";
         runtimeSecretLabel = "homelab.danielvicory/runtime-secret=true";
         invalidSourceNames = lib.filter (name: !(validSourceName name)) secretNames;
         desiredNames = lib.sort builtins.lessThan (
@@ -145,19 +148,23 @@ in
           sourceSnapshot=
           cleanup() {
             [ -z "$sourceSnapshot" ] || rm -rf -- "$sourceSnapshot"
-            rm -f -- "$root/runtime-secrets.yaml.new" "$root/runtime-secrets.names.new" "$root/runtime-secrets.commit.new"
+            rm -f -- "$root/runtime-secrets.yaml.new" "$root/runtime-secrets.names.new" "$root/runtime-secrets.commit.new" "$root/tailscale-auth-key.new"
             mount -o remount,ro "$root"
           }
           trap cleanup EXIT
           mount -o remount,rw "$root"
           sourceSnapshot="$(mktemp -d "$root/.agenix.XXXXXX")"
-          ${lib.optionalString (secretNames != [ ]) ''
+          ${lib.optionalString (secretNames != [ ] || publicEnabled) ''
             agenixRoot="$(readlink -e /run/agenix)"
             test -d "$agenixRoot"
             ${lib.concatMapStringsSep "\n" (name: ''
               install -m 0400 "$agenixRoot/${name}" "$sourceSnapshot/${name}"
               test -s "$sourceSnapshot/${name}"
             '') secretNames}
+          ''}
+          ${lib.optionalString publicEnabled ''
+            install -m 0400 "$agenixRoot/${authKeyName}" "$sourceSnapshot/tailscale-auth-key"
+            test -s "$sourceSnapshot/tailscale-auth-key"
           ''}
           ${argoValidation}
           {
@@ -206,6 +213,16 @@ in
             "$root/runtime-secrets.yaml.new" "$root/runtime-secrets.names.new" "$root/runtime-secrets.commit.new"
           chmod 0400 \
             "$root/runtime-secrets.yaml.new" "$root/runtime-secrets.names.new" "$root/runtime-secrets.commit.new"
+          ${
+            if publicEnabled then
+              ''
+                install -m 0400 -o ${toString cfg.idmapBase} -g ${toString cfg.idmapBase} \
+                  "$sourceSnapshot/tailscale-auth-key" "$root/tailscale-auth-key.new"
+                mv -f -- "$root/tailscale-auth-key.new" "$root/tailscale-auth-key"
+              ''
+            else
+              ''rm -f -- "$root/tailscale-auth-key"''
+          }
           mv -f -- "$root/runtime-secrets.yaml.new" "$root/runtime-secrets.yaml"
           mv -f -- "$root/runtime-secrets.names.new" "$root/runtime-secrets.names"
           mv -f -- "$root/runtime-secrets.commit.new" "$root/runtime-secrets.commit"
@@ -217,22 +234,31 @@ in
       assert lib.assertMsg (invalidSourceNames == [ ])
         "Runtime Secret source names must be basename-only identifiers: ${lib.concatStringsSep ", " invalidSourceNames}";
       {
-        secretRequests = lib.genAttrs (lib.filter delivered secretNames) (
-          name:
-          {
-            provider = "agenix";
-            ageFile = secretAge name;
-            mode = "0400";
-            restartUnits = [ "compute-stage-secrets.service" ];
-          }
-          // lib.optionalAttrs (generatorOf name != null) {
-            generator.script = generatorOf name;
-          }
-        );
+        secretRequests =
+          lib.genAttrs (lib.filter delivered secretNames) (
+            name:
+            {
+              provider = "agenix";
+              ageFile = secretAge name;
+              mode = "0400";
+              restartUnits = [ "compute-stage-secrets.service" ];
+            }
+            // lib.optionalAttrs (generatorOf name != null) {
+              generator.script = generatorOf name;
+            }
+          )
+          // lib.optionalAttrs publicEnabled {
+            ${authKeyName} = {
+              provider = "agenix";
+              ageFile = secretAge "tailscale-auth-key";
+              mode = "0400";
+              restartUnits = [ "compute-stage-secrets.service" ];
+            };
+          };
 
         systemd.services = {
           compute-stage-secrets = {
-            description = "Stage declared Kubernetes runtime Secrets";
+            description = "Stage guest runtime inputs and Kubernetes Secrets";
             wantedBy = [ "multi-user.target" ];
             before = [ "incus.service" ];
             path = [
@@ -255,7 +281,7 @@ in
           };
 
           "compute-stage-secrets-current@" = {
-            description = "Stage the current declared Kubernetes runtime Secrets";
+            description = "Stage the current guest runtime inputs and Kubernetes Secrets";
             path = [
               pkgs.coreutils
               pkgs.util-linux

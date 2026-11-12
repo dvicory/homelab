@@ -36,9 +36,9 @@
           "initial"
           "ready"
         ];
-        mode = [
-          "direct"
-          "trustedEdges"
+        entry = [
+          "private"
+          "public"
         ];
       };
       mkVariant =
@@ -52,12 +52,16 @@
                   settings.kubernetes.services.seerr.phase = lib.mkForce item.seerr;
                   # Cover every Homarr/identity pair by reusing Seerr's two states.
                   settings.kubernetes.services.homarr.phase = lib.mkForce item.seerr;
-                  ingress.mode = lib.mkForce item.mode;
-                  ingress.trustedProxyCIDRs = lib.mkForce (
-                    lib.optionals (item.mode == "trustedEdges") [
-                      "10.0.0.11/32"
-                      "10.0.0.12/32"
-                    ]
+                  ingress.public = lib.mkForce (
+                    if item.entry == "public" then
+                      {
+                        nodePort = 30444;
+                        originAddress = "100.64.0.1";
+                        peerAddress = "100.64.0.2";
+                        peerIPv6Address = "fd7a:115c:a1e0::2";
+                      }
+                    else
+                      null
                   );
                 };
               }
@@ -69,7 +73,7 @@
           rendered = fixture.config.flake.nixidyEnvs.${system}.prod-home;
         in
         {
-          name = "${item.identity}-${item.seerr}-${item.mode}";
+          name = "${item.identity}-${item.seerr}-${item.entry}";
           cluster = inventory;
           inherit rendered;
           manifests = rendered.config.build.environmentPackage;
@@ -102,7 +106,7 @@
                   }) inventory.settings.kubernetes.services.media.${family}
                 );
               };
-              ingress = { inherit (inventory.ingress) mode trustedProxyCIDRs nodePort; };
+              ingress = { inherit (inventory.ingress) public nodePort; };
               routes = lib.mapAttrs (_: route: {
                 inherit (route)
                   namespace

@@ -1,18 +1,21 @@
 ## Why
 
-Homelab needs one durable contract for exposing independently managed services without making application deployments own shared ingress or identity infrastructure. The existing route, trust, and bootstrap implementation can otherwise publish an administrator route before identity policy exists, or let independently reconciled entrances drift.
+The current Gateway serves both public and private routes; the optional NGINX edge supplies the public-only filter. Homelab needs that boundary at the Gateway so a remote TCP entrance can carry public traffic without gaining access to private applications or management services.
 
 ## What Changes
 
-- Define one declarative route inventory for internal Gateway routes and optional independent public entrances. Each route declares one or more hostnames, its backend service, authentication mode, exposure class, backend TLS/trust declaration, and request-timeout policy; public-edge consumers validate any hostname cardinality or domain-family rules they require.
-- Require public routes using administrator authentication to remain absent from every entrance until identity provisioning succeeds and the corresponding SecurityPolicy is published atomically with the route.
-- Preserve independent public entrances while accepting forwarded client-address metadata only from configured proxy peers, discarding client-supplied forwarding, end-user identity, and request-ID metadata, propagating one trusted request identifier through both layers, and emitting queryless logs.
+- Reuse one declarative route inventory for separate public and private Gateway entries. Public entry permission remains independent of bootstrap readiness and the private network technology.
+- Keep TLS termination, HTTP routing and authentication policy at the Gateway. A remote TCP relay carries encrypted connections and reports client addresses over an authenticated private link; it cannot reach private application or management endpoints.
+- Accept transport metadata only on the relay's restricted receiving path. At the Gateway, discard client-supplied forwarding, end-user identity and request-ID headers, generate a fresh request identifier, and keep credentials out of logs.
+- Require administrator routes to remain closed until identity provisioning succeeds and their SecurityPolicies are applied before their routes.
 - Require generic TLS backends to verify chains against their declared trust source, while reserving strict canonical-hostname verification and public-PKI system roots for Kanidm.
 - Define Kanidm's canonical identity hostname across direct and failover entrances, private interactive bootstrap, provisioning, and normal-operation transition without persisting bootstrap credentials outside that session.
 - Pin the Gateway controller and data-plane to exact multi-architecture image identities, order Argo applications by their real prerequisites, and wait for child Application health before reporting readiness.
-- Define unique declared Application ownership for every generated object identity and source directory, and keep structural checks separate from live two-layer request, DNS, certificate, authentication, logging, and failure-isolation evidence.
+- Keep unique declared Application/object/source ownership. Separate rendered checks, disposable end-to-end proof and deployment acceptance; neither an actual public box nor production credentials are needed for the disposable proof.
 - Record the retained Kanidm boundary and native export capability as non-operational future Preserve input; this change creates no capture schedule, retention, route, target, adapter, verification, or restore workflow.
 - Keep application startup, configuration reconciliation, media storage, and state-protection policy outside this contract, following the stable `management-boundaries` ownership split.
+- **BREAKING:** replace the optional NGINX HTTP-edge roles and their trusted-HTTP-proxy configuration with the transport-only entrance. Migrate their consumers and tests without retaining compatibility aliases.
+- Do not select a provider, deploy an edge, change service exposure values, add bootstrap phases, or implement automatic home failover in this planning revision.
 
 ## Capabilities
 
@@ -26,7 +29,7 @@ None.
 
 ## Impact
 
-- Affects Den route and cluster schemas, Gateway API rendering, independent public-edge proxies, Kanidm integration, generated operations guidance, Argo convergence declarations, desired-state ownership checks, and contract checks.
-- Composes with the existing `management-boundaries` independent-recovery requirement and the Preserve `first-class-state-protection` State/Realization/Integration model without taking ownership of either capability.
-- Does not require a particular public provider, certificate issuer, application configuration mechanism, protection policy, or Preserve-owned backup cadence.
-- Static evaluation proves declarations and rendered desired state only; live public routing, authentication, request-ID propagation, request logging, and failure isolation remain operator-gated acceptance work.
+- Affects Gateway objects and route attachments, host and guest firewalls, backend admission, the TCP relay/private link, generated operations guidance and the affected route, policy and runtime checks.
+- Build on PR #122's resolved route data rather than introducing a second route registry. Preserve the independent hardening and release-selection work in PRs #106 and #115.
+- Retains the existing identity lifecycle, public-PKI trust, ownership and Preserve boundaries; no application-internal or state-protection work moves into this change.
+- Real endpoint addresses, encrypted keys, production certificates and deployment approval are commissioning inputs, not prerequisites for preparing the configuration and disposable tests.

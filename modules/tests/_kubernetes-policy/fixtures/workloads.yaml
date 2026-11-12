@@ -925,25 +925,25 @@ scenarios:
   mutate: .spec.template.spec.initContainers[0].securityContext.runAsGroup = 999
   fail: [media-acquisition-identity]
 - name: media-job-seerr-state-writable
-  variant: normal-initial-trustedEdges
+  variant: normal-initial-public
   base: batch/v1/Job/media/media-config-seerr
   mutate: .spec.template.spec.containers[0].volumeMounts[3].readOnly = false
   fail: [media-configuration-state]
 - name: media-job-seerr-state-missing
-  variant: normal-initial-trustedEdges
+  variant: normal-initial-public
   base: batch/v1/Job/media/media-config-seerr
   mutate: del(.spec.template.spec.containers[0].volumeMounts[3]) | del(.spec.template.spec.volumes[2])
   fail: [media-configuration-state]
 - name: media-job-seerr-bootstrap-accepted
-  variant: normal-initial-trustedEdges
+  variant: normal-initial-public
   base: batch/v1/Job/media/media-config-seerr
 - name: media-job-seerr-bootstrap-owner-missing
-  variant: normal-initial-trustedEdges
+  variant: normal-initial-public
   base: batch/v1/Job/media/media-config-seerr
   mutate: del(.spec.template.spec.containers[0].env[0])
   fail: [media-configuration-state]
 - name: media-job-seerr-bootstrap-service-account
-  variant: normal-initial-trustedEdges
+  variant: normal-initial-public
   base: batch/v1/Job/media/media-config-seerr
   mutate: .spec.template.spec.serviceAccountName = "media-config-seerr"
   fail: [media-configuration-state]
@@ -957,7 +957,7 @@ scenarios:
     "SEERR_API_KEY"}], "name": "media-runtime"}}]}}]'
   fail: [media-configuration-state]
 - name: media-cronjob-seerr-state-initial-phase
-  variant: normal-initial-trustedEdges
+  variant: normal-initial-public
   base: batch/v1/CronJob/media/media-config-seerr
   mutate: '.spec.jobTemplate.spec.template.spec.containers[0].volumeMounts += [{"mountPath": "/seerr-state", "name":
     "seerr-state", "readOnly": true}] | del(.spec.jobTemplate.spec.template.spec.volumes[2].projected) | .spec.jobTemplate.spec.template.spec.volumes[2].name
@@ -997,7 +997,7 @@ scenarios:
   mutate: .spec.jobTemplate.spec.template.spec.automountServiceAccountToken = true
   fail: [media-configuration-state]
 - name: media-job-seerr-bootstrap-state-init-container
-  variant: normal-initial-trustedEdges
+  variant: normal-initial-public
   base: batch/v1/Job/media/media-config-seerr
   mutate: '.spec.template.spec.initContainers = [{"image": "registry.k8s.io/pause:3.10", "name": "extra-state-reader",
     "volumeMounts": [{"mountPath": "/seerr-state", "name": "seerr-state", "readOnly": true}]}]'

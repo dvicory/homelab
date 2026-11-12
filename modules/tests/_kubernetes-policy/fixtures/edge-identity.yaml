@@ -8,7 +8,7 @@ rules:
   admission-candidates: [provisioning-serviceaccount, provisioning-rbac-postsync, provisioning-secret-role, provisioning-secret-binding,
     administrator-membership, identity-data-deployment, identity-data-claim, identity-data-volume, identity-backup-absent,
     oidc-backend, oidc-system-pki, oidc-reference-grant, provisioner-system-pki, route-inventory, route-domain-placement,
-    request-header-sanitizer, route-timeouts, backend-tls, client-traffic-origin, private-origin-isolation, gateway-native-origin,
+    request-header-sanitizer, route-timeouts, backend-tls, client-traffic-origin, public-origin-isolation, gateway-native-origin,
     proxy-native-origin, gateway-class, gateway-controller-image, gateway-proxy-image, controller-config-pinned-images,
     backend-isolation-shape]
   repository-only: [identity-populations, administrator-publication-atomic, native-idm-population, seerr-publication,
@@ -21,15 +21,13 @@ positive:
   applies:
     apps/v1/Deployment/gateway/envoy-gateway: [gateway-controller-image]
     apps/v1/Deployment/identity/kanidm: [identity-data-deployment]
-    gateway.envoyproxy.io/v1alpha1/ClientTrafficPolicy/gateway/trusted-edges: [client-traffic-origin]
+    gateway.envoyproxy.io/v1alpha1/ClientTrafficPolicy/gateway/private-origin: [client-traffic-origin, request-header-sanitizer]
     gateway.envoyproxy.io/v1alpha1/EnvoyProxy/gateway/household: [proxy-native-origin, gateway-proxy-image]
     gateway.networking.k8s.io/v1/BackendTLSPolicy/identity/idm: [backend-tls]
     gateway.networking.k8s.io/v1/Gateway/gateway/household: [gateway-native-origin]
     gateway.networking.k8s.io/v1/GatewayClass//envoy: [gateway-class]
-    gateway.networking.k8s.io/v1/HTTPRoute/gateway/idm: [route-inventory, route-domain-placement, request-header-sanitizer,
-      route-timeouts]
-    gateway.networking.k8s.io/v1/HTTPRoute/gateway/jellyfin: [route-inventory, route-domain-placement, request-header-sanitizer,
-      route-timeouts]
+    gateway.networking.k8s.io/v1/HTTPRoute/gateway/idm: [route-inventory, route-domain-placement, route-timeouts]
+    gateway.networking.k8s.io/v1/HTTPRoute/gateway/jellyfin: [route-inventory, route-domain-placement, route-timeouts]
     # Kanidm owns its port-specific ingress; no all-port Gateway policy is rendered.
     networking.k8s.io/v1/NetworkPolicy/jellyfin/gateway-jellyfin-backend-ingress: [backend-isolation-shape]
     v1/ConfigMap/gateway/envoy-gateway-config: [controller-config-pinned-images]
@@ -67,18 +65,12 @@ positive:
     applies:
       gateway.envoyproxy.io/v1alpha1/Backend/identity/kanidm-oidc: [oidc-backend]
       gateway.networking.k8s.io/v1/BackendTLSPolicy/identity/kanidm-oidc-tls: [oidc-system-pki]
-      gateway.networking.k8s.io/v1/HTTPRoute/gateway/argocd: [route-inventory, route-domain-placement, request-header-sanitizer,
-        route-timeouts]
-      gateway.networking.k8s.io/v1/HTTPRoute/gateway/grafana: [route-inventory, route-domain-placement, request-header-sanitizer,
-        route-timeouts]
-      gateway.networking.k8s.io/v1/HTTPRoute/gateway/prowlarr: [route-inventory, route-domain-placement, request-header-sanitizer,
-        route-timeouts]
-      gateway.networking.k8s.io/v1/HTTPRoute/gateway/radarr: [route-inventory, route-domain-placement, request-header-sanitizer,
-        route-timeouts]
-      gateway.networking.k8s.io/v1/HTTPRoute/gateway/sabnzbd: [route-inventory, route-domain-placement, request-header-sanitizer,
-        route-timeouts]
-      gateway.networking.k8s.io/v1/HTTPRoute/gateway/sonarr: [route-inventory, route-domain-placement, request-header-sanitizer,
-        route-timeouts]
+      gateway.networking.k8s.io/v1/HTTPRoute/gateway/argocd: [route-inventory, route-domain-placement, route-timeouts]
+      gateway.networking.k8s.io/v1/HTTPRoute/gateway/grafana: [route-inventory, route-domain-placement, route-timeouts]
+      gateway.networking.k8s.io/v1/HTTPRoute/gateway/prowlarr: [route-inventory, route-domain-placement, route-timeouts]
+      gateway.networking.k8s.io/v1/HTTPRoute/gateway/radarr: [route-inventory, route-domain-placement, route-timeouts]
+      gateway.networking.k8s.io/v1/HTTPRoute/gateway/sabnzbd: [route-inventory, route-domain-placement, route-timeouts]
+      gateway.networking.k8s.io/v1/HTTPRoute/gateway/sonarr: [route-inventory, route-domain-placement, route-timeouts]
       gateway.networking.k8s.io/v1beta1/ReferenceGrant/identity/gateway-oidc-backend: [oidc-reference-grant]
       networking.k8s.io/v1/NetworkPolicy/argocd/gateway-argocd-backend-ingress: [backend-isolation-shape]
       networking.k8s.io/v1/NetworkPolicy/media/gateway-prowlarr-backend-ingress: [backend-isolation-shape]
@@ -86,18 +78,19 @@ positive:
       networking.k8s.io/v1/NetworkPolicy/media/gateway-sabnzbd-backend-ingress: [backend-isolation-shape]
       networking.k8s.io/v1/NetworkPolicy/media/gateway-sonarr-backend-ingress: [backend-isolation-shape]
       networking.k8s.io/v1/NetworkPolicy/monitoring/gateway-grafana-backend-ingress: [backend-isolation-shape]
-  - if: {mode: [trustedEdges]}
+  - if: {entry: [public]}
     applies:
-      networking.k8s.io/v1/NetworkPolicy/gateway/private-origin: [private-origin-isolation]
+      networking.k8s.io/v1/NetworkPolicy/gateway/public-origin: [public-origin-isolation]
+      gateway.envoyproxy.io/v1alpha1/ClientTrafficPolicy/gateway/public-origin: [client-traffic-origin, request-header-sanitizer]
+      gateway.envoyproxy.io/v1alpha1/EnvoyProxy/gateway/household-public: [proxy-native-origin, gateway-proxy-image]
+      gateway.networking.k8s.io/v1/Gateway/gateway/household-public: [gateway-native-origin]
   - if: {seerr: [ready]}
     applies:
-      gateway.networking.k8s.io/v1/HTTPRoute/gateway/requests: [route-inventory, route-domain-placement, request-header-sanitizer,
-        route-timeouts]
+      gateway.networking.k8s.io/v1/HTTPRoute/gateway/requests: [route-inventory, route-domain-placement, route-timeouts]
       networking.k8s.io/v1/NetworkPolicy/media/gateway-requests-backend-ingress: [backend-isolation-shape]
   - if: {identity: [normal], homarr: [ready]}
     applies:
-      gateway.networking.k8s.io/v1/HTTPRoute/gateway/home: [route-inventory, route-domain-placement, request-header-sanitizer,
-        route-timeouts]
+      gateway.networking.k8s.io/v1/HTTPRoute/gateway/home: [route-inventory, route-domain-placement, route-timeouts]
 scenarios:
 - name: grafana-hostname-wrong
   base: gateway.networking.k8s.io/v1/HTTPRoute/gateway/grafana
@@ -188,26 +181,26 @@ scenarios:
   rules: [administrator-publication-atomic]
   fail: [administrator-publication-atomic]
 - name: provisioning-population-role-deleted
-  variant: provisioning-initial-trustedEdges
+  variant: provisioning-initial-public
   mutate: del(.bundle.resources[] | select(.object.kind == "Role" and .object.metadata.name == "kanidm-client-secret-oidc-argocd"))
   fail: [identity-populations]
 - name: provisioning-population-role-without-secret
-  variant: provisioning-initial-direct
+  variant: provisioning-initial-private
   mutate: del(.bundle.resources[] | select(.object.kind == "Secret" and .object.metadata.name == "oidc-argocd"))
   fail: [identity-populations]
 - name: provisioning-job-missing
-  variant: provisioning-initial-direct
+  variant: provisioning-initial-private
   mutate: del(.bundle.resources[] | select(.object.kind == "Job" and .object.metadata.name == "kanidm-provision"))
   fail: [identity-populations]
 - name: initial-rejects-provisioning-job
-  variant: initial-initial-direct
+  variant: initial-initial-private
   mutate: '.bundle["resources"] += [{"file": "identity/Job-unexpected.yaml", "document": 0, "content": "", "object":
     {"apiVersion": "batch/v1", "kind": "Job", "metadata": {"name": "kanidm-provision", "namespace": "identity",
     "annotations": {"argocd.argoproj.io/hook": "PostSync"}}, "spec": {"template": {"spec": {"serviceAccountName":
     "kanidm-provision", "volumes": [], "containers": []}}}}}]'
   fail: [identity-populations]
 - name: provisioning-job-not-postsync
-  variant: provisioning-initial-trustedEdges
+  variant: provisioning-initial-public
   base: batch/v1/Job/identity/kanidm-provision
   mutate: .metadata.annotations["argocd.argoproj.io/hook"] = "PreSync"
   fail: [provisioning-rbac-postsync]
@@ -228,7 +221,7 @@ scenarios:
   mutate: .subjects[0].namespace = "gateway"
   fail: [provisioning-secret-binding]
 - name: provisioning-membership-premature
-  variant: provisioning-initial-direct
+  variant: provisioning-initial-private
   base: v1/ConfigMap/identity/kanidm-provision
   mutate: .data["members.json"] = "[\"unauthorized\"]"
   fail: [administrator-membership]
@@ -259,11 +252,11 @@ scenarios:
   mutate: del(.bundle.resources[] | select(.object.kind == "BackendTLSPolicy" and .object.metadata.name == "kanidm-oidc-tls"))
   fail: [identity-populations]
 - name: initial-idm-route-missing
-  variant: initial-initial-direct
+  variant: initial-initial-private
   mutate: del(.bundle.resources[] | select(.object.kind == "HTTPRoute" and .object.metadata.name == "idm"))
   fail: [native-idm-population, route-population]
 - name: provisioning-idm-route-missing
-  variant: provisioning-initial-direct
+  variant: provisioning-initial-private
   mutate: del(.bundle.resources[] | select(.object.kind == "HTTPRoute" and .object.metadata.name == "idm"))
   fail: [native-idm-population, route-population]
 - name: normal-idm-persistence-wrong-volume
@@ -350,13 +343,13 @@ scenarios:
   mutate: (.bundle.resources[] | select(.object.kind == "HTTPRoute" and .object.metadata.name == "idm") | .object["spec"]["rules"][0]["backendRefs"][0]["port"])
     = 0
   fail: [{route-inventory: gateway.networking.k8s.io/v1/HTTPRoute/gateway/idm}, route-service-grant-joins]
-- name: route-header-sanitizer-incomplete
-  base: gateway.networking.k8s.io/v1/HTTPRoute/gateway/idm
-  mutate: del(.spec.rules[0].filters[0].requestHeaderModifier.remove[0])
+- name: entry-header-sanitizer-incomplete
+  base: gateway.envoyproxy.io/v1alpha1/ClientTrafficPolicy/gateway/public-origin
+  mutate: del(.spec.headers.earlyRequestHeaders.remove[0])
   fail: [request-header-sanitizer]
-- name: route-header-sanitizer-set-bypass
-  base: gateway.networking.k8s.io/v1/HTTPRoute/gateway/idm
-  mutate: '.spec.rules[0].filters[0].requestHeaderModifier.set = [{"name": "Remote-User", "value": "admin"}]'
+- name: entry-header-sanitizer-set-bypass
+  base: gateway.envoyproxy.io/v1alpha1/ClientTrafficPolicy/gateway/public-origin
+  mutate: '.spec.headers.earlyRequestHeaders.set = [{"name": "Remote-User", "value": "admin"}]'
   fail: [request-header-sanitizer]
 - name: streaming-route-bounded
   base: gateway.networking.k8s.io/v1/HTTPRoute/gateway/jellyfin
@@ -381,31 +374,30 @@ scenarios:
   base: gateway.networking.k8s.io/v1/BackendTLSPolicy/identity/idm
   mutate: .spec.validation.wellKnownCACertificates = "Private"
   fail: [backend-tls]
-- name: trusted-edges-request-id-not-preserved
-  base: gateway.envoyproxy.io/v1alpha1/ClientTrafficPolicy/gateway/trusted-edges
-  mutate: .spec.headers.requestID = "Generate"
-  fail: [client-traffic-origin]
-- name: direct-request-id-preserved
-  variant: normal-ready-direct
-  base: gateway.envoyproxy.io/v1alpha1/ClientTrafficPolicy/gateway/trusted-edges
+- name: public-request-id-preserved
+  base: gateway.envoyproxy.io/v1alpha1/ClientTrafficPolicy/gateway/public-origin
   mutate: .spec.headers.requestID = "PreserveOrGenerate"
   fail: [client-traffic-origin]
-- name: trusted-client-ip-spoofable
-  base: gateway.envoyproxy.io/v1alpha1/ClientTrafficPolicy/gateway/trusted-edges
-  mutate: del(.spec.clientIPDetection.xForwardedFor.trustedCIDRs) | .spec.clientIPDetection.xForwardedFor.numTrustedHops
-    = 1
+- name: private-request-id-preserved
+  variant: normal-ready-private
+  base: gateway.envoyproxy.io/v1alpha1/ClientTrafficPolicy/gateway/private-origin
+  mutate: .spec.headers.requestID = "PreserveOrGenerate"
   fail: [client-traffic-origin]
-- name: trusted-private-origin-policy-missing
-  mutate: del(.bundle.resources[] | select(.object.kind == "NetworkPolicy" and .object.metadata.name == "private-origin"))
-  fail: [origin-populations]
-- name: trusted-private-origin-public-source
-  mutate: (.bundle.resources[] | select(.object.kind == "NetworkPolicy" and .object.metadata.name == "private-origin")
+- name: public-http-client-ip-spoofable
+  base: gateway.envoyproxy.io/v1alpha1/ClientTrafficPolicy/gateway/public-origin
+  mutate: '.spec.clientIPDetection = {"xForwardedFor":{"numTrustedHops":1}}'
+  fail: [client-traffic-origin]
+- name: public-origin-policy-missing
+  mutate: del(.bundle.resources[] | select(.object.kind == "NetworkPolicy" and .object.metadata.name == "public-origin"))
+  fail: [effective-ingress-authority]
+- name: public-origin-public-source
+  mutate: (.bundle.resources[] | select(.object.kind == "NetworkPolicy" and .object.metadata.name == "public-origin")
     | .object["spec"]["ingress"][0]["from"][0]["ipBlock"]["cidr"]) = "0.0.0.0/0"
-  fail: [effective-ingress-authority, {private-origin-isolation: networking.k8s.io/v1/NetworkPolicy/gateway/private-origin}]
-- name: trusted-private-origin-listener-port
-  mutate: (.bundle.resources[] | select(.object.kind == "NetworkPolicy" and .object.metadata.name == "private-origin")
+  fail: [effective-ingress-authority, {public-origin-isolation: networking.k8s.io/v1/NetworkPolicy/gateway/public-origin}]
+- name: public-origin-listener-port
+  mutate: (.bundle.resources[] | select(.object.kind == "NetworkPolicy" and .object.metadata.name == "public-origin")
     | .object["spec"]["ingress"][0]["ports"][0]["port"]) = 443
-  fail: [effective-ingress-authority, {private-origin-isolation: networking.k8s.io/v1/NetworkPolicy/gateway/private-origin}]
+  fail: [effective-ingress-authority, {public-origin-isolation: networking.k8s.io/v1/NetworkPolicy/gateway/public-origin}]
 - name: native-origin-not-local
   base: gateway.envoyproxy.io/v1alpha1/EnvoyProxy/gateway/household
   mutate: .spec.provider.kubernetes.envoyService.externalTrafficPolicy = "Cluster"
@@ -523,14 +515,14 @@ scenarios:
     | .ports[0].port) = .bundle.expected.cluster.settings.kubernetes.services.identity.directory.port'
   fail: [effective-ingress-authority]
 - name: provisioning-rejects-argocd-server-kanidm-peer
-  variant: provisioning-initial-direct
+  variant: provisioning-initial-private
   mutate: '(.bundle.resources[] | select(.file == "identity/NetworkPolicy-kanidm-private.yaml") | .object.spec.ingress)
     += [{"from": [{"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "argocd"}}, "podSelector":
     {"matchLabels": {"app.kubernetes.io/instance": "argocd", "app.kubernetes.io/name": "argocd-server"}}}], "ports":
     [{"protocol": "TCP", "port": 8443}]}]'
   fail: [effective-ingress-authority]
 - name: legitimate-policy-implicit-namespaces
-  mutate: del(.bundle.resources[] | select(.file == "identity/NetworkPolicy-kanidm-private.yaml" or .file == "gateway/NetworkPolicy-private-origin.yaml")
+  mutate: del(.bundle.resources[] | select(.file == "identity/NetworkPolicy-kanidm-private.yaml" or .file == "gateway/NetworkPolicy-public-origin.yaml")
     | .object.metadata.namespace)
 - name: route-fractional-service-port
   mutate: (.bundle.resources[] | select(.object.kind == "HTTPRoute" and .object.metadata.name == "idm") | .object.spec.rules[0].backendRefs[0].port)
@@ -540,3 +532,68 @@ scenarios:
   mutate: (.bundle.resources[] | select(.object.kind == "HTTPRoute" and .object.metadata.name == "idm") | .object.spec.rules[0].backendRefs[0].port)
     = "443"
   fail: [{route-inventory: gateway.networking.k8s.io/v1/HTTPRoute/gateway/idm}, route-service-grant-joins]
+- name: private-route-public-parent
+  base: gateway.networking.k8s.io/v1/HTTPRoute/gateway/jellyfin
+  mutate: '.spec.parentRefs += [{"group":"gateway.networking.k8s.io","kind":"Gateway","name":"household-public"}]'
+  fail: [route-inventory]
+- name: public-route-public-parent-missing
+  base: gateway.networking.k8s.io/v1/HTTPRoute/gateway/grafana
+  mutate: del(.spec.parentRefs[] | select(.name == "household-public"))
+  fail: [route-inventory]
+- name: private-route-public-parent-population
+  mutate: '(.bundle.resources[] | select(.object.kind == "HTTPRoute" and .object.metadata.name == "jellyfin") |
+    .object.spec.parentRefs) += [{"group":"gateway.networking.k8s.io","kind":"Gateway","name":"household-public"}]'
+  fail: [route-population, {route-inventory: gateway.networking.k8s.io/v1/HTTPRoute/gateway/jellyfin}]
+- name: public-proxy-metadata-optional
+  base: gateway.envoyproxy.io/v1alpha1/ClientTrafficPolicy/gateway/public-origin
+  mutate: .spec.proxyProtocol.optional = true
+  fail: [client-traffic-origin]
+- name: public-proxy-metadata-missing
+  base: gateway.envoyproxy.io/v1alpha1/ClientTrafficPolicy/gateway/public-origin
+  mutate: del(.spec.proxyProtocol)
+  fail: [client-traffic-origin]
+- name: private-entry-must-not-trust-proxy-metadata
+  base: gateway.envoyproxy.io/v1alpha1/ClientTrafficPolicy/gateway/private-origin
+  mutate: '.spec.proxyProtocol = {"optional":false}'
+  fail: [client-traffic-origin]
+- name: public-isolation-wrong-proxy
+  base: networking.k8s.io/v1/NetworkPolicy/gateway/public-origin
+  mutate: .spec.podSelector.matchLabels."gateway.envoyproxy.io/owning-gateway-name" = "household"
+  fail: [public-origin-isolation]
+- name: public-gateway-population-missing
+  mutate: del(.bundle.resources[] | select(.object.kind == "Gateway" and .object.metadata.name == "household-public"))
+  fail: [gateway-populations]
+- name: public-client-policy-population-missing
+  mutate: del(.bundle.resources[] | select(.object.kind == "ClientTrafficPolicy" and .object.metadata.name == "public-origin"))
+  fail: [origin-populations]
+- name: private-backend-admits-public-proxy
+  mutate: '(.bundle.resources[] | select(.object.kind == "NetworkPolicy" and .object.metadata.name == "gateway-jellyfin-backend-ingress") |
+    .object.spec.ingress[1].from) += [{"namespaceSelector":{"matchLabels":{"kubernetes.io/metadata.name":"gateway"}},
+    "podSelector":{"matchLabels":{"gateway.envoyproxy.io/owning-gateway-namespace":"gateway",
+    "gateway.envoyproxy.io/owning-gateway-name":"household-public"}}}]'
+  fail: [effective-ingress-authority, {backend-isolation-shape: networking.k8s.io/v1/NetworkPolicy/jellyfin/gateway-jellyfin-backend-ingress}]
+- name: initial-idm-public-parent-rejected
+  variant: initial-ready-public
+  base: gateway.networking.k8s.io/v1/HTTPRoute/gateway/idm
+  mutate: '.spec.parentRefs += [{"group":"gateway.networking.k8s.io","kind":"Gateway","name":"household-public"}]'
+  fail: [route-inventory]
+- name: initial-idm-public-parent-population-rejected
+  variant: initial-ready-public
+  mutate: '(.bundle.resources[] | select(.object.kind == "HTTPRoute" and .object.metadata.name == "idm") |
+    .object.spec.parentRefs) += [{"group":"gateway.networking.k8s.io","kind":"Gateway","name":"household-public"}]'
+  fail: [route-population, {route-inventory: gateway.networking.k8s.io/v1/HTTPRoute/gateway/idm}]
+- name: homarr-initial-must-not-publish-route
+  mutate: .bundle.expected.cluster.settings.kubernetes.services.homarr.phase = "initial"
+  rules: [route-population]
+  fail: [route-population]
+- name: public-backend-public-admission-missing
+  base: networking.k8s.io/v1/NetworkPolicy/monitoring/gateway-grafana-backend-ingress
+  mutate: del(.spec.ingress[0].from[] | select(.podSelector.matchLabels."gateway.envoyproxy.io/owning-gateway-name" == "household-public"))
+  fail: [backend-isolation-shape]
+- name: initial-idm-public-backend-peer-rejected
+  variant: initial-ready-public
+  mutate: '(.bundle.resources[] | select(.file == "identity/NetworkPolicy-kanidm-private.yaml") | .object.spec.ingress)
+    += [{"from":[{"namespaceSelector":{"matchLabels":{"kubernetes.io/metadata.name":"gateway"}},
+    "podSelector":{"matchLabels":{"gateway.envoyproxy.io/owning-gateway-namespace":"gateway",
+    "gateway.envoyproxy.io/owning-gateway-name":"household-public"}}}],"ports":[{"protocol":"TCP","port":8443}]}]'
+  fail: [effective-ingress-authority]

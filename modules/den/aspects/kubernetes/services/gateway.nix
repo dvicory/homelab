@@ -11,7 +11,8 @@
     }:
     let
       namespace = "gateway";
-      peers = cluster.ingress.trustedProxyCIDRs;
+      public = cluster.ingress.public;
+      ingressContract = import ../../../schema/_public-ingress.nix { inherit lib; };
       gatewayImage = "docker.io/envoyproxy/gateway:v1.9.1@sha256:0049bcb384c591c6a6dd043fe5c9929ef6e74f230e12dd678d2d3701df9b301e";
       proxyImage = "docker.io/envoyproxy/envoy:distroless-v1.39.1@sha256:eb2c01c13125d1629637cb4e4cce7207009fb7cc2c8027f9742758549d15b6f4";
       listenerPort = 443;
@@ -19,9 +20,8 @@
       # port plus 10000 inside the proxy pod, so the pod never needs
       # CAP_NET_BIND_SERVICE. Pod-level rules must use this port.
       proxyContainerPort = listenerPort + 10000;
-      originModeValid =
-        (cluster.ingress.mode == "direct" && peers == [ ])
-        || (cluster.ingress.mode == "trustedEdges" && peers != [ ]);
+      publicRouteEligible =
+        name: route: public != null && route.exposure == "public" && (name != "idm" || identityNormal);
       identityNormal = cluster.settings.kubernetes.services.identity.phase == "normal";
       defaultTimeouts = {
         request = "15s";
@@ -51,11 +51,146 @@
         group = "gateway.networking.k8s.io";
         inherit kind name;
       };
-      gatewayTarget = [ (target "Gateway" "household") ];
-      proxySelector.matchLabels = {
-        "gateway.envoyproxy.io/owning-gateway-namespace" = namespace;
-        "gateway.envoyproxy.io/owning-gateway-name" = "household";
+      proxySelector = name: {
+        matchLabels = {
+          "gateway.envoyproxy.io/owning-gateway-namespace" = namespace;
+          "gateway.envoyproxy.io/owning-gateway-name" = name;
+        };
       };
+      backendPeers =
+        name: route:
+        map (gateway: {
+          namespaceSelector.matchLabels."kubernetes.io/metadata.name" = namespace;
+          podSelector = proxySelector gateway;
+        }) ([ "household" ] ++ lib.optional (publicRouteEligible name route) "household-public");
+      gatewayObjects = name: nodePort: [
+        (object "gateway.envoyproxy.io/v1alpha1" "EnvoyProxy" name namespace {
+          provider = {
+            type = "Kubernetes";
+            kubernetes = {
+              envoyDeployment = {
+                replicas = 1;
+                container.image = proxyImage;
+                pod.nodeSelector."kubernetes.io/hostname" = computeResources.instance;
+              };
+              envoyService = {
+                name = "${name}-origin";
+                type = "NodePort";
+                externalTrafficPolicy = "Local";
+                patch = {
+                  type = "StrategicMerge";
+                  value.spec.ports = [
+                    {
+                      name = "https";
+                      port = listenerPort;
+                      inherit nodePort;
+                    }
+                  ];
+                };
+              };
+            };
+          };
+          # Stock OAuth2 diagnostics can include credential material.
+          logging.level = {
+            default = "warn";
+            oauth2 = "critical";
+          };
+          telemetry.accessLog.settings = [
+            {
+              format = {
+                type = "JSON";
+                json = {
+                  timestamp = "%START_TIME%";
+                  client = "%DOWNSTREAM_REMOTE_ADDRESS_WITHOUT_PORT%";
+                  method = "%REQ(:METHOD)%";
+                  path = "%PATH(NQ)%";
+                  host = "%REQ(:AUTHORITY)%";
+                  status = "%RESPONSE_CODE%";
+                  duration_ms = "%DURATION%";
+                  request_id = "%REQ(X-REQUEST-ID)%";
+                  response_flags = "%RESPONSE_FLAGS%";
+                  upstream = "%UPSTREAM_HOST%";
+                };
+              };
+              sinks = [
+                {
+                  type = "File";
+                  file.path = "/dev/stdout";
+                }
+              ];
+            }
+          ];
+        })
+        (object "gateway.networking.k8s.io/v1" "Gateway" name namespace {
+          gatewayClassName = "envoy";
+          infrastructure.parametersRef = {
+            group = "gateway.envoyproxy.io";
+            kind = "EnvoyProxy";
+            inherit name;
+          };
+          listeners = [
+            {
+              name = "https";
+              protocol = "HTTPS";
+              port = listenerPort;
+              allowedRoutes.namespaces.from = "Same";
+              tls = {
+                mode = "Terminate";
+                certificateRefs = [
+                  {
+                    group = "";
+                    kind = "Secret";
+                    name = "gateway-tls";
+                  }
+                  {
+                    group = "";
+                    kind = "Secret";
+                    namespace = routes.idm.namespace;
+                    name = "kanidm-tls";
+                  }
+                ];
+              };
+            }
+          ];
+        })
+      ];
+      trafficPolicy =
+        name: gateway:
+        object "gateway.envoyproxy.io/v1alpha1" "ClientTrafficPolicy" name namespace (
+          {
+            targetRefs = [ (target "Gateway" gateway) ];
+            clientIPDetection.directSourceIP = { };
+            headers = {
+              requestID = "Generate";
+              xForwardedClientCert.mode = "Sanitize";
+              # Sanitize before Envoy reconstructs forwarding metadata and IDs,
+              # not in a route filter that would strip the reconstructed values.
+              earlyRequestHeaders.remove = [
+                "Forwarded"
+                "X-Forwarded-For"
+                "X-Forwarded-Host"
+                "X-Forwarded-Proto"
+                "X-Forwarded-Port"
+                "X-Forwarded-Server"
+                "X-Real-IP"
+                "X-Forwarded-User"
+                "X-Forwarded-Email"
+                "X-Auth-Request-User"
+                "X-Auth-Request-Email"
+                "Remote-User"
+                "X-Request-ID"
+                "X-Correlation-ID"
+                "X-Client-Request-ID"
+                "X-Envoy-External-Address"
+                "X-Envoy-Internal"
+              ];
+            };
+          }
+          // lib.optionalAttrs (gateway == "household-public") {
+            # No direct-TLS fallback on the peer-only receiver.
+            proxyProtocol.optional = false;
+          }
+        );
       routeObjects =
         routeSet:
         lib.mapAttrsToList (
@@ -74,7 +209,12 @@
                 kind = "Gateway";
                 name = "household";
               }
-            ];
+            ]
+            ++ lib.optional (publicRouteEligible name route) {
+              group = "gateway.networking.k8s.io";
+              kind = "Gateway";
+              name = "household-public";
+            };
             inherit (route) hostnames;
             rules = [
               {
@@ -87,20 +227,6 @@
                   }
                 ];
                 inherit timeouts;
-                filters = [
-                  {
-                    type = "RequestHeaderModifier";
-                    requestHeaderModifier.remove = [
-                      "X-Real-IP"
-                      "X-Forwarded-User"
-                      "X-Forwarded-Email"
-                      "X-Auth-Request-User"
-                      "X-Auth-Request-Email"
-                      "Remote-User"
-                      "Forwarded"
-                    ];
-                  }
-                ];
                 backendRefs = [
                   {
                     group = "";
@@ -170,12 +296,7 @@
               }
               ++ [
                 {
-                  from = [
-                    {
-                      namespaceSelector.matchLabels."kubernetes.io/metadata.name" = namespace;
-                      podSelector = proxySelector;
-                    }
-                  ];
+                  from = backendPeers name route;
                 }
               ];
           }
@@ -212,7 +333,8 @@
     assert lib.assertMsg (lib.all (route: !route.backendTLS || route.backendHostname != null) (
       builtins.attrValues routes
     )) "TLS Gateway routes require backendHostname";
-    assert lib.assertMsg originModeValid "Gateway ingress mode and trusted edge CIDRs disagree";
+    assert lib.assertMsg (ingressContract.valid cluster.ingress)
+      "Gateway ingress requires distinct NodePorts, distinct guest/relay Tailnet IPv4 addresses and the relay's Tailnet IPv6 address";
     {
       applications.gateway-retained = {
         inherit namespace;
@@ -284,95 +406,6 @@
             metadata.name = "envoy";
             spec.controllerName = "gateway.envoyproxy.io/gatewayclass-controller";
           }
-          (object "gateway.envoyproxy.io/v1alpha1" "EnvoyProxy" "household" namespace {
-            provider = {
-              type = "Kubernetes";
-              kubernetes = {
-                envoyDeployment = {
-                  replicas = 1;
-                  container.image = proxyImage;
-                  pod.nodeSelector."kubernetes.io/hostname" = computeResources.instance;
-                };
-                envoyService = {
-                  name = "household-origin";
-                  type = "NodePort";
-                  externalTrafficPolicy = "Local";
-                  patch = {
-                    type = "StrategicMerge";
-                    value.spec.ports = [
-                      {
-                        name = "https";
-                        port = listenerPort;
-                        nodePort = cluster.ingress.nodePort;
-                      }
-                    ];
-                  };
-                };
-              };
-            };
-            # Stock OAuth2 diagnostics can include credential material.
-            logging.level = {
-              default = "warn";
-              oauth2 = "critical";
-            };
-            telemetry.accessLog.settings = [
-              {
-                format = {
-                  type = "JSON";
-                  json = {
-                    timestamp = "%START_TIME%";
-                    client = "%DOWNSTREAM_REMOTE_ADDRESS_WITHOUT_PORT%";
-                    method = "%REQ(:METHOD)%";
-                    path = "%PATH(NQ)%";
-                    host = "%REQ(:AUTHORITY)%";
-                    status = "%RESPONSE_CODE%";
-                    duration_ms = "%DURATION%";
-                    request_id = "%REQ(X-REQUEST-ID)%";
-                    response_flags = "%RESPONSE_FLAGS%";
-                    upstream = "%UPSTREAM_HOST%";
-                  };
-                };
-                sinks = [
-                  {
-                    type = "File";
-                    file.path = "/dev/stdout";
-                  }
-                ];
-              }
-            ];
-          })
-          (object "gateway.networking.k8s.io/v1" "Gateway" "household" namespace {
-            gatewayClassName = "envoy";
-            infrastructure.parametersRef = {
-              group = "gateway.envoyproxy.io";
-              kind = "EnvoyProxy";
-              name = "household";
-            };
-            listeners = [
-              {
-                name = "https";
-                protocol = "HTTPS";
-                port = listenerPort;
-                allowedRoutes.namespaces.from = "Same";
-                tls = {
-                  mode = "Terminate";
-                  certificateRefs = [
-                    {
-                      group = "";
-                      kind = "Secret";
-                      name = "gateway-tls";
-                    }
-                    {
-                      group = "";
-                      kind = "Secret";
-                      namespace = routes.idm.namespace;
-                      name = "kanidm-tls";
-                    }
-                  ];
-                };
-              }
-            ];
-          })
           (object "gateway.networking.k8s.io/v1beta1" "ReferenceGrant" "gateway-identity-certificate"
             routes.idm.namespace
             {
@@ -392,37 +425,29 @@
               ];
             }
           )
-          (object "gateway.envoyproxy.io/v1alpha1" "ClientTrafficPolicy" "trusted-edges" namespace {
-            targetRefs = gatewayTarget;
-            clientIPDetection =
-              if cluster.ingress.mode == "direct" then
-                { directSourceIP = { }; }
-              else
-                {
-                  xForwardedFor.trustedCIDRs = peers;
-                };
-            headers.requestID =
-              if cluster.ingress.mode == "trustedEdges" then "PreserveOrGenerate" else "Generate";
-          })
+          (trafficPolicy "private-origin" "household")
         ]
-        # An empty proxy allowlist selects direct-source mode. Omit the ingress
-        # policy instead of rendering a policy that denies every NodePort client.
-        ++ lib.optional (peers != [ ]) (
-          object "networking.k8s.io/v1" "NetworkPolicy" "private-origin" namespace {
-            podSelector = proxySelector;
-            policyTypes = [ "Ingress" ];
-            ingress = [
-              {
-                from = map (cidr: { ipBlock = { inherit cidr; }; }) peers;
-                ports = [
-                  {
-                    protocol = "TCP";
-                    port = proxyContainerPort;
-                  }
-                ];
-              }
-            ];
-          }
+        ++ gatewayObjects "household" cluster.ingress.nodePort
+        ++ lib.optionals (public != null) (
+          gatewayObjects "household-public" public.nodePort
+          ++ [
+            (trafficPolicy "public-origin" "household-public")
+            (object "networking.k8s.io/v1" "NetworkPolicy" "public-origin" namespace {
+              podSelector = proxySelector "household-public";
+              policyTypes = [ "Ingress" ];
+              ingress = [
+                {
+                  from = [ { ipBlock.cidr = "${public.peerAddress}/32"; } ];
+                  ports = [
+                    {
+                      protocol = "TCP";
+                      port = proxyContainerPort;
+                    }
+                  ];
+                }
+              ];
+            })
+          ]
         )
         ++ publishedRouteObjects
         ++ backendGrants

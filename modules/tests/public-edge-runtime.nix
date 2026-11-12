@@ -1,400 +1,232 @@
-{ lib, ... }:
+{
+  config,
+  inputs,
+  lib,
+  self,
+  ...
+}:
 {
   perSystem =
     { pkgs, system, ... }:
-    lib.optionalAttrs
-      (lib.elem system [
-        "x86_64-linux"
-        "aarch64-linux"
-      ])
-      (
-        let
-          certificates =
-            pkgs.runCommand "public-edge-runtime-certificates"
-              {
-                nativeBuildInputs = [ pkgs.openssl ];
+    lib.optionalAttrs (system == "x86_64-linux") (
+      let
+        k3s = self.nixosConfigurations.compute-1.config.services.k3s.package;
+        fixture = import ./_kubernetes-api/gateway/fixtures.nix {
+          inherit
+            config
+            inputs
+            lib
+            pkgs
+            self
+            ;
+          linuxPkgs = pkgs;
+        };
+        public = {
+          originAddress = "100.64.0.1";
+          peerAddress = "100.64.0.2";
+          peerIPv6Address = "fd7a:115c:a1e0::2";
+          nodePort = fixture.settings.publicNodePort;
+        };
+        transport =
+          (import ../den/aspects/services/public-edge.nix {
+            inherit inputs lib;
+            config.den.clusters.prod-home.ingress = {
+              nodePort = fixture.settings.nodePort;
+              inherit public;
+            };
+          }).den.aspects.services;
+        tailnet = import ./_public-entry-runtime/tailnet.nix { inherit pkgs lib; };
+        role =
+          name: settings:
+          { config, pkgs, ... }:
+          transport."public-${name}".nixos {
+            inherit config pkgs;
+            host = {
+              name = "fixture-${name}";
+              settings.services."public-${name}" = {
+                enable = true;
+                authKeyFile = "/srv/secrets/tailscale-auth-key";
               }
-              ''
-                mkdir -p "$out"
-                openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
-                  -keyout "$out/edge.key" -out "$out/edge.crt" \
-                  -subj '/CN=primary.test' \
-                  -addext 'subjectAltName=DNS:service.primary.test,DNS:service.backup.test,DNS:primary.test,DNS:backup.test'
-                openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
-                  -keyout "$out/identity.key" -out "$out/identity.crt" \
-                  -subj '/CN=id.bzfx.net' -addext 'subjectAltName=DNS:id.bzfx.net'
-                openssl req -new -newkey rsa:2048 -nodes \
-                  -keyout "$out/identity-wrong-name.key" -out "$out/identity-wrong-name.csr" \
-                  -subj '/CN=wrong.test' -addext 'subjectAltName=DNS:wrong.test'
-                openssl x509 -req -in "$out/identity-wrong-name.csr" \
-                  -CA "$out/identity.crt" -CAkey "$out/identity.key" \
-                  -set_serial 2 -days 3650 -copy_extensions copy -out "$out/identity-wrong-name.crt"
-                cat "$out/edge.crt" "$out/identity.crt" > "$out/client-ca.crt"
-                openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
-                  -keyout "$out/origin.key" -out "$out/origin.crt" \
-                  -subj '/CN=origin.test' \
-                  -addext 'subjectAltName=DNS:origin.test'
-                openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
-                  -keyout "$out/untrusted.key" -out "$out/untrusted.crt" \
-                  -subj '/CN=origin.test' -addext 'subjectAltName=DNS:origin.test'
-                openssl req -new -newkey rsa:2048 -nodes \
-                  -keyout "$out/wrong-name.key" -out "$out/wrong-name.csr" \
-                  -subj '/CN=wrong.test' -addext 'subjectAltName=DNS:wrong.test'
-                openssl x509 -req -in "$out/wrong-name.csr" \
-                  -CA "$out/origin.crt" -CAkey "$out/origin.key" \
-                  -set_serial 2 -days 3650 -copy_extensions copy -out "$out/wrong-name.crt"
-              '';
-          edge = import ../den/aspects/services/public-edge.nix {
-            config = {
-              den = {
-                clusters."prod-home" = {
-                  environment = "prod";
-                  settings.kubernetes.services.identity.phase = "normal";
-                  ingress.mode = "trustedEdges";
-                  ingress.trustedProxyCIDRs = [
-                    "10.0.0.11/32"
-                    "10.0.0.12/32"
-                  ];
-                };
-                environments.prod = {
-                  domain = "primary.test";
-                  backupDomain = "backup.test";
-                };
-              };
-              flake.clusterRoutes.prod-home = {
-                routes.idm = {
-                  hostnames = [ "id.bzfx.net" ];
-                  exposure = "public";
-                  pathPrefix = "/";
-                };
-                routes.service = {
-                  hostnames = [
-                    "service.primary.test"
-                    "service.backup.test"
-                  ];
-                  exposure = "public";
-                  pathPrefix = "/";
-                };
-              };
-            };
-            inherit lib;
-          };
-          tls = {
-            primary = {
-              certificate = "${certificates}/edge.crt";
-              key = "${certificates}/edge.key";
-            };
-            backup = {
-              certificate = "${certificates}/edge.crt";
-              key = "${certificates}/edge.key";
-            };
-            identity = {
-              certificate = "/run/identity-tls/server.crt";
-              key = "/run/identity-tls/server.key";
+              // settings;
             };
           };
-          mkSettings = peerAddress: {
-            enable = true;
-            originHost = "10.0.0.10";
-            originPort = 8443;
-            originServerName = "origin.test";
-            originCA = "${certificates}/origin.crt";
-            inherit peerAddress tls;
-            bareRoute = "service";
-          };
-          remoteHost = {
-            settings.services."remote-edge" = mkSettings "10.0.0.11";
-          };
-          homeHost = {
-            settings.services."home-edge" = mkSettings "10.0.0.12";
-          };
-          remoteRole = edge.den.aspects.services.remote-edge.nixos {
-            host = remoteHost;
-          };
-          homeRole = edge.den.aspects.services.home-edge.nixos {
-            host = homeHost;
-          };
-          identityTLSFiles = [
-            "d /run/identity-tls 0700 nginx nginx -"
-            "C /run/identity-tls/server.crt 0644 nginx nginx - ${certificates}/identity.crt"
-            "C /run/identity-tls/server.key 0600 nginx nginx - ${certificates}/identity.key"
+        network = address: {
+          system.stateVersion = "26.05";
+          networking.useDHCP = false;
+          networking.interfaces.eth1.ipv4.addresses = [
+            {
+              inherit address;
+              prefixLength = 24;
+            }
           ];
-          test = pkgs.testers.runNixOSTest {
+          virtualisation.vlans = [ 1 ];
+          environment.systemPackages = [
+            pkgs.curl
+            pkgs.jq
+            pkgs.openssl
+            pkgs.python3
+            pkgs.tailscale
+            pkgs.netcat-openbsd
+          ];
+        };
+        settings = pkgs.writeText "public-entry-native-fixture.json" (
+          builtins.toJSON (
+            fixture.settings
+            // {
+              publicIngress = public;
+              nodeAddress = "10.1.0.10";
+              underlayAddress = "10.0.0.10";
+              relayAddress = "10.0.0.11";
+              clientAddress = "10.0.0.12";
+              privateClientAddress = "10.1.0.12";
+              kubectl = "${k3s}/bin/k3s kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml";
+              transportProbe = "${./_public-entry-runtime/transport.py}";
+              networkPolicy = "${../../generated/manifests/prod-home/network-policy}";
+              python = "${pkgs.python3.withPackages (ps: [ ps.playwright ])}/bin/python3";
+              chromium = "${pkgs.chromium}/bin/chromium";
+            }
+          )
+        );
+        test =
+          (pkgs.testers.runNixOSTest {
             name = "public-edge-runtime";
+            requiredFeatures.kvm = true;
             nodes = {
-              origin =
-                { ... }:
-                {
-                  system.stateVersion = "26.05";
-                  virtualisation.vlans = [ 1 ];
-                  networking.useDHCP = false;
-                  networking.interfaces.eth1.ipv4.addresses = [
-                    {
-                      address = "10.0.0.10";
-                      prefixLength = 24;
+              origin = {
+                imports = [
+                  (network "10.0.0.10")
+                  (tailnet.client "10.0.0.13")
+                  (role "origin" { })
+                ];
+                networking.hostName = lib.mkForce "compute-1";
+                networking.interfaces.eth0.useDHCP = true;
+                networking.interfaces.eth2.ipv4.addresses = [
+                  {
+                    address = "10.1.0.10";
+                    prefixLength = 24;
+                  }
+                ];
+                networking.firewall.allowedTCPPorts = lib.mkForce [ ];
+                networking.firewall.interfaces.eth2.allowedTCPPorts = [
+                  fixture.settings.nodePort
+                  6443
+                  22
+                  8443
+                ];
+                networking.firewall.trustedInterfaces = [
+                  "cni0"
+                  "flannel.1"
+                ];
+                # The test underlay models the Internet, not an authorized LAN.
+                networking.nftables.tables.fixture-underlay = {
+                  family = "inet";
+                  content = ''
+                    chain forward {
+                      type filter hook forward priority -110; policy accept;
+                      iifname "eth1" drop
                     }
-                  ];
-                  networking.extraHosts = "10.0.0.10 origin origin.test";
-                  networking.firewall.enable = true;
-                  networking.firewall.extraCommands = ''
-                    iptables -I INPUT 1 -i eth1 -p tcp --dport 8443 -j REJECT
-                    iptables -I INPUT 1 -i eth1 -p tcp --dport 8443 -s 10.0.0.12 -j ACCEPT
-                    iptables -I INPUT 1 -i eth1 -p tcp --dport 8443 -s 10.0.0.11 -j ACCEPT
                   '';
-                  environment.systemPackages = [ pkgs.curl ];
-                  systemd.tmpfiles.rules = [
-                    "d /run/origin-tls 0700 nginx nginx -"
-                    "C /run/origin-tls/server.crt 0644 nginx nginx - ${certificates}/origin.crt"
-                    "C /run/origin-tls/server.key 0600 nginx nginx - ${certificates}/origin.key"
-                  ];
-                  services.nginx = {
-                    enable = true;
-                    virtualHosts.origin = {
-                      onlySSL = true;
-                      listen = [
-                        {
-                          addr = "10.0.0.10";
-                          port = 8443;
-                          ssl = true;
-                        }
-                      ];
-                      sslCertificate = "/run/origin-tls/server.crt";
-                      sslCertificateKey = "/run/origin-tls/server.key";
-                      locations."/".return = "200 origin";
-                      locations."/headers".return =
-                        "200 $remote_addr|$http_x_forwarded_for|$http_x_forwarded_host|$http_forwarded|$http_x_forwarded_user|$http_x_auth_request_user|$http_x_forwarded_email|$http_x_auth_request_email|$http_remote_user|$http_host|$http_x_forwarded_proto|$http_x_forwarded_port|$ssl_server_name";
-                      locations."/privacy".return =
-                        "200 $request_uri|$args|$http_authorization|$http_cookie|$http_x_request_id";
-                    };
-                  };
                 };
-              remote =
-                { ... }:
-                {
-                  imports = [ remoteRole ];
-                  systemd.tmpfiles.rules = identityTLSFiles;
-                  system.stateVersion = "26.05";
-                  virtualisation.vlans = [ 1 ];
-                  networking.useDHCP = false;
-                  networking.interfaces.eth1.ipv4.addresses = [
-                    {
-                      address = "10.0.0.11";
-                      prefixLength = 24;
-                    }
-                  ];
-                  networking.extraHosts = "10.0.0.10 origin origin.test";
+                services.openssh = {
+                  enable = true;
+                  openFirewall = false;
                 };
-              home =
-                { ... }:
-                {
-                  imports = [ homeRole ];
-                  systemd.tmpfiles.rules = identityTLSFiles;
-                  system.stateVersion = "26.05";
-                  virtualisation.vlans = [ 1 ];
-                  networking.useDHCP = false;
-                  networking.interfaces.eth1.ipv4.addresses = [
-                    {
-                      address = "10.0.0.12";
-                      prefixLength = 24;
-                    }
+                virtualisation.incus.enable = true;
+                virtualisation = {
+                  cores = 4;
+                  memorySize = 6144;
+                  diskSize = 16384;
+                  vlans = lib.mkForce [
+                    1
+                    2
                   ];
-                  networking.extraHosts = "10.0.0.10 origin origin.test";
+                  # As in identity-provision-runtime: upstream images are immutable,
+                  # but registry transport needs egress when running the driver.
+                  restrictNetwork = false;
                 };
-              client =
-                { ... }:
-                {
-                  system.stateVersion = "26.05";
-                  virtualisation.vlans = [ 1 ];
-                  networking.useDHCP = false;
-                  networking.interfaces.eth1.ipv4.addresses = [
-                    {
-                      address = "10.0.0.13";
-                      prefixLength = 24;
-                    }
+                systemd.tmpfiles.rules = [
+                  "d /srv/secrets 0700 root root -"
+                  "d ${fixture.settings.identityDataPath} 0700 1000 1000 -"
+                ];
+                boot.kernelModules = [
+                  "nfnetlink_queue"
+                  "nft_queue"
+                ];
+                services.k3s = {
+                  enable = true;
+                  role = "server";
+                  package = k3s;
+                  disable = [
+                    "traefik"
+                    "metrics-server"
+                    "local-storage"
+                    "servicelb"
                   ];
-                  networking.extraHosts = ''
-                    10.0.0.10 origin origin.test
-                    10.0.0.11 primary.test service.primary.test
-                    10.0.0.12 backup.test service.backup.test
-                  '';
-                  environment.systemPackages = [ pkgs.curl ];
+                  images = [ k3s.airgap-images ] ++ fixture.images;
+                  extraFlags = [
+                    "--node-ip=10.1.0.10"
+                    "--flannel-iface=eth2"
+                    "--disable-network-policy"
+                  ];
+                  extraKubeProxyConfig = self.nixosConfigurations.compute-1.config.services.k3s.extraKubeProxyConfig;
                 };
+              };
+              relay = {
+                imports = [
+                  (network "10.0.0.11")
+                  (tailnet.client "10.0.0.13")
+                  (role "relay" { })
+                ];
+                virtualisation = {
+                  cores = 1;
+                  memorySize = 384;
+                };
+                systemd.tmpfiles.rules = [ "d /srv/secrets 0700 root root -" ];
+                systemd.services.haproxy.wantedBy = lib.mkForce [ ];
+              };
+              client = {
+                imports = [ (network "10.0.0.12") ];
+                virtualisation = {
+                  cores = 2;
+                  memorySize = 2048;
+                  vlans = lib.mkForce [
+                    1
+                    2
+                  ];
+                };
+                networking.interfaces.eth2.ipv4.addresses = [
+                  {
+                    address = "10.1.0.12";
+                    prefixLength = 24;
+                  }
+                ];
+                networking.hosts."127.0.0.1" = fixture.settings.hostnames ++ [ "origin.test" ];
+                environment.systemPackages = [
+                  pkgs.chromium
+                  pkgs.nssTools
+                  pkgs.socat
+                  (pkgs.python3.withPackages (ps: [ ps.playwright ]))
+                ];
+              };
+              control = tailnet.control "10.0.0.13";
             };
             testScript = ''
               import json
-              import re
-              import shlex
-              import time
-
-              def access_log(edge, path):
-                  for _ in range(30):
-                      logs = edge.succeed("cat /var/log/nginx/access.log")
-                      for secret in ("query-secret-", "code-secret-", "credential-canary-", "cookie-secret-"):
-                          assert secret not in logs, "sensitive request data reached the edge access log"
-                      entries = [json.loads(line) for line in logs.splitlines()]
-                      matches = [entry for entry in entries if entry.get("path") == path]
-                      if matches:
-                          assert len(matches) == 1, "expected one log entry for the unique request"
-                          return matches[0]
-                      time.sleep(1)
-                  raise AssertionError(f"no queryless edge access log entry for {path}")
-
-              start_all()
-              origin.wait_for_unit("nginx.service")
-              remote.wait_for_unit("nginx.service")
-              home.wait_for_unit("nginx.service")
-              remote.wait_for_open_port(443)
-              home.wait_for_open_port(443)
-              origin.wait_until_succeeds("curl -ksSf https://10.0.0.10:8443/ | grep -qx origin", timeout=30)
-
-              client.succeed("curl --cacert ${certificates}/edge.crt -sSf --resolve service.primary.test:443:10.0.0.11 https://service.primary.test/ | grep -qx origin")
-              client.succeed("curl --cacert ${certificates}/edge.crt -sSf --resolve service.backup.test:443:10.0.0.12 https://service.backup.test/ | grep -qx origin")
-              for address in ("10.0.0.11", "10.0.0.12"):
-                  client.succeed(
-                      "curl --cacert ${certificates}/identity.crt -sSf "
-                      f"--resolve id.bzfx.net:443:{address} https://id.bzfx.net/ | grep -qx origin"
-                  )
-                  client.succeed(
-                      "if curl --cacert ${certificates}/edge.crt -sS -o /dev/null "
-                      f"--resolve id.bzfx.net:443:{address} https://id.bzfx.net/; "
-                      "then exit 1; else test $? -eq 60; fi"
-                  )
-              for hostname, address in (("service.backup.test", "10.0.0.11"), ("service.primary.test", "10.0.0.12")):
-                  client.succeed(
-                      "if curl --cacert ${certificates}/edge.crt -sS -o /dev/null "
-                      f"--resolve {hostname}:443:{address} https://{hostname}/; "
-                      "then exit 1; else test $? -eq 35; fi"
-                  )
-
-              # Both certificates are trusted, so application and wrong-name
-              # replacements must fail hostname verification, not just trust.
-              for certificate in ("edge", "identity-wrong-name", "identity"):
-                  for machine, address in ((remote, "10.0.0.11"), (home, "10.0.0.12")):
-                      machine.succeed(
-                          f"cp ${certificates}/{certificate}.crt /run/identity-tls/server.crt && "
-                          f"cp ${certificates}/{certificate}.key /run/identity-tls/server.key && "
-                          "systemctl restart nginx.service"
-                      )
-                      machine.wait_for_open_port(443)
-                      command = (
-                          "curl --cacert ${certificates}/client-ca.crt -sSf "
-                          f"--resolve id.bzfx.net:443:{address} https://id.bzfx.net/"
-                      )
-                      if certificate == "identity":
-                          client.succeed(command + " | grep -qx origin")
-                      else:
-                          client.succeed("if " + command + "; then exit 1; else test $? -eq 60; fi")
-              client.succeed("curl --cacert ${certificates}/edge.crt -sI --resolve primary.test:443:10.0.0.11 https://primary.test/ | grep -iF 'location: https://service.primary.test/'")
-              client.succeed("curl --cacert ${certificates}/edge.crt -sI --resolve backup.test:443:10.0.0.12 https://backup.test/ | grep -iF 'location: https://service.backup.test/'")
-              # An SNI name with no matching vhost is rejected during the
-              # handshake: curl exits 35 (CURLE_SSL_CONNECT_ERROR), before any
-              # HTTP status exists.
-              client.succeed(
-                "if curl --cacert ${certificates}/edge.crt -sS -o /dev/null --connect-timeout 3 "
-                "--resolve unmatched.primary.test:443:10.0.0.11 https://unmatched.primary.test/; "
-                "then exit 1; else test $? -eq 35; fi"
-              )
-              client.succeed("test $(curl --cacert ${certificates}/edge.crt -sS -o /dev/null -w '%{http_code}' -H 'Host: unknown.primary.test' --resolve service.primary.test:443:10.0.0.11 https://service.primary.test/) = 404")
-              for edge, role, hostname, address in (
-                  (remote, "remote", "service.primary.test", "10.0.0.11"),
-                  (home, "home", "service.backup.test", "10.0.0.12"),
-              ):
-                  with subtest(f"{role} edge replaces spoofed forwarding metadata and sends origin SNI"):
-                      headers = client.succeed(
-                          "curl --cacert ${certificates}/edge.crt -sSf -H 'X-Forwarded-For: 198.51.100.99' "
-                          "-H 'X-Forwarded-Host: forged.test' -H 'X-Forwarded-Proto: http' -H 'X-Forwarded-Port: 81' "
-                          "-H 'Forwarded: for=198.51.100.99' -H 'X-Forwarded-User: forged' "
-                          "-H 'X-Auth-Request-User: forged' -H 'X-Forwarded-Email: forged@example.test' "
-                          "-H 'X-Auth-Request-Email: forged@example.test' -H 'Remote-User: forged' "
-                          f"--resolve {hostname}:443:{address} https://{hostname}/headers"
-                      ).strip()
-                      assert headers == f"{address}|10.0.0.13|{hostname}|||||||{hostname}|https|443|origin.test", headers
-
-                  with subtest(f"{role} edge logs only paths and preserves its fresh request ID to the origin"):
-                      request_ids = set()
-                      for label, supplied_id in (
-                          ("valid", "1234567890abcdef1234567890abcdef"),
-                          ("malformed", 'forged"request-id'),
-                          ("absent", None),
-                      ):
-                          path = f"/privacy-{role}-{label}"
-                          query = f"token=query-secret-{role}-{label}&code=code-secret-{role}-{label}"
-                          authorization = "Bearer " + f"credential-canary-{role}-{label}"
-                          cookie = f"session=cookie-secret-{role}-{label}"
-                          request_id_header = (
-                              "-H " + shlex.quote(f"X-Request-ID: {supplied_id}") if supplied_id is not None else ""
-                          )
-                          response = client.succeed(
-                              "curl --cacert ${certificates}/edge.crt -sSf "
-                              f"-H {shlex.quote('Authorization: ' + authorization)} "
-                              f"-H {shlex.quote('Cookie: ' + cookie)} {request_id_header} "
-                              f"--resolve {hostname}:443:{address} {shlex.quote(f'https://{hostname}{path}?{query}')}"
-                          ).strip().split("|")
-                          assert response[:4] == [f"{path}?{query}", query, authorization, cookie], response
-                          assert len(response) == 5, response
-                          request_id = response[4]
-                          assert re.fullmatch(r"[0-9a-f]{32}", request_id), "origin did not receive an edge-generated ID"
-                          assert request_id != supplied_id, "client request ID was trusted"
-                          assert request_id not in request_ids, "distinct requests reused an ID"
-                          request_ids.add(request_id)
-                          entry = access_log(edge, path)
-                          assert entry["request_id"] == request_id, "edge log and upstream request IDs differ"
-                          assert entry["client"] == "10.0.0.13", entry
-                          assert entry["host"] == hostname and entry["method"] == "GET" and entry["status"] == 200, entry
-              client.succeed(
-                "curl --cacert ${certificates}/identity.crt -sSf "
-                "--resolve id.bzfx.net:443:10.0.0.11 "
-                "'https://id.bzfx.net/?secret=must-not-be-logged' | grep -qx origin"
-              )
-              entries = [json.loads(line) for line in remote.succeed("cat /var/log/nginx/access.log").splitlines()]
-              identity_entry = next(entry for entry in reversed(entries) if entry["host"] == "id.bzfx.net" and entry["status"] == 200)
-              assert identity_entry["path"] == "/"
-              assert len(identity_entry["request_id"]) == 32
-              assert "must-not-be-logged" not in json.dumps(entries)
-              client.fail("curl -ksSf --connect-timeout 3 https://origin:8443/")
-
-              for certificate in ("untrusted", "wrong-name", "origin"):
-                  origin.succeed(
-                      f"cp ${certificates}/{certificate}.crt /run/origin-tls/server.crt && "
-                      f"cp ${certificates}/{certificate}.key /run/origin-tls/server.key && "
-                      "systemctl restart nginx.service"
-                  )
-                  origin.wait_until_succeeds("curl -ksSf https://10.0.0.10:8443/ | grep -qx origin", timeout=30)
-                  if certificate == "wrong-name":
-                      origin.succeed("curl --cacert ${certificates}/origin.crt -sSf --resolve wrong.test:8443:10.0.0.10 https://wrong.test:8443/ | grep -qx origin")
-                  expected = "200" if certificate == "origin" else "502"
-                  for hostname, address, trust in (
-                      ("service.primary.test", "10.0.0.11", "edge"),
-                      ("service.backup.test", "10.0.0.12", "edge"),
-                      ("id.bzfx.net", "10.0.0.11", "identity"),
-                      ("id.bzfx.net", "10.0.0.12", "identity"),
-                  ):
-                      client.succeed(
-                          f"test $(curl --cacert ${certificates}/{trust}.crt -sS -o /dev/null "
-                          f"-w '%{{http_code}}' --resolve {hostname}:443:{address} https://{hostname}/) = {expected}"
-                      )
-
-              remote.succeed("systemctl stop nginx.service")
-              client.fail(
-                "curl --cacert ${certificates}/edge.crt -sSf --connect-timeout 3 "
-                "--resolve service.primary.test:443:10.0.0.11 https://service.primary.test/"
-              )
-              client.succeed("curl --cacert ${certificates}/edge.crt -sSf --resolve service.backup.test:443:10.0.0.12 https://service.backup.test/ | grep -qx origin")
-              client.fail(
-                "curl --cacert ${certificates}/identity.crt -sSf --connect-timeout 3 "
-                "--resolve id.bzfx.net:443:10.0.0.11 https://id.bzfx.net/"
-              )
-              client.succeed("curl --cacert ${certificates}/identity.crt -sSf --resolve id.bzfx.net:443:10.0.0.12 https://id.bzfx.net/ | grep -qx origin")
+              settings = json.load(open("${settings}"))
+              exec(compile(open("${./_public-entry-runtime/test.py}").read(), "public-entry-runtime/test.py", "exec"))
             '';
+          }).overrideTestDerivation
+            (_: {
+              __noChroot = true;
+            });
+      in
+      {
+        legacyPackages.public-edge-runtime-test = test;
+        checks.public-edge-runtime = test // {
+          meta = test.meta // {
+            hestia.group = "${system}-public-edge-runtime";
           };
-        in
-        {
-          legacyPackages.public-edge-runtime-test = test;
-          checks.public-edge-runtime = test // {
-            meta = test.meta // {
-              hestia.group = "${system}-public-edge-runtime";
-            };
-          };
-        }
-      );
+        };
+      }
+    );
 }

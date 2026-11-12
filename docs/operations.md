@@ -7,7 +7,8 @@
 - **Cluster:** `prod-home`
 - **Host:** `hvn-hyp1` (`x86_64-linux`)
 - **Compute guest:** `compute-1`
-- **Ingress:** `direct` on NodePort `30443`
+- **Private Gateway:** NodePort `30443`
+- **Public Gateway:** not configured
 - **Identity phase:** `normal`
 - **Seerr publication phase:** `ready`
 - **Homarr publication phase:** `initial`
@@ -50,18 +51,63 @@ independently syncing child Applications.
 `admin` requires Gateway administrator sign-in; `native` uses the
 application's own sign-in.
 
-Public edges publish only `public` routes. The `idm` canonical hostname
-remains the identity issuer across direct and secondary-edge access;
-failover changes DNS, not the issuer or certificate identity.
+The public Gateway serves only eligible `public` routes; the private
+Gateway serves all eligible routes. The `idm` canonical hostname remains
+the identity issuer across both paths; failover changes DNS, not the
+issuer or certificate identity.
 
-The `home` route is omitted from Gateway and edges until
-Homarr is `ready` and identity is `normal`. Complete private onboarding
-and audience checks in [the Homarr runbook](operations/homarr.md)
+The `home` route is omitted from both Gateway entries
+until Homarr is `ready` and identity is `normal`. Complete private
+onboarding and audience checks in [the Homarr runbook](operations/homarr.md)
 before publishing it.
 
-For `direct` ingress, point each hostname at the host's LAN or Tailscale
-address. TCP 443 forwards to the guest's NodePort. For `trustedEdges`,
-point DNS at the edge.
+For private access, point each hostname at the host's LAN or approved
+private-network address. TCP 443 forwards to the private Gateway NodePort.
+A configured public relay passes TLS over its private link to the separate
+public receiver. Only that receiver accepts trusted transport metadata;
+application TLS and sign-in remain at the Gateway.
+
+Public transport uses the guest's Tailnet IPv4 address, the relay's
+Tailnet IPv4 and IPv6 addresses, and the receiver port in
+`cluster.ingress.public`. Obtain and retain each endpoint's own enrolled
+node identity before selecting its assigned addresses. Do not use the
+hypervisor's state or a guessed address. For temporary enrollment, use
+userspace networking, separate state and socket paths, and
+`--accept-dns=false`. Stop that daemon before the endpoint uses its state.
+The guest's state directory and files must use the host owner and group
+declared by `idmapBase` in `/etc/homelab/compute.json`.
+
+The compute guest selects `services.public-origin` when public transport
+is configured. Include `den.aspects.services.public-relay` on the edge
+host and enable its matching setting. Neither endpoint needs application
+TLS keys. The guest does not advertise subnets or accept Tailnet DNS,
+and its Tailnet interface admits only the declared public receiver.
+Guest source NAT is disabled so Pod admission sees the relay address;
+the hypervisor's existing private source NAT remains unchanged.
+
+Use separate enrollment keys that assign `tag:public-origin` and
+`tag:public-relay`. Encrypt the guest input at
+`.secrets/hosts/compute-1/tailscale-auth-key.age` and the relay
+input at `.secrets/hosts/<relay>/public-tailscale-auth-key.age`, then
+use the existing agenix/rekey flow. Do not use the shared fleet key.
+Host staging delivers the guest key read-only at
+`/srv/secrets/tailscale-auth-key`, outside the Kubernetes Secret inventory.
+The guest's writable `/var/lib/tailscale` is retained separately on the
+hypervisor at `/var/lib/homelab/compute-1/tailscale`; never run
+concurrent instances with the same node state. Relay node state is
+retained through its normal host persistence declarations.
+
+Before activation, verify the effective Tailnet grants, including broad
+overlapping grants: the relay may reach only this guest receiver, never
+private ingress, SSH, Kubernetes, Incus or other nodes. Local restrictions
+also deny relay IPv6/alternate paths and prevent guest-initiated traffic
+from borrowing the hypervisor's Tailnet identity. Management and private
+access remain independent of the public link.
+
+Stopping `nftables.service` leaves the approved kernel rules and table
+ownership record intact. Start and reload replace owned rules atomically;
+a failed reload keeps the previous rules. Deliberately removing protection
+requires explicit decommissioning, not a service stop.
 
 ## Retained state
 

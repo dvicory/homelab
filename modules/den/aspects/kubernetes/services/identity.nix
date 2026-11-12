@@ -351,7 +351,22 @@ in
       labels = {
         "app.kubernetes.io/name" = "kanidm";
       };
-      gatewaySelector.matchLabels."gateway.envoyproxy.io/owning-gateway-name" = "household";
+      publicGatewayAdmitted =
+        cluster.ingress.public != null
+        && normal
+        && (
+          routes.idm.exposure == "public"
+          # The public proxy also redeems administrator OIDC codes directly
+          # against Kanidm, even when its browser-facing route is private.
+          || lib.any (route: route.exposure == "public") (lib.attrValues adminRoutes)
+        );
+      gatewayPeers = map (gateway: {
+        namespaceSelector.matchLabels."kubernetes.io/metadata.name" = "gateway";
+        podSelector.matchLabels = {
+          "gateway.envoyproxy.io/owning-gateway-namespace" = "gateway";
+          "gateway.envoyproxy.io/owning-gateway-name" = gateway;
+        };
+      }) ([ "household" ] ++ lib.optional publicGatewayAdmitted "household-public");
       image = "docker.io/kanidm/server:1.11.2@sha256:d87475bf9c9cfd24872d8b25957c9fc13fc090ace09ddc37c3b25fe394b397ac";
       # Kanidm's retained path and native export support are facts for Preserve.
       # Capture cadence, retention, targets, and restore policy belong there.
@@ -701,12 +716,7 @@ in
                 policyTypes = [ "Ingress" ];
                 ingress = [
                   {
-                    from = [
-                      {
-                        namespaceSelector.matchLabels."kubernetes.io/metadata.name" = "gateway";
-                        podSelector = gatewaySelector;
-                      }
-                    ];
+                    from = gatewayPeers;
                     ports = [
                       {
                         protocol = "TCP";

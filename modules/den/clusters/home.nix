@@ -31,9 +31,8 @@ in
     repository = "https://github.com/dvicory/homelab.git";
     branch = "main";
     ingress = {
-      mode = "direct";
       nodePort = 30443;
-      trustedProxyCIDRs = [ ];
+      public = null;
     };
     settings.kubernetes.services.identity.phase = "normal";
     settings.kubernetes.services.seerr.phase = "ready";

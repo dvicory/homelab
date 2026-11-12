@@ -1,0 +1,35 @@
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: ClientTrafficPolicy
+metadata:
+  name: private-origin
+  namespace: gateway
+spec:
+  clientIPDetection:
+    directSourceIP: {}
+  headers:
+    earlyRequestHeaders:
+      remove:
+        - Forwarded
+        - X-Forwarded-For
+        - X-Forwarded-Host
+        - X-Forwarded-Proto
+        - X-Forwarded-Port
+        - X-Forwarded-Server
+        - X-Real-IP
+        - X-Forwarded-User
+        - X-Forwarded-Email
+        - X-Auth-Request-User
+        - X-Auth-Request-Email
+        - Remote-User
+        - X-Request-ID
+        - X-Correlation-ID
+        - X-Client-Request-ID
+        - X-Envoy-External-Address
+        - X-Envoy-Internal
+    requestID: Generate
+    xForwardedClientCert:
+      mode: Sanitize
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: household

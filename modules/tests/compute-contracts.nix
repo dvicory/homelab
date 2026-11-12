@@ -41,7 +41,12 @@ let
     .success;
   withDevice =
     name: device: current:
-    current // { devices = current.devices // { ${name} = device; }; };
+    current
+    // {
+      devices = current.devices // {
+        ${name} = device;
+      };
+    };
   ungranted =
     builtins.fromJSON
       (evaluateWith (current: current // { accelerator = null; }))
@@ -161,7 +166,9 @@ let
         "unix-hotplug"
         "usb"
       ]
-      && project."restricted.devices.unix-char" == (if compute.accelerator != null then "allow" else "block");
+      &&
+        project."restricted.devices.unix-char"
+        == (if compute.accelerator != null then "allow" else "block");
     # gpu-render never enters the guest's ID map.
     accelerator-grant-leaves-id-map =
       descriptor.config."raw.idmap" == ungranted.config."raw.idmap"
@@ -229,12 +236,18 @@ let
       let
         ingress = config.den.clusters.prod-home.ingress;
       in
-      ingress.mode == "direct"
+      ingress.public == null
       && builtins.elem ingress.nodePort (guest.networking.firewall.interfaces.eth0.allowedTCPPorts or [ ])
       && !(builtins.elem ingress.nodePort host.networking.firewall.allowedTCPPorts)
       && !(builtins.elem 443 host.networking.firewall.allowedTCPPorts)
       && !(builtins.elem 80 host.networking.firewall.allowedTCPPorts)
       && !(builtins.elem 6443 host.networking.firewall.allowedTCPPorts);
+    public-transport-disabled-on-fleet =
+      config.den.clusters.prod-home.ingress.public == null
+      && !guest.services.tailscale.enable
+      && builtins.all (configuration: !(configuration.config.services.haproxy.enable or false)) (
+        builtins.attrValues self.nixosConfigurations
+      );
   };
   failures = builtins.attrNames (lib.filterAttrs (_: passed: !passed) assertions);
 in

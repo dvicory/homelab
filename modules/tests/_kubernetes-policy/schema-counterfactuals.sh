@@ -9,17 +9,17 @@ trap 'rm -rf "$work"' EXIT
 cp -aL "$schemas/." "$work/schemas"
 chmod -R u+w "$work/schemas"
 policy_schema="$work/schemas/gateway.envoyproxy.io__clienttrafficpolicy__v1alpha1.json"
-jq -e '.properties.spec.properties.headers.properties.requestID.enum | index("PreserveOrGenerate") != null' "$policy_schema" > /dev/null
-jq '.properties.spec.properties.headers.properties.requestID.enum |= map(select(. != "PreserveOrGenerate"))' "$policy_schema" > "$work/changed.json"
+jq -e '.properties.spec.properties.proxyProtocol.properties.optional.type == "boolean"' "$policy_schema" > /dev/null
+jq '.properties.spec.properties.proxyProtocol.properties.optional = {"type":"boolean","enum":[true]}' "$policy_schema" > "$work/changed.json"
 mv "$work/changed.json" "$policy_schema"
-# The exact native registry mutation remains compatible with actual direct mode.
-"$validator" "$inputs/normal-ready-direct/manifests" "$work/schemas" "$reports/direct-still-valid.json"
-if "$validator" "$inputs/normal-ready-trustedEdges/manifests" "$work/schemas" "$reports/trusted-enum-rejected.json"; then
-  echo 'trusted-only request-ID schema counterfactual unexpectedly passed' >&2
+# Private TLS has no PROXY policy; public ingress must require its metadata.
+"$validator" "$inputs/normal-ready-private/manifests" "$work/schemas" "$reports/private-still-valid.json"
+if "$validator" "$inputs/normal-ready-public/manifests" "$work/schemas" "$reports/public-proxy-rejected.json"; then
+  echo 'mandatory public PROXY schema counterfactual unexpectedly passed' >&2
   exit 1
 fi
-jq -e 'any(.resources[]; .kind == "ClientTrafficPolicy" and .name == "trusted-edges" and .status == "statusInvalid" and any(.validationErrors[]?; .path == "/spec/headers/requestID"))' "$reports/trusted-enum-rejected.json" > /dev/null
-cp -aL "$inputs/normal-ready-direct/manifests/." "$work/normal"
+jq -e 'any(.resources[]; .kind == "ClientTrafficPolicy" and .name == "public-origin" and .status == "statusInvalid" and any(.validationErrors[]?; .path == "/spec/proxyProtocol/optional"))' "$reports/public-proxy-rejected.json" > /dev/null
+cp -aL "$inputs/normal-ready-private/manifests/." "$work/normal"
 chmod -R u+w "$work/normal"
 yq -e '.kind == "Job" and .metadata.name == "kanidm-provision"' "$work/normal/identity/Job-kanidm-provision.yaml" > /dev/null
 yq -i '.spec.parallelism = "not-an-integer"' "$work/normal/identity/Job-kanidm-provision.yaml"

@@ -1,5 +1,8 @@
 {
   den.aspects.core.network.firewall-collector = {
-    nixos = { firewall, lib, ... }: lib.mkMerge firewall;
+    nixos = { firewall, lib, ... }: {
+      imports = [ ./_firewall-lifetime.nix ];
+      config = lib.mkMerge firewall;
+    };
   };
 }

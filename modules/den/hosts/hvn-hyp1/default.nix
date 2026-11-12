@@ -7,6 +7,8 @@
 }:
 let
   clusterResources = config.flake.clusterResources.prod-home;
+  publicEnabled = config.den.clusters.prod-home.ingress.public != null;
+  tailscaleStatePath = "/var/lib/homelab/compute-1/tailscale";
 in
 {
   den.hosts.x86_64-linux.hvn-hyp1 = {
@@ -81,6 +83,21 @@ in
             required = "true";
             source = identityPath;
             type = "disk";
+          };
+        }
+        // lib.optionalAttrs publicEnabled {
+          tailscale-state = {
+            type = "disk";
+            source = tailscaleStatePath;
+            path = "/var/lib/tailscale";
+            required = "true";
+            readonly = "false";
+            requiredPath = {
+              uid = idmapBase;
+              gid = idmapBase;
+              mode = "0700";
+              readOnly = false;
+            };
           };
         };
         # Arc Pro A40/A50 (DG2), driven by i915.
@@ -190,6 +207,15 @@ in
       den.aspects.workloads.hermes.deploy
       den.aspects.services.host-telemetry
     ];
+
+    persist =
+      { host, ... }:
+      lib.optional publicEnabled {
+        directories = [ tailscaleStatePath ];
+        user = toString host.settings.virtualization.compute.idmapBase;
+        group = toString host.settings.virtualization.compute.idmapBase;
+        mode = "0700";
+      };
 
     nixos =
       {

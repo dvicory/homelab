@@ -50,8 +50,10 @@ spec:
           expression: >-
             variables.objects.filter(o, o.kind == 'NetworkPolicy' && o.metadata.name.startsWith('gateway-')
             && o.metadata.name.endsWith('-backend-ingress'))
+        - name: public
+          expression: variables.cluster.ingress.public != null
         - name: peers
-          expression: variables.cluster.ingress.trustedProxyCIDRs
+          expression: "variables.public ? [variables.cluster.ingress.public.peerAddress + '/32'] : []"
         - name: gatewayImage
           expression: '''docker.io/envoyproxy/gateway:v1.9.1@sha256:0049bcb384c591c6a6dd043fe5c9929ef6e74f230e12dd678d2d3701df9b301e'''
         - name: proxyImage
@@ -229,6 +231,13 @@ spec:
             o.metadata.name == n && o.metadata.namespace == 'gateway').size() == 1)
           message: Every active inventory route must render exactly once; unknown or inactive routes are
             forbidden.
+        - expression: >-
+            variables.routes.all(r, r.metadata.name in variables.active &&
+            r.spec.parentRefs == ([{'group':'gateway.networking.k8s.io','kind':'Gateway','name':'household'}] +
+            (variables.public && variables.inventory[r.metadata.name].exposure == 'public' &&
+            (r.metadata.name != 'idm' || variables.phase == 'normal')
+            ? [{'group':'gateway.networking.k8s.io','kind':'Gateway','name':'household-public'}] : [])))
+          message: Every eligible route attaches privately and only declared public routes attach to public entry.
   - name: route-service-grant-joins
     match:
       any:
@@ -300,15 +309,12 @@ spec:
         variables: *id001
         expressions:
         - expression: >-
-            (variables.cluster.ingress.mode == 'direct' && variables.peers.size() == 0) || (variables.cluster.ingress.mode
-            == 'trustedEdges' && variables.peers.size() > 0)
-          message: Ingress mode must have exact native request ID/client IP behavior and trusted-edge
-            private-origin isolation.
-        - expression: >-
-            variables.objects.filter(o, o.kind == 'ClientTrafficPolicy').size() == 1 && variables.objects.filter(o,
-            o.kind == 'NetworkPolicy' && o.metadata.name == 'private-origin').size() == (variables.cluster.ingress.mode
-            == 'trustedEdges' ? 1 : 0)
-          message: Native traffic and trusted-origin populations must be complete.
+            variables.objects.filter(o, o.kind == 'ClientTrafficPolicy').size() == (variables.public ? 2 : 1) &&
+            variables.objects.filter(o, o.kind == 'ClientTrafficPolicy' && o.metadata.namespace == 'gateway' &&
+            o.metadata.name == 'private-origin').size() == 1 &&
+            variables.objects.filter(o, o.kind == 'ClientTrafficPolicy' && o.metadata.namespace == 'gateway' &&
+            o.metadata.name == 'public-origin').size() == (variables.public ? 1 : 0)
+          message: Independent entry traffic policies must be complete.
   - name: gateway-populations
     match:
       any:
@@ -325,11 +331,12 @@ spec:
         variables: *id001
         expressions:
         - expression: >-
-            variables.objects.filter(o, o.kind == 'Gateway' && o.metadata.name == 'household' && o.metadata.namespace
-            == 'gateway').size() == 1 && variables.objects.filter(o, o.kind == 'EnvoyProxy' && o.metadata.name
-            == 'household' && o.metadata.namespace == 'gateway').size() == 1
-          message: Native Gateway and EnvoyProxy must retain the HTTPS listener and local private-origin
-            NodePort.
+            ['Gateway', 'EnvoyProxy'].all(k, variables.objects.filter(o, o.kind == k).size() ==
+            (variables.public ? 2 : 1) && variables.objects.filter(o, o.kind == k &&
+            o.metadata.name == 'household' && o.metadata.namespace == 'gateway').size() == 1 &&
+            variables.objects.filter(o, o.kind == k && o.metadata.name == 'household-public' &&
+            o.metadata.namespace == 'gateway').size() == (variables.public ? 1 : 0))
+          message: Private Gateway and public-only data plane populations must match configured entries exactly.
         - expression: >-
             variables.objects.filter(o, o.kind == 'GatewayClass' && o.metadata.name == 'envoy').size()
             == 1 && variables.objects.filter(o, o.kind == 'Deployment' && o.metadata.name == 'envoy-gateway'
@@ -642,6 +649,9 @@ spec:
     - name: routePath
       variable:
         jmesPath: facts."route.{{ request.object.metadata.name }}.pathPrefix"
+    - name: routeParents
+      variable:
+        jmesPath: parse_json(facts."route.{{ request.object.metadata.name }}.parents")
     validate:
       failureAction: Enforce
       message: route inventory
@@ -653,10 +663,7 @@ spec:
             value: '{{ routeHosts }}'
           - key: '{{ request.object.spec.parentRefs }}'
             operator: NotEquals
-            value:
-            - group: gateway.networking.k8s.io
-              kind: Gateway
-              name: household
+            value: '{{ routeParents }}'
           - key: '{{ length(request.object.spec.rules) }}'
             operator: NotEquals
             value: 1
@@ -702,17 +709,25 @@ spec:
       any:
       - resources:
           kinds:
-          - HTTPRoute
+          - ClientTrafficPolicy
+          names:
+          - private-origin
+          - public-origin
     validate:
       failureAction: Enforce
       cel:
         expressions:
         - expression: >-
-            object.spec.rules.all(rule, rule.filters.size() == 1 && rule.filters[0].type == 'RequestHeaderModifier'
-            && rule.filters[0].requestHeaderModifier.size() == 1 && rule.filters[0].requestHeaderModifier.remove.size()
-            == 7 && ['X-Real-IP', 'X-Forwarded-User', 'X-Forwarded-Email', 'X-Auth-Request-User', 'X-Auth-Request-Email',
-            'Remote-User', 'Forwarded'].all(h, h in rule.filters[0].requestHeaderModifier.remove))
-          message: request header sanitizer
+            has(object.spec.headers.earlyRequestHeaders) &&
+            object.spec.headers.earlyRequestHeaders.size() == 1 &&
+            object.spec.headers.earlyRequestHeaders.remove.size() == 17 &&
+            ['Forwarded', 'X-Forwarded-For', 'X-Forwarded-Host', 'X-Forwarded-Proto', 'X-Forwarded-Port',
+            'X-Forwarded-Server', 'X-Real-IP', 'X-Forwarded-User', 'X-Forwarded-Email',
+            'X-Auth-Request-User', 'X-Auth-Request-Email', 'Remote-User', 'X-Request-ID', 'X-Correlation-ID',
+            'X-Client-Request-ID', 'X-Envoy-External-Address', 'X-Envoy-Internal'].all(h,
+            h in object.spec.headers.earlyRequestHeaders.remove) &&
+            object.spec.headers.xForwardedClientCert == {'mode':'Sanitize'}
+          message: Gateway must discard client forwarding, identity and request IDs before reconstructing metadata.
   - name: route-timeouts
     match:
       any:
@@ -770,87 +785,51 @@ spec:
           kinds:
           - ClientTrafficPolicy
           names:
-          - trusted-edges
+          - private-origin
+          - public-origin
           namespaces:
           - gateway
-    context:
-    - *id002
-    - name: peers
-      variable:
-        jmesPath: parse_json(facts.trustedProxyCIDRs)
-    - name: clientDetection
-      variable:
-        jmesPath: (facts.ingressMode == 'direct' && `{"directSourceIP":{}}`) || {xForwardedFor:{trustedCIDRs:peers}}
-    - name: requestID
-      variable:
-        jmesPath: (facts.ingressMode == 'direct' && 'Generate') || 'PreserveOrGenerate'
     validate:
       failureAction: Enforce
-      message: client traffic origin
-      deny:
-        conditions:
-          any:
-          - key: '{{ request.object.spec.targetRefs }}'
-            operator: NotEquals
-            value:
-            - group: gateway.networking.k8s.io
-              kind: Gateway
-              name: household
-          - key: '{{ request.object.spec.clientIPDetection }}'
-            operator: NotEquals
-            value: '{{ clientDetection }}'
-          - key: '{{ request.object.spec.headers }}'
-            operator: NotEquals
-            value:
-              requestID: '{{ requestID }}'
-          - key: '{{ length(request.object.spec) }}'
-            operator: NotEquals
-            value: 3
-  - name: private-origin-isolation
+      cel:
+        expressions:
+        - expression: >-
+            object.spec.targetRefs == [{'group':'gateway.networking.k8s.io', 'kind':'Gateway',
+            'name':object.metadata.name == 'public-origin' ? 'household-public' : 'household'}] &&
+            object.spec.clientIPDetection == {'directSourceIP':{}} &&
+            object.spec.headers.requestID == 'Generate' &&
+            (object.metadata.name == 'public-origin' ? (has(object.spec.proxyProtocol) &&
+            object.spec.proxyProtocol == {'optional':false} && object.spec.size() == 4) :
+            (!has(object.spec.proxyProtocol) && object.spec.size() == 3))
+          message: Each entry must generate request IDs and use its socket address; only public entry requires PROXY.
+  - name: public-origin-isolation
     match:
       any:
       - resources:
           kinds:
           - NetworkPolicy
           names:
-          - private-origin
+          - public-origin
           namespaces:
           - gateway
-    context:
-    - *id002
-    - name: peers
-      variable:
-        jmesPath: parse_json(facts.trustedProxyCIDRs)
-    - name: sources
-      variable:
-        jmesPath: peers[].{ipBlock:{cidr:@}}
     validate:
       failureAction: Enforce
-      message: private origin isolation
-      deny:
-        conditions:
-          any:
-          - key: '{{ request.object.spec.podSelector }}'
-            operator: NotEquals
-            value:
-              matchLabels:
-                gateway.envoyproxy.io/owning-gateway-namespace: gateway
-                gateway.envoyproxy.io/owning-gateway-name: household
-          - key: '{{ request.object.spec.policyTypes }}'
-            operator: NotEquals
-            value:
-            - Ingress
-          - key: '{{ request.object.spec.ingress }}'
-            operator: NotEquals
-            value:
-            - from: '{{ sources }}'
-              ports:
-              - protocol: TCP
-                # Nested equality is type-exact; use a native JMESPath number.
-                port: "{{ to_number('10443') }}"
-          - key: '{{ length(request.object.spec) }}'
-            operator: NotEquals
-            value: 3
+      cel:
+        expressions:
+        - expression: >-
+            object.spec == {'podSelector':dyn({'matchLabels':{
+            'gateway.envoyproxy.io/owning-gateway-namespace':'gateway',
+            'gateway.envoyproxy.io/owning-gateway-name':'household-public'}}),
+            'policyTypes':dyn(['Ingress']), 'ingress':dyn([{'from':dyn([{'ipBlock':{
+            'cidr':params.metadata.annotations.publicPeerCIDR}}]),
+            'ports':dyn([{'protocol':dyn('TCP'),'port':dyn(10443)}])}])}
+          message: Public receiver must admit only the declared peer on its isolated TLS port.
+        paramKind:
+          apiVersion: v1
+          kind: Namespace
+        paramRef:
+          name: policy-facts
+          parameterNotFoundAction: Deny
   - name: gateway-native-origin
     match:
       any:
@@ -859,6 +838,7 @@ spec:
           - Gateway
           names:
           - household
+          - household-public
           namespaces:
           - gateway
     validate:
@@ -867,7 +847,7 @@ spec:
         expressions:
         - expression: >-
             object.spec.gatewayClassName == 'envoy' && object.spec.infrastructure.parametersRef == {'group':'gateway.envoyproxy.io',
-            'kind':'EnvoyProxy', 'name':'household'} && object.spec.listeners == [{'name':dyn('https'), 'protocol':dyn('HTTPS'),
+            'kind':'EnvoyProxy', 'name':string(object.metadata.name)} && object.spec.listeners == [{'name':dyn('https'), 'protocol':dyn('HTTPS'),
             'port':dyn(443), 'allowedRoutes':dyn({'namespaces':{'from':'Same'}}),
             'tls':dyn({'mode':dyn('Terminate'), 'certificateRefs':dyn([
             {'group':'', 'kind':'Secret', 'name':'gateway-tls'},
@@ -881,6 +861,7 @@ spec:
           - EnvoyProxy
           names:
           - household
+          - household-public
           namespaces:
           - gateway
     validate:
@@ -889,9 +870,11 @@ spec:
         expressions:
         - expression: >-
             object.spec.provider.type == 'Kubernetes' && object.spec.provider.kubernetes.envoyService
-            == {'name':dyn('household-origin'), 'type':dyn('NodePort'), 'externalTrafficPolicy':dyn('Local'),
+            == {'name':dyn(object.metadata.name == 'household-public' ? 'household-public-origin' : 'household-origin'),
+            'type':dyn('NodePort'), 'externalTrafficPolicy':dyn('Local'),
             'patch':dyn({'type':dyn('StrategicMerge'), 'value':dyn({'spec':{'ports':[{'name':dyn('https'),
-            'port':dyn(443), 'nodePort':dyn(int(params.metadata.annotations.nodePort))}]}})})}
+            'port':dyn(443), 'nodePort':dyn(int(object.metadata.name == 'household-public' ?
+            params.metadata.annotations.publicNodePort : params.metadata.annotations.nodePort))}]}})})}
           message: proxy native origin
         paramKind:
           apiVersion: v1
@@ -939,6 +922,7 @@ spec:
           - EnvoyProxy
           names:
           - household
+          - household-public
           namespaces:
           - gateway
     validate:
@@ -1001,17 +985,35 @@ spec:
           - namespaceSelector:
               matchLabels:
                 kubernetes.io/metadata.name: '{{ backendNamespace }}'
+    - name: privatePeers
+      variable:
+        value:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: gateway
+          podSelector:
+            matchLabels:
+              gateway.envoyproxy.io/owning-gateway-namespace: gateway
+              gateway.envoyproxy.io/owning-gateway-name: household
+    - name: publicPeers
+      variable:
+        value:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: gateway
+          podSelector:
+            matchLabels:
+              gateway.envoyproxy.io/owning-gateway-namespace: gateway
+              gateway.envoyproxy.io/owning-gateway-name: household-public
+    - name: proxyPeers
+      variable:
+        jmesPath: >-
+          [privatePeers, facts.publicIngress != 'null' && facts."route.{{ routeName }}.exposure" == 'public'
+          && publicPeers || `[]`][]
     - name: proxySources
       variable:
         value:
-        - from:
-          - namespaceSelector:
-              matchLabels:
-                kubernetes.io/metadata.name: gateway
-            podSelector:
-              matchLabels:
-                gateway.envoyproxy.io/owning-gateway-namespace: gateway
-                gateway.envoyproxy.io/owning-gateway-name: household
+        - from: '{{ proxyPeers }}'
     # A route with sameNamespaceIngress false leaves its in-cluster clients to
     # the backend owner's own NetworkPolicy, so the Gateway policy admits only
     # the proxy.
@@ -1063,8 +1065,10 @@ spec:
             'normal') && (n != 'requests' || variables.cluster.settings.kubernetes.services.seerr.phase
             == 'ready') && (n != 'home' || (variables.phase == 'normal' &&
             variables.cluster.settings.kubernetes.services.homarr.phase == 'ready')))
+        - name: public
+          expression: variables.cluster.ingress.public != null
         - name: peers
-          expression: variables.cluster.ingress.trustedProxyCIDRs
+          expression: "variables.public ? [variables.cluster.ingress.public.peerAddress + '/32'] : []"
         - name: policyEntries
           expression: object.bundle.resources.filter(e, e.object.kind == 'NetworkPolicy')
         - name: policyApplications
@@ -1080,11 +1084,16 @@ spec:
         - name: effectivePolicies
           expression: >-
             variables.policyOwnership.map(x, {'spec':dyn(x.entry.object.spec),
+            'name':dyn(x.entry.object.metadata.name),
             'namespace':dyn(has(x.entry.object.metadata.namespace) && x.entry.object.metadata.namespace != ''
             ? x.entry.object.metadata.namespace : (x.owners.size() == 1 ? x.owners[0].spec.destination.namespace : ''))})
         expressions:
         - expression: variables.effectivePolicies.all(p, p.namespace != '')
           message: Omitted NetworkPolicy namespaces must resolve through their sole Application owner's destination.
+        - expression: >-
+            variables.effectivePolicies.filter(p, p.name == 'public-origin' && p.namespace == 'gateway')
+            .size() == (variables.public ? 1 : 0)
+          message: Public origin isolation must exist in its effective Gateway namespace.
         - expression: >-
             !('grafana' in variables.active) || (variables.inventory.grafana.manageBackendIngress
             && !variables.inventory.grafana.sameNamespaceIngress)
@@ -1106,7 +1115,12 @@ spec:
             (has(f.namespaceSelector) && f.namespaceSelector == {'matchLabels':{'kubernetes.io/metadata.name':variables.inventory[n].namespace}}
             && !has(f.ipBlock)))) || (has(f.namespaceSelector) && f.namespaceSelector == {'matchLabels':{'kubernetes.io/metadata.name':'gateway'}}
             && has(f.podSelector.matchLabels) && 'gateway.envoyproxy.io/owning-gateway-name' in f.podSelector.matchLabels
-            && f.podSelector.matchLabels['gateway.envoyproxy.io/owning-gateway-name'] == 'household' &&
+            && (f.podSelector.matchLabels['gateway.envoyproxy.io/owning-gateway-name'] == 'household' ||
+            (variables.public && (n == 'idm' ? (variables.phase == 'normal' &&
+            (variables.inventory[n].exposure == 'public' || variables.inventory.exists(name,
+            variables.inventory[name].auth == 'admin' && variables.inventory[name].exposure == 'public'))) :
+            variables.inventory[n].exposure == 'public') &&
+            f.podSelector.matchLabels['gateway.envoyproxy.io/owning-gateway-name'] == 'household-public')) &&
             (n == 'idm' || ('gateway.envoyproxy.io/owning-gateway-namespace' in f.podSelector.matchLabels
             && f.podSelector.matchLabels['gateway.envoyproxy.io/owning-gateway-namespace'] == 'gateway'))
             && !has(f.ipBlock)) || (n == 'idm' && variables.phase == 'normal' &&
@@ -1132,20 +1146,19 @@ spec:
             Every selecting NetworkPolicy must preserve backend ingress authority; additive allow-all
             policies cannot widen the union.
         - expression: >-
-            variables.cluster.ingress.mode != 'trustedEdges' || variables.effectivePolicies.filter(p,
+            !variables.public || variables.effectivePolicies.filter(p,
             p.namespace == 'gateway'
             && (!has(p.spec.policyTypes) || p.spec.policyTypes.size() == 0 || 'Ingress' in p.spec.policyTypes)
             && ((!has(p.spec.podSelector.matchLabels) || p.spec.podSelector.matchLabels.all(k, !(k in
-            {'gateway.envoyproxy.io/owning-gateway-namespace':'gateway', 'gateway.envoyproxy.io/owning-gateway-name':'household'})
+            {'gateway.envoyproxy.io/owning-gateway-namespace':'gateway', 'gateway.envoyproxy.io/owning-gateway-name':'household-public'})
             || p.spec.podSelector.matchLabels[k] == {'gateway.envoyproxy.io/owning-gateway-namespace':'gateway',
-            'gateway.envoyproxy.io/owning-gateway-name':'household'}[k])) && (!has(p.spec.podSelector.matchExpressions)
+            'gateway.envoyproxy.io/owning-gateway-name':'household-public'}[k])) && (!has(p.spec.podSelector.matchExpressions)
             || p.spec.podSelector.matchExpressions.all(e, !(e.key in {'gateway.envoyproxy.io/owning-gateway-namespace':'gateway',
-            'gateway.envoyproxy.io/owning-gateway-name':'household'}) || (e.operator == 'In' ? {'gateway.envoyproxy.io/owning-gateway-namespace':'gateway',
-            'gateway.envoyproxy.io/owning-gateway-name':'household'}[e.key] in e.values : e.operator ==
-            'NotIn' ? !({'gateway.envoyproxy.io/owning-gateway-namespace':'gateway', 'gateway.envoyproxy.io/owning-gateway-name':'household'}[e.key]
+            'gateway.envoyproxy.io/owning-gateway-name':'household-public'}) || (e.operator == 'In' ? {'gateway.envoyproxy.io/owning-gateway-namespace':'gateway',
+            'gateway.envoyproxy.io/owning-gateway-name':'household-public'}[e.key] in e.values : e.operator ==
+            'NotIn' ? !({'gateway.envoyproxy.io/owning-gateway-namespace':'gateway', 'gateway.envoyproxy.io/owning-gateway-name':'household-public'}[e.key]
             in e.values) : e.operator == 'Exists'))))).all(p, !has(p.spec.ingress) || p.spec.ingress.all(i,
             has(i.from) && i.from.size() > 0 && i.from.all(f, f.size() == 1 && has(f.ipBlock) && f.ipBlock.size()
             == 1 && f.ipBlock.cidr in variables.peers) && has(i.ports) && i.ports.size() > 0 && i.ports.all(port,
             port.port == 10443 && (!has(port.protocol) || port.protocol == 'TCP') && !has(port.endPort))))
-          message: Every selecting proxy NetworkPolicy must preserve the trusted-peer native listener
-            boundary.
+          message: Every selecting public proxy NetworkPolicy must preserve the declared-peer-only receiver boundary.

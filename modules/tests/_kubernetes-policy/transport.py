@@ -41,11 +41,11 @@ Loader.add_constructor("tag:yaml.org,2002:value", Loader.construct_scalar)
 SOURCE = Path(__file__).parent
 FAMILIES = ("transport", "gitops", "edge-identity", "workloads")
 VARIANTS = ("canonical",) + tuple(
-    f"{identity}-{seerr}-{mode}"
+    f"{identity}-{seerr}-{entry}"
     for identity in ("initial", "provisioning", "normal")
-    for seerr in ("initial", "ready") for mode in ("direct", "trustedEdges")
+    for seerr in ("initial", "ready") for entry in ("private", "public")
 )
-DEFAULT_VARIANT = "normal-ready-trustedEdges"
+DEFAULT_VARIANT = "normal-ready-public"
 ANCHOR = "v1/ConfigMap/verification/verification-bundle"
 
 
@@ -101,14 +101,23 @@ def facts_resource(expected):
         "jellyfinPort": raw_string(cluster["routes"]["jellyfin"]["port"]),
         "identityPhase": cluster["settings"]["kubernetes"]["services"]["identity"]["phase"],
         "seerrPhase": cluster["settings"]["kubernetes"]["services"]["seerr"]["phase"],
-        "ingressMode": cluster["ingress"]["mode"],
-        "trustedProxyCIDRs": raw_string(cluster["ingress"]["trustedProxyCIDRs"]),
+        "publicIngress": raw_string(cluster["ingress"]["public"]),
+        "publicPeerCIDR": (cluster["ingress"]["public"]["peerAddress"] + "/32"
+                           if cluster["ingress"]["public"] else ""),
+        "publicNodePort": raw_string(cluster["ingress"]["public"]["nodePort"]
+                                    if cluster["ingress"]["public"] else 0),
         "nodePort": raw_string(cluster["ingress"]["nodePort"]),
         "identityKanidmGuestPath": compute["retainedPaths"]["identity-kanidm"]["guestPath"],
         "domain": expected["environment"]["domain"], "backupDomain": expected["environment"]["backupDomain"],
     })
     for name, route in cluster["routes"].items():
         data.update({f"route.{name}.{field}": raw_string(value) for field, value in route.items()})
+        data[f"route.{name}.parents"] = raw_string(
+            [{"group": "gateway.networking.k8s.io", "kind": "Gateway", "name": "household"}]
+            + ([{"group": "gateway.networking.k8s.io", "kind": "Gateway", "name": "household-public"}]
+               if (cluster["ingress"]["public"] and route["exposure"] == "public"
+                   and (name != "idm" or cluster["settings"]["kubernetes"]["services"]["identity"]["phase"] == "normal"))
+               else []))
     return {"apiVersion": "v1", "kind": "Namespace",
             "metadata": {"name": "policy-facts", "annotations": data}}
 
@@ -239,7 +248,7 @@ def generate(args):
 
     `positive.applies` (plus phase-conditional `when` blocks) is the explicit, hand-reviewed rule ×
     identity table that every genuine complete-population positive must report as Pass. Scenario keys:
-      variant       render to use; default normal-ready-trustedEdges
+      variant       render to use; default normal-ready-public
       base          identity of a genuine object in that render; its mutated copy is the only resource
       object        synthetic object (a name under `objects`, or inline) with no genuine counterpart
       mutate        yq applied to base/object or, without either, to the complete-population anchor
@@ -264,7 +273,8 @@ def generate(args):
         cluster = json.loads((inputs / variant / "expected.json").read_text())["cluster"]
         services = cluster["settings"]["kubernetes"]["services"]
         return {"identity": services["identity"]["phase"], "seerr": services["seerr"]["phase"],
-                "homarr": services["homarr"]["phase"], "mode": cluster["ingress"]["mode"]}
+                "homarr": services["homarr"]["phase"],
+                "entry": "public" if cluster["ingress"]["public"] else "private"}
 
     def base_object(variant, ident):
         for population in objects(variant):
@@ -479,8 +489,11 @@ def validate_rows(rows, expected, name):
     # Pinned 1.19 can report CEL/compiler errors with RESULT Pass.
     diagnostics = ("resulted in error:", "fails to compile:", "fails to evaluate:",
                    "compilation failed:", "error in parameterized resource:")
-    if any(marker in row["Message"].lower() for row in rows for marker in diagnostics):
-        raise NativeRejection("native-evaluation-error", f"Native evaluation/compiler/parameter error: {name}")
+    errors = sorted({f'{row["RULE"]}: {row["Message"]}' for row in rows
+                     if any(marker in row["Message"].lower() for marker in diagnostics)})
+    if errors:
+        raise NativeRejection("native-evaluation-error",
+                              f"Native evaluation/compiler/parameter error: {name}\n" + "\n".join(errors))
     statuses = [row["REASON"].partition(", got ")[2] for row in rows]
     if "error" in statuses or any(row["REASON"] in ("Invalid Policy", "Error") for row in rows):
         raise NativeRejection("native-evaluation-error", f"Native error status: {name}")

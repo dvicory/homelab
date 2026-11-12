@@ -61,7 +61,9 @@ in
                 else
                   "`${builtins.head route.hostnames}`";
             in
-            "| `${route.namespace}/${route.service}` | ${endpoint} | `${route.exposure}` | ${
+            "| `${route.namespace}/${route.service}` | ${endpoint} | ${
+              if route.exposure == "public" then "yes" else "no"
+            } | ${
               {
                 admin = "Gateway admin";
                 native = "Application";
@@ -73,11 +75,17 @@ in
         ''
           ### `${name}`
 
-          - **Kubernetes API:** `${cluster.kubeVersion}`; ingress `${cluster.ingress.mode}` on NodePort `${toString cluster.ingress.nodePort}`.
+          - **Kubernetes API:** `${cluster.kubeVersion}`; private Gateway NodePort `${toString cluster.ingress.nodePort}`.
+          - **Public Gateway:** ${
+            if cluster.ingress.public == null then
+              "not configured"
+            else
+              "NodePort `${toString cluster.ingress.public.nodePort}`"
+          }.
           - **Persistent state:** `${compute.stateRoot}` on ${hostLink cluster.hostName}, mounted at `${compute.stateGuestPath}` in the guest. [Paths and owners](docs/operations.md#retained-state).
           - **GitOps:** [generated manifests](generated/manifests/${name}/), tracked from `${cluster.branch}` by Argo CD. [Deployment runbook](docs/operations.md#deploy-configuration).
 
-          | Backend | Canonical hostname | Exposure | Sign-in | In manifests |
+          | Backend | Canonical hostname | Public entry allowed | Sign-in | Gateway route generated |
           | --- | --- | --- | --- | --- |
           ${lib.concatStringsSep "\n" routeRows}
         '';
@@ -99,8 +107,9 @@ in
         ## Services and topology
 
         ${lib.concatStringsSep "\n" (lib.mapAttrsToList clusterSection clusters)}
-        Routes reflect generated manifests, not live health.
-        [Route details and publication gates](docs/operations.md#declared-routes) explain aliases and onboarding.
+        Bootstrap requirements can withhold a route even when public access is allowed.
+        [Route details and bootstrap requirements](docs/operations.md#declared-routes)
+        explain aliases and onboarding.
 
         ## Operate and recover
 

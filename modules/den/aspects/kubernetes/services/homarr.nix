@@ -153,15 +153,23 @@ in
             # Always isolate the Pod, including while the public route is absent.
             # API-server port-forward remains the private onboarding path.
             ingress = lib.optional ready {
-              from = [
-                {
-                  namespaceSelector.matchLabels."kubernetes.io/metadata.name" = "gateway";
-                  podSelector.matchLabels = {
-                    "gateway.envoyproxy.io/owning-gateway-namespace" = "gateway";
-                    "gateway.envoyproxy.io/owning-gateway-name" = "household";
-                  };
-                }
-              ];
+              from =
+                map
+                  (gateway: {
+                    namespaceSelector.matchLabels."kubernetes.io/metadata.name" = "gateway";
+                    podSelector.matchLabels = {
+                      "gateway.envoyproxy.io/owning-gateway-namespace" = "gateway";
+                      "gateway.envoyproxy.io/owning-gateway-name" = gateway;
+                    };
+                  })
+                  (
+                    [ "household" ]
+                    ++ lib.optional (
+                      cluster.ingress.public != null
+                      && route.exposure == "public"
+                      && cluster.settings.kubernetes.services.identity.phase == "normal"
+                    ) "household-public"
+                  );
               ports = [
                 {
                   protocol = "TCP";

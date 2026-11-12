@@ -38,6 +38,7 @@
 # its registry, so the builder must permit sandbox = relaxed.
 {
   config,
+  den,
   inputs,
   lib,
   self,
@@ -59,10 +60,53 @@ in
           hostConfig
           guest
           ;
-        descriptor = builtins.fromJSON hostConfig.environment.etc."homelab/compute.json".text;
+        # Exercise the real enabled host's identity attachments without
+        # enrolling the production guest or changing the production ingress.
+        publicConfig = lib.recursiveUpdate config {
+          den.clusters.prod-home.ingress.public = {
+            originAddress = "100.100.0.1";
+            peerAddress = "100.100.0.2";
+            peerIPv6Address = "fd7a:115c:a1e0::2";
+            nodePort = 30444;
+          };
+        };
+        declaredHost =
+          (import ../den/hosts/hvn-hyp1/default.nix {
+            config = publicConfig;
+            inherit den inputs lib;
+          }).den.hosts.x86_64-linux.hvn-hyp1;
+        hostEntity = config.den.hosts.x86_64-linux.hvn-hyp1;
+        fixtureHost = lib.recursiveUpdate hostEntity {
+          settings.virtualization.compute.devices = declaredHost.settings.virtualization.compute.devices;
+        };
+        computeAspect =
+          (import ../den/aspects/virtualization/compute.nix {
+            inherit
+              config
+              den
+              inputs
+              lib
+              ;
+          }).den.aspects.virtualization.compute.nixos;
+        fixtureCompute = computeAspect {
+          host = fixtureHost;
+          config = hostConfig;
+          inherit pkgs lib;
+        };
+        fixtureSecrets =
+          (import ../den/aspects/services/kubernetes-runtime-secrets.nix {
+            config = publicConfig;
+            inherit den inputs lib;
+          }).den.aspects.services.kubernetes-runtime-secrets.nixos
+            {
+              host = fixtureHost;
+              inherit pkgs lib;
+            };
+        descriptor = builtins.fromJSON fixtureCompute.environment.etc."homelab/compute.json".text;
         computeGuest = pkgs.callPackage (inputs.self + "/pkgs/by-name/compute-runtime/package.nix") { };
         guestBundle = guest.config.system.build.computeBundle;
-        stageUnit = hostConfig.systemd.services.compute-stage-secrets;
+        stageUnit = fixtureSecrets.systemd.services.compute-stage-secrets;
+        disabledStageUnit = hostConfig.systemd.services.compute-stage-secrets;
         standInImage = pkgs.dockerTools.buildImage {
           name = "homelab/network-policy-stand-in";
           tag = "1";
@@ -129,7 +173,12 @@ in
             requiredFeatures.kvm = true;
 
             nodes.fixture-host =
-              { lib, pkgs, ... }:
+              {
+                config,
+                lib,
+                pkgs,
+                ...
+              }:
               {
                 system.stateVersion = "26.05";
                 networking.hostId = "c057a9e4";
@@ -158,14 +207,17 @@ in
                   incus = {
                     enable = true;
                     package = hostConfig.virtualisation.incus.package;
-                    inherit (hostConfig.virtualisation.incus) preseed;
+                    inherit (fixtureCompute.virtualisation.incus) preseed;
                   };
                 };
 
-                environment.etc."homelab/compute.json" = hostConfig.environment.etc."homelab/compute.json";
+                environment.etc."homelab/compute.json" = fixtureCompute.environment.etc."homelab/compute.json";
                 users.users.root.subGidRanges = hostConfig.users.users.root.subGidRanges;
                 systemd.services.incus-preseed.serviceConfig.ExecStart =
-                  lib.mkForce hostConfig.systemd.services.incus-preseed.serviceConfig.ExecStart;
+                  (computeAspect {
+                    host = fixtureHost;
+                    inherit config pkgs lib;
+                  }).systemd.services.incus-preseed.serviceConfig.ExecStart;
                 # Production starts these with the host; the scenario starts them
                 # after the disposable pool and inputs exist.
                 systemd.services.incus-preseed.wantedBy = lib.mkForce [ ];
@@ -173,9 +225,18 @@ in
                   inherit (stageUnit)
                     description
                     path
-                    serviceConfig
                     script
                     ;
+                  serviceConfig = stageUnit.serviceConfig // {
+                    Restart = lib.mkForce "no";
+                  };
+                };
+                systemd.services.compute-stage-secrets-disabled = {
+                  inherit (disabledStageUnit)
+                    path
+                    script
+                    ;
+                  serviceConfig.Type = "oneshot";
                 };
 
                 environment.systemPackages = [

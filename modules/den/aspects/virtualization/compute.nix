@@ -182,11 +182,9 @@ in
       }:
       let
         cfg = host.settings.virtualization.compute;
-        # Direct household ingress DNATs tcp/443 from the LAN uplink and
-        # Tailscale to the guest's declared gateway NodePort. No TLS
-        # termination and no SNAT: the peer connection keeps the client
-        # source address.
-        directIngress = prodHomeIngress.mode == "direct";
+        # Private DNAT stays on the hypervisor. Its existing Tailscale SNAT
+        # supplies private reply routing; public transport ends in the guest.
+        publicIngress = prodHomeIngress.public;
         ingressNodePort = prodHomeIngress.nodePort;
         ingressLanInterfaces = lib.attrNames (
           lib.filterAttrs (_: iface: (iface.gateway or null) != null) (host.networking.interfaces or { })
@@ -619,12 +617,25 @@ in
         networking.nftables.tables."homelab-compute-boundary" = {
           family = "inet";
           content = ''
+            ${lib.optionalString (publicIngress != null) ''
+              chain input {
+                type filter hook input priority -50; policy accept;
+                ip saddr { ${publicIngress.peerAddress}, ${publicIngress.originAddress} } drop
+                ip6 saddr ${publicIngress.peerIPv6Address} drop
+              }
+            ''}
             chain forward {
               type filter hook forward priority -50; policy accept;
-              oifname "${cfg.network}" ct state { established, related } accept
-              ${lib.optionalString directIngress ''
-                oifname "${cfg.network}" ip daddr ${cfg.address} tcp dport ${toString ingressNodePort} accept
+              ${lib.optionalString (publicIngress != null) ''
+                ip saddr { ${publicIngress.peerAddress}, ${publicIngress.originAddress} } drop
+                ip6 saddr ${publicIngress.peerIPv6Address} drop
               ''}
+              ${lib.optionalString config.services.tailscale.enable ''
+                iifname "${cfg.network}" oifname "${config.services.tailscale.interfaceName}" ct state { established, related } accept
+                iifname "${cfg.network}" oifname "${config.services.tailscale.interfaceName}" drop
+              ''}
+              oifname "${cfg.network}" ct state { established, related } accept
+              oifname "${cfg.network}" ip daddr ${cfg.address} tcp dport ${toString ingressNodePort} accept
               oifname "${cfg.network}" drop
             }
           '';
@@ -635,16 +646,18 @@ in
           content = ''
             chain forward {
               type filter hook forward priority -50; policy accept;
-              oifname "${cfg.devices.eth0.host_name}" ct state { established, related } accept
-              ${lib.optionalString directIngress ''
-                oifname "${cfg.devices.eth0.host_name}" ip daddr ${cfg.address} tcp dport ${toString ingressNodePort} accept
+              ${lib.optionalString (publicIngress != null) ''
+                ip saddr { ${publicIngress.peerAddress}, ${publicIngress.originAddress} } drop
+                ip6 saddr ${publicIngress.peerIPv6Address} drop
               ''}
+              oifname "${cfg.devices.eth0.host_name}" ct state { established, related } accept
+              oifname "${cfg.devices.eth0.host_name}" ip daddr ${cfg.address} tcp dport ${toString ingressNodePort} accept
               oifname "${cfg.devices.eth0.host_name}" drop
             }
           '';
         };
 
-        networking.nftables.tables."homelab-compute-ingress" = lib.mkIf directIngress {
+        networking.nftables.tables."homelab-compute-ingress" = {
           family = "inet";
           content = ''
             chain ingress {
@@ -659,11 +672,11 @@ in
         # Forwarding is required for the DNAT path; Incus also enables it at
         # runtime for the NAT'd bridge, this declaration keeps the invariant
         # visible and independent of Incus internals.
-        boot.kernel.sysctl."net.ipv4.ip_forward" = lib.mkIf directIngress 1;
+        boot.kernel.sysctl."net.ipv4.ip_forward" = 1;
 
         assertions = [
           {
-            assertion = !directIngress || builtins.length ingressLanInterfaces == 1;
+            assertion = builtins.length ingressLanInterfaces == 1;
             message = "direct cluster ingress requires exactly one LAN interface carrying a default gateway on host ${host.name}";
           }
         ];

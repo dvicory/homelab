@@ -20,11 +20,18 @@ let
     (import ../../../den/aspects/kubernetes/services/identity.nix { inherit config inputs lib; })
     .den.aspects.kubernetes.services.identity;
   fixtureCluster = cluster // {
+    settings = lib.recursiveUpdate cluster.settings {
+      kubernetes.services.identity.phase = "initial";
+    };
     routes = lib.getAttrs [ "argocd" "grafana" "idm" ] cluster.routes // {
       # Keep the synthetic browser origin out of the real Argo controller's
       # Service/endpoints in the shared fixture.
       argocd = cluster.routes.argocd // {
         namespace = "gateway-admin-origin";
+        exposure = "public";
+      };
+      grafana = cluster.routes.grafana // {
+        exposure = "private";
       };
       origin = {
         namespace = "origin";
@@ -37,23 +44,27 @@ let
         pathPrefix = "/";
         backendTLS = false;
         backendHostname = null;
-        timeouts = null;
+        timeouts = {
+          request = "0s";
+          backendRequest = "0s";
+        };
         sameNamespaceIngress = true;
         manageBackendIngress = true;
       };
     };
     ingress = cluster.ingress // {
-      mode = "direct";
-      trustedProxyCIDRs = [ ];
+      public = null;
     };
   };
-  trustedCluster = lib.recursiveUpdate fixtureCluster {
-    ingress = {
-      mode = "trustedEdges";
-      trustedProxyCIDRs = [ "192.0.2.11/32" ];
+  publicCluster = lib.recursiveUpdate fixtureCluster {
+    ingress.public = {
+      nodePort = 30444;
+      originAddress = "100.64.0.1";
+      peerAddress = "100.64.0.2";
+      peerIPv6Address = "fd7a:115c:a1e0::2";
     };
   };
-  normalCluster = lib.recursiveUpdate trustedCluster {
+  normalCluster = lib.recursiveUpdate publicCluster {
     settings.kubernetes.services.identity.phase = "normal";
   };
   renderGateway =
@@ -96,7 +107,7 @@ let
   renderIdentity =
     phase:
     let
-      inventory = lib.recursiveUpdate fixtureCluster {
+      inventory = lib.recursiveUpdate normalCluster {
         # Keep backend peer selectors without publishing more Gateway routes.
         routes.jellyfin = cluster.routes.jellyfin;
         routes.home = cluster.routes.home;
@@ -235,22 +246,13 @@ let
     copyToRoot = linuxPkgs.buildEnv {
       name = "native-gateway-origin-root";
       paths = [
-        linuxPkgs.busybox
-        (linuxPkgs.runCommand "native-gateway-origin-www" { } ''
-          mkdir -p "$out/www"
-          for probe in index.html direct-probe trusted-probe blocked-probe; do
-            echo origin > "$out/www/$probe"
-          done
-        '')
+        linuxPkgs.python3
+        (linuxPkgs.writeTextDir "libexec/gateway-origin.py" (builtins.readFile ./origin.py))
       ];
     };
     config.Cmd = [
-      "httpd"
-      "-f"
-      "-p"
-      "8080"
-      "-h"
-      "/www"
+      "/bin/python3"
+      "/libexec/gateway-origin.py"
     ];
   };
   originRef = "${originImage.imageName}:${originImage.imageTag}";
@@ -303,6 +305,7 @@ let
         linuxPkgs.openssl
         linuxPkgs.coreutils
         linuxPkgs.socat
+        linuxPkgs.haproxy
         linuxPkgs.nssTools
         linuxPkgs.chromium
         browserPython
@@ -347,6 +350,9 @@ in
     inherit administrator;
     inherit identityDataPath;
     nodePort = cluster.ingress.nodePort;
+    publicNodePort = publicCluster.ingress.public.nodePort;
+    publicPeerAddress = publicCluster.ingress.public.peerAddress;
+    publicOriginAddress = publicCluster.ingress.public.originAddress;
     idmHost = builtins.head cluster.routes.idm.hostnames;
     adminHost = builtins.head cluster.routes.argocd.hostnames;
     grafanaHost = builtins.head cluster.routes.grafana.hostnames;
@@ -362,6 +368,10 @@ in
         (builtins.head (lib.filter (object: object.kind == "Deployment") identityObjects))
         .spec.template.spec.containers
       ).image
+      (builtins.head
+        (builtins.head (lib.filter (object: object.kind == "Job") provisionObjects))
+        .spec.template.spec.containers
+      ).image
     ];
     paths = [
       helper
@@ -370,8 +380,20 @@ in
     retained = "${manifests}/gateway-retained";
     crds = "${manifests}/gateway-crds";
     controller = "${manifests}/gateway-controller";
-    direct = toString (list "native-gateway-direct" (entranceObjects fixtureCluster));
-    trusted = toString (list "native-gateway-trusted" (entranceObjects trustedCluster));
+    private = toString (list "native-gateway-private" (entranceObjects fixtureCluster));
+    public = toString (list "native-gateway-public" (entranceObjects normalCluster));
+    publicInitial = toString (list "native-gateway-public-initial" (entranceObjects publicCluster));
+    identityNormalIngress = toString (
+      list "native-gateway-identity-normal-ingress" (
+        lib.filter (object: object.kind == "NetworkPolicy")
+          (renderIdentity "normal").applications.identity.objects
+      )
+    );
+    registryManifestDirectories = [
+      "${manifests}/gateway-retained"
+      "${manifests}/gateway-crds"
+      "${manifests}/gateway-controller"
+    ];
     identity = toString (list "native-gateway-identity" identityObjects);
     provision = toString (list "native-gateway-provision" provisionObjects);
     adminRoutes = toString (

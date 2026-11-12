@@ -42,7 +42,9 @@ ARGO_ROOT_RETIREMENT_APPS = ("retained", "retirement-root")
 
 GATEWAY_PREREQUISITES = (
     ("GatewayClass", "envoy", ""), ("Gateway", "household", "gateway"),
-    ("EnvoyProxy", "household", "gateway"), ("ClientTrafficPolicy", "trusted-edges", "gateway"),
+    ("EnvoyProxy", "household", "gateway"), ("ClientTrafficPolicy", "private-origin", "gateway"),
+    ("Gateway", "household-public", "gateway"), ("EnvoyProxy", "household-public", "gateway"),
+    ("ClientTrafficPolicy", "public-origin", "gateway"), ("NetworkPolicy", "public-origin", "gateway"),
 )
 
 ENVOY_READINESS_STATS = (
@@ -219,11 +221,11 @@ def gateway_owned_workloads(workloads):
     """Select only fixture controller/proxy Deployments and their Pod owner chains."""
     objects = workloads.get("items") or []
     deployments = [obj for obj in objects if obj.get("kind") == "Deployment" and (
-        (obj.get("metadata") or {}).get("name") == "envoy-gateway" or
-        all(((obj.get("metadata") or {}).get("labels") or {}).get(key) == value for key, value in (
-            ("gateway.envoyproxy.io/owning-gateway-name", "household"),
-            ("gateway.envoyproxy.io/owning-gateway-namespace", "gateway"),
-        )))][:4]
+        (obj.get("metadata") or {}).get("name") == "envoy-gateway" or (
+            ((obj.get("metadata") or {}).get("labels") or {}).get("gateway.envoyproxy.io/owning-gateway-name")
+            in ("household", "household-public") and
+            ((obj.get("metadata") or {}).get("labels") or {}).get("gateway.envoyproxy.io/owning-gateway-namespace")
+            == "gateway"))][:4]
     deployment_uids = {(obj.get("metadata") or {}).get("uid") for obj in deployments} - {None}
 
     def owned(obj, kind, uids):
@@ -324,7 +326,8 @@ def gateway_prerequisite_witness(resources, workloads, node, expectation):
                           for listener in (status.get("listeners") or [])[:4]],
             "ancestors": [{
                 "controllerMatches": ancestor.get("controllerName") == "gateway.envoyproxy.io/gatewayclass-controller",
-                "targetMatches": (ancestor.get("ancestorRef") or {}).get("name") == "household"
+                "targetMatches": (ancestor.get("ancestorRef") or {}).get("name")
+                    == ("household-public" if name in ("household-public", "public-origin") else "household")
                     and (ancestor.get("ancestorRef") or {}).get("namespace", "gateway") == "gateway"
                     and (ancestor.get("ancestorRef") or {}).get("kind", "Gateway") == "Gateway"
                     and (ancestor.get("ancestorRef") or {}).get("group", "gateway.networking.k8s.io") == "gateway.networking.k8s.io",

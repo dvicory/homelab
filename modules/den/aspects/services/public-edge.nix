@@ -1,402 +1,185 @@
-{ config, lib, ... }:
+{
+  config,
+  lib,
+  inputs,
+  ...
+}:
 let
   inherit (lib) mkOption types;
-
-  validOctet = value: builtins.match "^(0|[1-9][0-9]{0,2})$" value != null;
-  parseIPv4 =
-    address:
-    let
-      parts = lib.splitString "." address;
-      valid = builtins.length parts == 4 && lib.all validOctet parts;
-    in
-    if valid then map builtins.fromJSON parts else [ ];
-  privateIPv4 =
-    address:
-    let
-      octets = parseIPv4 address;
-      valid = builtins.length octets == 4 && lib.all (octet: octet <= 255) octets;
-      first = if valid then builtins.elemAt octets 0 else -1;
-      second = if valid then builtins.elemAt octets 1 else -1;
-    in
-    valid
-    && (
-      first == 10
-      || (first == 172 && second >= 16 && second <= 31)
-      || (first == 192 && second == 168)
-      || (first == 100 && second >= 64 && second <= 127)
-    );
-  privatePeerCIDR =
-    cidr:
-    let
-      parts = lib.splitString "/" cidr;
-    in
-    builtins.length parts == 2
-    && privateIPv4 (builtins.elemAt parts 0)
-    && builtins.elemAt parts 1 == "32";
-
-  tlsType = types.submodule {
-    options = {
-      certificate = mkOption {
-        type = types.nullOr types.str;
-        default = null;
-        description = "TLS certificate for this edge hostname input.";
+  ingress = config.den.clusters.prod-home.ingress;
+  mkRole = role: {
+    settings = {
+      enable = mkOption {
+        type = types.bool;
+        default = false;
+        description = "Enable the transport-only public ${role}.";
       };
-      key = mkOption {
-        type = types.nullOr types.str;
-        default = null;
-        description = "TLS private key for this edge hostname input.";
+      authKeyFile = mkOption {
+        type = types.nullOr (types.strMatching "/.*");
+        default = if role == "origin" then "/srv/secrets/tailscale-auth-key" else null;
+        description = "Scoped Tailscale enrollment file; null requests the relay's agenix-managed public-tailscale-auth-key.";
       };
     };
-  };
-
-  settingsFor = role: {
-    enable = mkOption {
-      type = types.bool;
-      default = false;
-      description = "Enable the independently deployed ${role} edge.";
-    };
-
-    originHost = mkOption {
-      type = types.nullOr types.str;
-      default = null;
-      description = "Private IPv4 address of the Gateway origin.";
-    };
-
-    originPort = mkOption {
-      type = types.port;
-      default = 30443;
-      description = "Private HTTPS NodePort for the Gateway origin.";
-    };
-
-    originServerName = mkOption {
-      type = types.nullOr types.str;
-      default = null;
-      description = "TLS SNI/name used to verify the private Gateway origin.";
-    };
-
-    originCA = mkOption {
-      type = types.nullOr types.str;
-      default = null;
-      description = "CA bundle used to verify the private Gateway origin.";
-    };
-
-    peerAddress = mkOption {
-      type = types.nullOr types.str;
-      default = null;
-      description = "Private source address presented by this edge; the exact /32 must be in cluster.ingress.trustedProxyCIDRs.";
-    };
-
-    bareRoute = mkOption {
-      type = types.nullOr types.str;
-      default = null;
-      description = "Route-inventory key receiving the bare-domain redirect.";
-    };
-
-    tls = mkOption {
-      type = types.submodule {
-        options = {
-          primary = mkOption {
-            type = tlsType;
-            default = { };
-            description = "Certificate input for the primary hostname family.";
-          };
-          backup = mkOption {
-            type = tlsType;
-            default = { };
-            description = "Certificate input for the backup hostname family.";
-          };
-          identity = mkOption {
-            type = tlsType;
-            default = { };
-            description = "Separate certificate input for the canonical identity hostname.";
-          };
-        };
-      };
-      default = { };
-      description = "Separate application-family and canonical identity TLS inputs; no ACME or DNS automation.";
-    };
-  };
-
-  proxyLocation =
-    {
-      originHost,
-      originPort,
-      originServerName,
-      originCA,
-    }:
-    {
-      proxyPass = "https://${originHost}:${toString originPort}";
-      proxyWebsockets = true;
-      extraConfig = ''
-        proxy_ssl_server_name on;
-        proxy_ssl_name ${originServerName};
-        proxy_ssl_protocols TLSv1.2 TLSv1.3;
-        proxy_ssl_verify on;
-        proxy_ssl_verify_depth 3;
-        proxy_ssl_trusted_certificate ${originCA};
-        proxy_set_header Host $host;
-        proxy_set_header X-Forwarded-For $remote_addr;
-        proxy_set_header X-Forwarded-Host $host;
-        proxy_set_header X-Forwarded-Proto https;
-        proxy_set_header X-Forwarded-Port 443;
-        proxy_set_header Forwarded "";
-        proxy_set_header X-Request-ID $request_id;
-        proxy_set_header X-Forwarded-User "";
-        proxy_set_header X-Forwarded-Email "";
-        proxy_set_header X-Auth-Request-User "";
-        proxy_set_header X-Auth-Request-Email "";
-        proxy_set_header Remote-User "";
-      '';
-    };
-
-  mkRole =
-    role:
-    let
-      aspectName = "${role}-edge";
-      variant = if role == "remote" then 0 else 1;
-    in
-    {
-      settings = settingsFor role;
-
-      nixos =
-        { host, ... }:
-        let
-          cfg = host.settings.services.${aspectName};
-          cluster = config.den.clusters."prod-home";
-          routeInventory = config.flake.clusterRoutes.prod-home.routes;
-          environment = config.den.environments.${cluster.environment};
-          identityNormal = cluster.settings.kubernetes.services.identity.phase == "normal";
-          routes = lib.filterAttrs (
-            name: route:
-            route.exposure == "public"
-            && (identityNormal || (route.auth != "admin" && name != "idm"))
-            && (name != "requests" || cluster.settings.kubernetes.services.seerr.phase == "ready")
-            && (
-              name != "home" || (identityNormal && cluster.settings.kubernetes.services.homarr.phase == "ready")
-            )
-          ) routeInventory;
-          tlsConfig = cfg.tls;
-          selectedTLS = if variant == 0 then tlsConfig.primary else tlsConfig.backup;
-          selectedDomain = if variant == 0 then environment.domain else environment.backupDomain;
-          applicationRoutes = builtins.removeAttrs routes [ "idm" ];
-          identityShapeValid =
-            !(routes ? idm)
-            || (builtins.length routes.idm.hostnames == 1 && builtins.head routes.idm.hostnames != "");
-          routeShapeValid =
-            identityShapeValid
-            && lib.all (
-              route:
-              builtins.length route.hostnames == 2
-              && lib.all (hostname: hostname != "") route.hostnames
-              && builtins.length (lib.unique route.hostnames) == 2
-            ) (builtins.attrValues applicationRoutes);
-          routeDomainsValid =
-            routeShapeValid
-            && lib.all (
-              route:
-              lib.hasSuffix ".${environment.domain}" (builtins.elemAt route.hostnames 0)
-              && lib.hasSuffix ".${environment.backupDomain}" (builtins.elemAt route.hostnames 1)
-            ) (builtins.attrValues applicationRoutes);
-          routePathsValid = lib.all (route: route.pathPrefix == "/") (builtins.attrValues routes);
-          routesValid = routeShapeValid && routeDomainsValid && routePathsValid;
-          routeEntries =
-            if routesValid then
-              lib.mapAttrsToList (name: route: {
-                hostname = builtins.elemAt route.hostnames (if name == "idm" then 0 else variant);
-                tls = if name == "idm" then tlsConfig.identity else selectedTLS;
-              }) routes
-            else
-              [ ];
-          routeHosts = map (entry: entry.hostname) routeEntries;
-          routeHostsUnique =
-            let
-              hosts = routeHosts ++ lib.optional bareRoutePublishable selectedDomain;
-            in
-            builtins.length (lib.unique hosts) == builtins.length hosts;
-          bareRouteValid =
-            cfg.bareRoute != null && builtins.hasAttr cfg.bareRoute routeInventory && routesValid;
-          bareRoutePublishable = bareRouteValid && builtins.hasAttr cfg.bareRoute routes;
-          bareTarget =
-            if bareRoutePublishable then
-              builtins.elemAt routes.${cfg.bareRoute}.hostnames (if cfg.bareRoute == "idm" then 0 else variant)
-            else
-              "";
-          primaryTLS = tlsConfig.primary;
-          backupTLS = tlsConfig.backup;
-          tlsPairValid =
-            family:
-            (family.certificate == null) == (family.key == null)
-            && (family.certificate == null || family.certificate != "")
-            && (family.key == null || family.key != "");
-          tlsInputsValid =
-            tlsPairValid primaryTLS
-            && tlsPairValid backupTLS
-            && selectedTLS.certificate != null
-            && selectedTLS.key != null
-            && (
-              !(routes ? idm)
-              || (
-                tlsPairValid tlsConfig.identity
-                && tlsConfig.identity.certificate != null
-                && tlsConfig.identity.key != null
-              )
-            );
-          originValid =
-            cfg.originHost != null
-            && privateIPv4 cfg.originHost
-            && cfg.originServerName != null
-            && cfg.originServerName != ""
-            && cfg.originCA != null
-            && cfg.originCA != ""
-            && cfg.peerAddress != null
-            && privateIPv4 cfg.peerAddress
-            && cfg.peerAddress != cfg.originHost;
-          peerCIDR = if cfg.peerAddress == null then "" else "${cfg.peerAddress}/32";
-          peerIsDeclared = peerCIDR != "" && builtins.elem peerCIDR cluster.ingress.trustedProxyCIDRs;
-          edgeModeValid = cluster.ingress.mode == "trustedEdges";
-          origin = {
-            inherit (cfg)
-              originHost
-              originPort
-              originServerName
-              originCA
-              ;
-          };
-          virtualHosts =
-            if routesValid && routeHostsUnique && bareRouteValid && tlsInputsValid && originValid then
-              lib.listToAttrs (
-                map (entry: {
-                  name = entry.hostname;
-                  value = {
-                    forceSSL = true;
-                    sslCertificate = entry.tls.certificate;
-                    sslCertificateKey = entry.tls.key;
-                    locations."/" = proxyLocation origin;
-                  };
-                }) routeEntries
-              )
-              // {
-                "_" = {
-                  default = true;
-                  rejectSSL = true;
-                  # NixOS only emits `http2 on;` for TLS-serving vhosts. Without
-                  # it here, an HTTP/2 request whose SNI matched a real vhost but
-                  # whose Host resolves nowhere gets nginx's 421 Misdirected
-                  # Request instead of the declared 404.
-                  extraConfig = ''
-                    http2 on;
-                  '';
-                  locations."/" = {
-                    return = "404";
-                  };
-                };
-              }
-              // lib.optionalAttrs bareRoutePublishable {
-                ${selectedDomain} = {
-                  forceSSL = true;
-                  sslCertificate = selectedTLS.certificate;
-                  sslCertificateKey = selectedTLS.key;
-                  locations."/" = {
-                    return = "308 https://${bareTarget}$request_uri";
-                  };
-                };
-              }
-            else
+    persist = lib.optional (role == "relay") "/var/lib/tailscale";
+    nixos =
+      {
+        host,
+        config,
+        pkgs,
+        ...
+      }:
+      let
+        cfg = host.settings.services."public-${role}";
+        public = ingress.public;
+        isRelay = role == "relay";
+        interface = config.services.tailscale.interfaceName;
+        remoteAddress = if isRelay then public.originAddress else public.peerAddress;
+        connectionFlags = [
+          "--accept-dns=false"
+          "--accept-routes=false"
+          "--advertise-routes="
+          "--advertise-exit-node=false"
+          "--ssh=false"
+        ]
+        ++ lib.optional (!isRelay) "--snat-subnet-routes=false";
+      in
+      {
+        imports = [ ../core/network/_firewall-lifetime.nix ];
+        config = lib.mkIf cfg.enable (
+          {
+            assertions = [
               {
-                "_" = {
-                  default = true;
-                  rejectSSL = true;
-                  # NixOS only emits `http2 on;` for TLS-serving vhosts. Without
-                  # it here, an HTTP/2 request whose SNI matched a real vhost but
-                  # whose Host resolves nowhere gets nginx's 421 Misdirected
-                  # Request instead of the declared 404.
-                  extraConfig = ''
-                    http2 on;
+                assertion = public != null;
+                message = "public-${role} requires cluster.ingress.public";
+              }
+              {
+                assertion = isRelay || cfg.authKeyFile != null;
+                message = "public-origin requires its separately staged enrollment file";
+              }
+              {
+                assertion = !(builtins.elem interface config.networking.firewall.trustedInterfaces);
+                message = "public-${role} must not trust the whole Tailscale interface";
+              }
+            ];
+            services.tailscale = {
+              enable = true;
+              openFirewall = true;
+              authKeyFile =
+                if cfg.authKeyFile != null then
+                  cfg.authKeyFile
+                else
+                  config.age.secrets.public-tailscale-auth-key.path;
+              extraUpFlags = connectionFlags;
+              extraSetFlags = connectionFlags;
+            };
+            # nftables kube-proxy defaults to primary addresses, excluding the
+            # native TUN. The transport rules below admit only its public port.
+            services.k3s = lib.mkIf (!isRelay) {
+              extraKubeProxyConfig.nodePortAddresses = [ "0.0.0.0/0" ];
+            };
+            systemd.services.tailscaled = {
+              after = [ "nftables.service" ];
+              wants = [ "nftables.service" ];
+              serviceConfig.ExecStartPre = [ "${pkgs.nftables}/bin/nft list table inet public-transport" ];
+            };
+            networking.firewall.allowedTCPPorts = lib.optional isRelay 443;
+            networking.firewall.interfaces.${interface}.allowedTCPPorts = lib.optional (
+              !isRelay
+            ) public.nodePort;
+            services.haproxy = lib.mkIf isRelay {
+              enable = true;
+              config = ''
+                global
+                  maxconn 4096
+                defaults
+                  mode tcp
+                  timeout connect 10s
+                  timeout client 1h
+                  timeout server 1h
+                frontend public_tls
+                  bind 0.0.0.0:443
+                  default_backend public_origin
+                backend public_origin
+                  source ${public.peerAddress}
+                  server origin ${public.originAddress}:${toString public.nodePort} send-proxy-v2
+              '';
+            };
+            systemd.services.haproxy = lib.mkIf isRelay {
+              after = [
+                "tailscaled-autoconnect.service"
+                "tailscaled-set.service"
+              ];
+              wants = [
+                "tailscaled-autoconnect.service"
+                "tailscaled-set.service"
+              ];
+            };
+            # These precede ordinary established/management accepts. Only the
+            # declared receiver is reachable; IPv6 never supplies a bypass.
+            networking.nftables.enable = true;
+            networking.nftables.tables.public-transport = {
+              family = "inet";
+              content =
+                if isRelay then
+                  ''
+                    chain input {
+                      type filter hook input priority -100; policy accept;
+                      iifname "${interface}" ct state established,related accept
+                      iifname "${interface}" drop
+                      ip saddr ${remoteAddress} drop
+                    }
+                    chain output {
+                      type filter hook output priority -100; policy accept;
+                      oifname "${interface}" ip daddr ${public.originAddress} tcp dport ${toString public.nodePort} accept
+                      oifname "${interface}" ct state established,related accept
+                      oifname "${interface}" drop
+                    }
+                    chain forward {
+                      type filter hook forward priority -100; policy accept;
+                      iifname "${interface}" drop
+                      oifname "${interface}" drop
+                    }
+                  ''
+                else
+                  ''
+                    chain input {
+                      type filter hook input priority -100; policy accept;
+                      iifname "${interface}" ip saddr ${public.peerAddress} ip daddr ${public.originAddress} tcp dport ${toString public.nodePort} accept
+                      iifname "${interface}" ct state established,related accept
+                      iifname "${interface}" drop
+                      ip saddr ${public.peerAddress} drop
+                      ip6 saddr ${public.peerIPv6Address} drop
+                    }
+                    chain forward {
+                      type filter hook forward priority -100; policy accept;
+                      iifname "${interface}" ip saddr ${public.peerAddress} meta l4proto tcp ct original ip daddr ${public.originAddress} ct original proto-dst ${toString public.nodePort} accept
+                      iifname "${interface}" drop
+                      oifname "${interface}" ct state established,related accept
+                      oifname "${interface}" drop
+                      ip saddr ${public.peerAddress} drop
+                      ip6 saddr ${public.peerIPv6Address} drop
+                    }
+                    chain output {
+                      type filter hook output priority -100; policy accept;
+                      oifname "${interface}" ct state established,related accept
+                      oifname "${interface}" drop
+                    }
                   '';
-                  locations."/" = {
-                    return = "404";
-                  };
-                };
-              };
-        in
-        lib.mkIf cfg.enable {
-          assertions = [
-            {
-              assertion = config.den.clusters ? "prod-home";
-              message = "${aspectName} requires the prod-home route inventory";
-            }
-            {
-              assertion = routeShapeValid;
-              message = "${aspectName} requires one non-empty identity hostname and two distinct non-empty application hostnames";
-            }
-            {
-              assertion = routeDomainsValid;
-              message = "${aspectName} requires primary and backup hostnames under their declared domains";
-            }
-            {
-              assertion = routePathsValid;
-              message = "${aspectName} only supports hostname-root routes";
-            }
-            {
-              assertion = routeHostsUnique;
-              message = "${aspectName} route hostnames must be unique";
-            }
-            {
-              assertion = bareRouteValid;
-              message = "${aspectName} bareRoute must name a declared route";
-            }
-            {
-              assertion = originValid;
-              message = "${aspectName} requires a private origin address, verified TLS SNI/CA and a distinct private peer address";
-            }
-            {
-              assertion = tlsInputsValid;
-              message = "${aspectName} requires complete application TLS pairs, the selected family and a separate identity TLS pair when published";
-            }
-            {
-              assertion = peerIsDeclared;
-              message = "${aspectName} peerAddress must be declared as an exact trusted Gateway peer";
-            }
-            {
-              assertion = edgeModeValid;
-              message = "${aspectName} requires ingress mode trustedEdges";
-            }
-            {
-              assertion = lib.all privatePeerCIDR cluster.ingress.trustedProxyCIDRs;
-              message = "Gateway trusted proxy entries must be private /32 edge peers";
-            }
-          ];
-
-          services.nginx = {
-            enable = true;
-            recommendedOptimisation = true;
-            recommendedProxySettings = false;
-            commonHttpConfig = ''
-              log_format homelab_safe escape=json
-                '{"timestamp":"$time_iso8601",'
-                '"client":"$remote_addr",'
-                '"method":"$request_method",'
-                '"path":"$uri",'
-                '"host":"$host",'
-                '"status":$status,'
-                '"duration_s":$request_time,'
-                '"request_id":"$request_id",'
-                '"upstream_status":"$upstream_status",'
-                '"bytes_sent":$bytes_sent}';
-              access_log /var/log/nginx/access.log homelab_safe;
-            '';
-            recommendedTlsSettings = true;
-            virtualHosts = virtualHosts;
-          };
-
-          networking.firewall.allowedTCPPorts = [
-            80
-            443
-          ];
-        };
-    };
+            };
+          }
+          // lib.optionalAttrs (isRelay && cfg.authKeyFile == null) {
+            secretRequests.public-tailscale-auth-key = {
+              provider = "agenix";
+              ageFile = inputs.self + "/.secrets/hosts/${host.name}/public-tailscale-auth-key.age";
+              mode = "0400";
+              restartUnits = [ "tailscaled-autoconnect.service" ];
+            };
+          }
+        );
+      };
+  };
 in
 {
-  den.aspects.services.remote-edge = mkRole "remote";
-  den.aspects.services.home-edge = mkRole "home";
+  den.aspects.services.public-origin = mkRole "origin";
+  den.aspects.services.public-relay = mkRole "relay";
 }

@@ -19,17 +19,6 @@ spec:
           namespace: media
           port: 5055
           weight: 1
-      filters:
-        - requestHeaderModifier:
-            remove:
-              - X-Real-IP
-              - X-Forwarded-User
-              - X-Forwarded-Email
-              - X-Auth-Request-User
-              - X-Auth-Request-Email
-              - Remote-User
-              - Forwarded
-          type: RequestHeaderModifier
       matches:
         - path:
             type: PathPrefix

@@ -8,6 +8,7 @@ in
     environment = "prod";
     system-access-groups = [ "server-access" ];
     settings.core.users.secrets.enable = false;
+    settings.services.public-origin.enable = ingress.public != null;
     networking.interfaces.eth0 = {
       dhcp = "yes";
       managed = false;
@@ -19,6 +20,7 @@ in
       den.aspects.core.base
       den.aspects.core.security.openssh
       den.aspects.services.kubernetes
+      den.aspects.services.public-origin
     ];
 
     nixos =
@@ -52,11 +54,10 @@ in
           22
           6443
         ];
-        # Direct household ingress: the host DNATs tcp/443 to this NodePort on
-        # the bridge-facing NIC only. Other ingress modes expose nothing.
-        networking.firewall.interfaces.eth0.allowedTCPPorts = lib.optional (
-          ingress.mode == "direct"
-        ) ingress.nodePort;
+        # Private LAN/host-Tailnet ingress stays on eth0. The public receiver
+        # belongs only to this guest's separately restricted Tailscale link.
+        networking.firewall.interfaces.eth0.allowedTCPPorts = [ ingress.nodePort ];
+        networking.nftables.enable = true;
         programs.command-not-found.enable = lib.mkForce false;
 
         services.openssh = {
