@@ -4,6 +4,9 @@
   lib,
   ...
 }:
+let
+  flakeConfig = config;
+in
 {
   den.aspects.kubernetes.services.identity.settings.phase = lib.mkOption {
     type = lib.types.enum [
@@ -39,7 +42,7 @@
     { cluster, ... }:
     let
       compute =
-        config.den.hosts.${cluster.hostSystem}.${cluster.hostName}.settings.virtualization.compute;
+        flakeConfig.den.hosts.${cluster.hostSystem}.${cluster.hostName}.settings.virtualization.compute;
       activated = cluster.settings.kubernetes.services.identity.phase != "initial";
       idmAdminAge =
         inputs.self
@@ -67,6 +70,7 @@
   den.aspects.kubernetes.services.identity.k8s-manifests =
     {
       cluster,
+      config,
       computeResources,
       lib,
       ...
@@ -91,17 +95,17 @@
         labels = { };
       };
       appsByRoute = lib.listToAttrs (
-        lib.mapAttrsToList (_: app: lib.nameValuePair app.routeKey app) cluster.oidcApps
+        lib.mapAttrsToList (_: app: lib.nameValuePair app.routeKey app) config.oidcApps
       );
       routeClientID = name: appsByRoute.${name}.clientID;
       clients =
         assert lib.assertMsg (
-          lib.length (lib.unique (map (app: app.clientID) (lib.attrValues cluster.oidcApps)))
-          == lib.length (lib.attrValues cluster.oidcApps)
+          lib.length (lib.unique (map (app: app.clientID) (lib.attrValues config.oidcApps)))
+          == lib.length (lib.attrValues config.oidcApps)
         ) "OIDC applications must have distinct client IDs";
         assert lib.assertMsg (
           builtins.length (builtins.attrNames appsByRoute)
-          == builtins.length (builtins.attrNames cluster.oidcApps)
+          == builtins.length (builtins.attrNames config.oidcApps)
         ) "Each route must have at most one OIDC application";
         lib.mapAttrs' (
           _: app:
@@ -133,7 +137,7 @@
               lib.optional admin (gatewaySecret app.routeKey)
               ++ lib.optional native (app.secret // { inherit (route) namespace; });
           }
-        ) cluster.oidcApps;
+        ) config.oidcApps;
       # The provisioning Job grants each client's scopes to its eligibleGroup,
       # publishes each Kanidm-generated client secret to every listed Secret,
       # and deletes Kanidm clients that this list does not name.
@@ -258,11 +262,11 @@
       );
       provisioning = selected.artifacts.kanidm-provision-image;
       provisioningImage = "${provisioning.repository}@${provisioning.digest}";
-      registry = config.den.users.registry;
+      registry = flakeConfig.den.users.registry;
       administrators = lib.filterAttrs (
         name: _:
         builtins.elem "admins"
-          (config.fleet.acl.get "env:${cluster.environment}" "resolveUser" name).allGroups
+          (flakeConfig.fleet.acl.get "env:${cluster.environment}" "resolveUser" name).allGroups
       ) registry;
       # First-ever bootstrap is intentionally not a Job: the supported
       # recover-account flow runs in a private interactive session, prints
@@ -735,7 +739,7 @@
                         }
                       ];
                     }
-                  ) (lib.filter (app: app.callbackPath != null) (lib.attrValues cluster.oidcApps))
+                  ) (lib.filter (app: app.callbackPath != null) (lib.attrValues config.oidcApps))
                 );
               };
             }

@@ -43,11 +43,12 @@ native sign-in, and provisioning publishes the same secret to
 `monitoring/grafana-oidc`. Both native callbacks coexist with the Gateway callback;
 neither application's entrance sign-in alone grants application access.
 
-OIDC consumers use the shared `den.clusters.<cluster>.oidcApps` schema.
-Administrator routes register their Gateway client automatically. Native OIDC
-apps declare their callback, login-start path, scopes and Secret reference next
-to their application configuration; applications without OIDC do not register.
-The app, Gateway and Kanidm use the same evaluated client settings.
+OIDC consumers share `config.oidcApps` in each Nixidy environment.
+Selected service aspects contribute native client declarations through Den's
+`oidc` metadata channel. One common collector adds Gateway clients for
+administrator routes and applies the shared type. App-specific callbacks,
+scopes and Secret references stay beside their owning service; the app,
+Gateway and Kanidm consume the same evaluated records.
 Callback and login-start paths must start with `/`.
 
 Argo CD and Grafana keep both sign-in checks. Both checks request the same

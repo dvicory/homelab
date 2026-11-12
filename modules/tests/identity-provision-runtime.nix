@@ -34,112 +34,114 @@ let
   ) cluster.routes.argocd.hostnames;
   manifests = ../../generated/manifests/prod-home;
   k3sPackage = self.nixosConfigurations.${instance}.config.services.k3s.package;
-  identityObjects =
-    (
-      (import ../den/aspects/kubernetes/services/identity.nix {
-        inherit config lib;
-        inputs.self = self;
-      }).den.aspects.kubernetes.services.identity.k8s-manifests
-      {
-        inherit cluster lib;
-        computeResources = compute;
-      }
-    ).applications.identity.objects;
-  # Synthetic native application input only: no application aspect or route.
-  fixtureObjects =
-    group: scopes:
-    map (
-      object:
-      if object.kind == "ConfigMap" && object.metadata.name == "kanidm-provision" then
-        let
-          state = builtins.fromJSON object.data."state.json";
-          clients = builtins.fromJSON object.data."clients.json";
-        in
-        object
-        // {
-          data = object.data // {
-            "state.json" = builtins.toJSON (
-              lib.recursiveUpdate state {
-                groups.${group} = {
-                  members = [ ];
-                  overwriteMembers = false;
-                };
-                systems.oauth2.fixture-native = {
-                  displayName = "Synthetic native application";
-                  public = false;
-                  originUrl = [ "https://native.example.test/callback" ];
-                  originLanding = "https://native.example.test/";
-                  allowInsecureClientDisablePkce = false;
-                  preferShortUsername = true;
-                  scopeMaps = { };
-                  supplementaryScopeMaps = { };
-                  removeOrphanedClaimMaps = true;
-                };
-              }
-            );
-            "clients.json" = builtins.toJSON (
-              clients
-              ++ [
-                {
-                  name = "fixture-native";
-                  eligibleGroup = group;
-                  inherit scopes;
-                  secrets = [
-                    {
-                      namespace = "identity";
-                      name = "fixture-native-oidc";
-                      key = "clientSecret";
-                    }
-                  ];
-                }
-              ]
-            );
-          };
-        }
-      else
-        object
-    ) identityObjects
-    # Reuse the renderer's name-scoped publication resources for the fixture.
-    ++
-      map
-        (
-          object:
-          object
-          // {
-            metadata = {
-              namespace = "identity";
-              name =
-                if object.kind == "Secret" then
-                  "fixture-native-oidc"
-                else
-                  "kanidm-client-secret-fixture-native-oidc";
-            };
-          }
-          // lib.optionalAttrs (object.kind == "Role") {
-            rules = map (rule: rule // { resourceNames = [ "fixture-native-oidc" ]; }) object.rules;
-          }
-          // lib.optionalAttrs (object.kind == "RoleBinding") {
-            roleRef = object.roleRef // {
-              name = "kanidm-client-secret-fixture-native-oidc";
-            };
-          }
-        )
-        (
-          lib.filter (
-            object:
-            object.metadata.namespace == "argocd"
-            && builtins.elem object.metadata.name [
-              "argocd-kanidm-oidc"
-              "kanidm-client-secret-argocd-kanidm-oidc"
-            ]
-          ) identityObjects
-        );
 in
 {
   perSystem =
     { pkgs, system, ... }:
     lib.optionalAttrs (system == "x86_64-linux") (
       let
+        identityObjects =
+          (
+            (import ../den/aspects/kubernetes/services/identity.nix {
+              inherit config lib;
+              inputs.self = self;
+            }).den.aspects.kubernetes.services.identity.k8s-manifests
+            {
+              inherit cluster lib;
+              config = { inherit oidcApps; };
+              computeResources = compute;
+            }
+          ).applications.identity.objects;
+        # Synthetic native application input only: no application aspect or route.
+        fixtureObjects =
+          group: scopes:
+          map (
+            object:
+            if object.kind == "ConfigMap" && object.metadata.name == "kanidm-provision" then
+              let
+                state = builtins.fromJSON object.data."state.json";
+                clients = builtins.fromJSON object.data."clients.json";
+              in
+              object
+              // {
+                data = object.data // {
+                  "state.json" = builtins.toJSON (
+                    lib.recursiveUpdate state {
+                      groups.${group} = {
+                        members = [ ];
+                        overwriteMembers = false;
+                      };
+                      systems.oauth2.fixture-native = {
+                        displayName = "Synthetic native application";
+                        public = false;
+                        originUrl = [ "https://native.example.test/callback" ];
+                        originLanding = "https://native.example.test/";
+                        allowInsecureClientDisablePkce = false;
+                        preferShortUsername = true;
+                        scopeMaps = { };
+                        supplementaryScopeMaps = { };
+                        removeOrphanedClaimMaps = true;
+                      };
+                    }
+                  );
+                  "clients.json" = builtins.toJSON (
+                    clients
+                    ++ [
+                      {
+                        name = "fixture-native";
+                        eligibleGroup = group;
+                        inherit scopes;
+                        secrets = [
+                          {
+                            namespace = "identity";
+                            name = "fixture-native-oidc";
+                            key = "clientSecret";
+                          }
+                        ];
+                      }
+                    ]
+                  );
+                };
+              }
+            else
+              object
+          ) identityObjects
+          # Reuse the renderer's name-scoped publication resources for the fixture.
+          ++
+            map
+              (
+                object:
+                object
+                // {
+                  metadata = {
+                    namespace = "identity";
+                    name =
+                      if object.kind == "Secret" then
+                        "fixture-native-oidc"
+                      else
+                        "kanidm-client-secret-fixture-native-oidc";
+                  };
+                }
+                // lib.optionalAttrs (object.kind == "Role") {
+                  rules = map (rule: rule // { resourceNames = [ "fixture-native-oidc" ]; }) object.rules;
+                }
+                // lib.optionalAttrs (object.kind == "RoleBinding") {
+                  roleRef = object.roleRef // {
+                    name = "kanidm-client-secret-fixture-native-oidc";
+                  };
+                }
+              )
+              (
+                lib.filter (
+                  object:
+                  object.metadata.namespace == "argocd"
+                  && builtins.elem object.metadata.name [
+                    "argocd-kanidm-oidc"
+                    "kanidm-client-secret-argocd-kanidm-oidc"
+                  ]
+                ) identityObjects
+              );
+        oidcApps = config.flake.nixidyEnvs.${system}.prod-home.config.oidcApps;
         manifestSet =
           name: objects:
           pkgs.linkFarm name (
@@ -520,10 +522,10 @@ in
                   native_apps = {
                       "argocd": NativeOidcApp(client=argo_oidc["clientID"], scopes=argo_oidc["requestedScopes"],
                                      urls=[argo_cm["url"]] + json.loads(argo_cm["additionalUrls"]),
-                                     callback="${cluster.oidcApps.argocd.callbackPath}"),
+                                     callback="${oidcApps.argocd.callbackPath}"),
                       "grafana": NativeOidcApp(client=grafana_oidc["client_id"], scopes=grafana_oidc["scopes"].split(),
                                      urls=[grafana_ini["server"]["root_url"]],
-                                     callback="${cluster.oidcApps.grafana.callbackPath}"),
+                                     callback="${oidcApps.grafana.callbackPath}"),
                   }
                   journeys = []
                   all_requests = []

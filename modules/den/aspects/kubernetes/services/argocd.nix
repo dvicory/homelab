@@ -1,8 +1,9 @@
 { lib, ... }:
 {
-  den.schema.cluster.imports = [
-    ({ config, ... }: {
-      oidcApps = lib.optionalAttrs (config.routes ? argocd) {
+  den.aspects.kubernetes.services.argocd = {
+    oidc =
+      { cluster, ... }:
+      lib.optionalAttrs (cluster.routes ? argocd) {
         argocd = {
           callbackPath = "/auth/callback";
           landingPath = "/auth/login";
@@ -19,9 +20,6 @@
           };
         };
       };
-    })
-  ];
-  den.aspects.kubernetes.services.argocd = {
     compute-resources.runtimeSecrets = {
       "argocd--argocd-secret--admin.password" = {
         namespace = "argocd";
@@ -43,13 +41,14 @@
     k8s-manifests =
       {
         cluster,
+        config,
         charts,
         lib,
         ...
       }:
       let
         identity = cluster.settings.kubernetes.services.identity;
-        oidc = cluster.oidcApps.argocd;
+        oidc = config.oidcApps.argocd;
         identityNormal = identity.phase == "normal";
         idmHostname = builtins.head cluster.routes.idm.hostnames;
         route = cluster.routes.${oidc.routeKey};
