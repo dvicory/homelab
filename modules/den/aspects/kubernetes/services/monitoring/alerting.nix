@@ -840,18 +840,15 @@ in
         cluster,
         computeResources,
         charts,
+        routes,
         ...
       }:
       let
         host = inputs.self.nixosConfigurations.${cluster.hostName}.config.homelab.monitoring // {
           name = cluster.hostName;
         };
-        grafanaUrl =
-          if cluster.routes ? grafana then
-            "https://${builtins.head cluster.routes.grafana.hostnames}"
-          else
-            null;
-        grafanaPods = lib.optional (cluster.routes ? grafana) cluster.routes.grafana.backendPodSelector;
+        grafanaUrl = if routes ? grafana then "https://${builtins.head routes.grafana.hostnames}" else null;
+        grafanaPods = lib.optional (routes ? grafana) routes.grafana.backendPodSelector;
         nodeSelector."kubernetes.io/hostname" = computeResources.instance;
         rulesConfig = builtins.toJSON (rulesFor host);
         alertmanager = alertmanagerFor grafanaUrl;

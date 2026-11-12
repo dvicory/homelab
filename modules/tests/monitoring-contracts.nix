@@ -44,7 +44,7 @@ in
       contractInputs = pkgs.writeText "monitoring-contract-inputs.json" (
         builtins.toJSON {
           inherit hostChecks;
-          routes = cluster.routes;
+          routes = config.flake.clusterRoutes.prod-home.routes;
           adminGroup = cluster.settings.kubernetes.services.identity.adminGroup;
           metricsPath = compute.retainedPaths.monitoring-metrics.guestPath;
           metricsOwner = {

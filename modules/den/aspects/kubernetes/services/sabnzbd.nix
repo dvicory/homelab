@@ -25,13 +25,13 @@ let
     builtins.getAttr key computeResources.retainedPaths;
   fixedRoute =
     {
-      cluster,
+      routes,
       name,
       app,
     }:
-    assert lib.assertMsg (builtins.hasAttr name cluster.routes) "Media route ${name} is not declared.";
+    assert lib.assertMsg (builtins.hasAttr name routes) "Media route ${name} is not declared.";
     let
-      route = builtins.getAttr name cluster.routes;
+      route = builtins.getAttr name routes;
     in
     assert lib.assertMsg (
       route.namespace == app.namespace
@@ -119,6 +119,22 @@ in
     };
     description = "Read-only SABnzbd Service endpoint and API Secret key for consumers.";
   };
+  den.aspects.kubernetes.services.sabnzbd.route-metadata =
+    { cluster, ... }:
+    let
+      endpoint = cluster.settings.kubernetes.services.sabnzbd.integration;
+    in
+    {
+      routes.sabnzbd = lib.mapAttrs (_: lib.mkDefault) {
+        inherit (endpoint) namespace service port;
+        displayName = "SABnzbd";
+        backendPodSelector = {
+          "app.kubernetes.io/controller" = "main";
+          "app.kubernetes.io/instance" = endpoint.service;
+          "app.kubernetes.io/name" = endpoint.service;
+        };
+      };
+    };
   den.aspects.kubernetes.services.media.settings.sabnzbd = mkOption {
     type = types.submodule {
       options.providers = mkOption {
@@ -163,6 +179,7 @@ in
   den.aspects.kubernetes.services.sabnzbd.k8s-manifests =
     {
       cluster,
+      routes,
       computeResources,
       charts,
       ...
@@ -170,9 +187,8 @@ in
     let
       state = retainedEntry computeResources "sabnzbd";
       route = fixedRoute {
-        cluster = cluster;
+        inherit routes app;
         name = "sabnzbd";
-        inherit app;
       };
       secretName = cluster.settings.kubernetes.services.media.configurationSecret;
       providers = checkedProviders cluster.settings.kubernetes.services.media.sabnzbd.providers;

@@ -5,7 +5,7 @@
   ...
 }:
 let
-  domain = builtins.head config.den.clusters."prod-home".routes.idm.hostnames;
+  domain = builtins.head config.flake.clusterRoutes.prod-home.routes.idm.hostnames;
 in
 {
   perSystem =

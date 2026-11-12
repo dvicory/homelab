@@ -4,6 +4,16 @@ let
 in
 {
   den.aspects.kubernetes.services.argocd = {
+    route-metadata.routes.argocd = lib.mapAttrs (_: lib.mkDefault) {
+      namespace = "argocd";
+      service = "argocd-server";
+      port = 80;
+      backendPodSelector = {
+        "app.kubernetes.io/instance" = "argocd";
+        "app.kubernetes.io/name" = "argocd-server";
+      };
+      displayName = "Argo CD";
+    };
     settings.oidc = mkOption {
       type = types.submodule {
         options = {
@@ -59,14 +69,15 @@ in
         cluster,
         charts,
         lib,
+        routes,
         ...
       }:
       let
         identity = cluster.settings.kubernetes.services.identity;
         oidc = cluster.settings.kubernetes.services.argocd.oidc;
         identityNormal = identity.phase == "normal";
-        idmHostname = builtins.head cluster.routes.idm.hostnames;
-        urls = map (hostname: "https://${hostname}") cluster.routes.argocd.hostnames;
+        idmHostname = builtins.head routes.idm.hostnames;
+        urls = map (hostname: "https://${hostname}") routes.argocd.hostnames;
         # Identity names each administrator route's Kanidm client after the
         # route, so Argo CD and its Gateway sign-in share one client.
         clientName = "argocd";

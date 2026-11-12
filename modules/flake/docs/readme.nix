@@ -68,7 +68,7 @@ in
               }
               .${route.auth} or route.auth
             } | ${if emitted then "yes" else "no"} |"
-          ) cluster.routes;
+          ) config.flake.clusterRoutes.${name}.routes;
         in
         ''
           ### `${name}`

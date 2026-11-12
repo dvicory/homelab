@@ -2,6 +2,12 @@
 let
   namespace = "portal";
   port = 7575;
+  service = "homarr";
+  labels = {
+    "app.kubernetes.io/controller" = "main";
+    "app.kubernetes.io/instance" = service;
+    "app.kubernetes.io/name" = service;
+  };
   retain = {
     "argocd.argoproj.io/sync-options" = "Prune=false,Delete=false";
   };
@@ -14,6 +20,20 @@ in
     ];
     default = "initial";
     description = "Publish Home only after private onboarding, admin-group assignment and board permissions are complete.";
+  };
+  den.aspects.kubernetes.services.homarr.route-metadata = {
+    routes.home =
+      lib.mapAttrs (_: lib.mkDefault) {
+        inherit namespace service port;
+        displayName = "Home";
+        backendPodSelector = labels;
+      }
+      // {
+        timeouts = {
+          request = lib.mkDefault "0s";
+          backendRequest = lib.mkDefault "0s";
+        };
+      };
   };
   den.aspects.kubernetes.services.homarr.compute-resources = _: {
     # Stock entrypoint starts as root, prepares writable paths, then su-exec
@@ -36,24 +56,20 @@ in
   den.aspects.kubernetes.services.homarr.k8s-manifests =
     {
       cluster,
+      routes,
       computeResources,
       charts,
       ...
     }:
     let
       state = computeResources.retainedPaths.homarr;
-      route = cluster.routes.home;
+      route = routes.home;
       ready = cluster.settings.kubernetes.services.homarr.phase == "ready";
-      labels = {
-        "app.kubernetes.io/controller" = "main";
-        "app.kubernetes.io/instance" = "homarr";
-        "app.kubernetes.io/name" = "homarr";
-      };
     in
     assert lib.assertMsg (!state.readOnly) "Homarr retained state must be writable.";
     assert lib.assertMsg (
       route.namespace == namespace
-      && route.service == "homarr"
+      && route.service == service
       && route.port == port
       && route.pathPrefix == "/"
       && route.auth == "native"
@@ -155,7 +171,7 @@ in
                   PGID = toString state.gid;
                   AUTH_PROVIDERS = "oidc";
                   AUTH_SESSION_EXPIRY_TIME = "1h";
-                  AUTH_OIDC_ISSUER = "https://${builtins.head cluster.routes.idm.hostnames}/oauth2/openid/homarr";
+                  AUTH_OIDC_ISSUER = "https://${builtins.head routes.idm.hostnames}/oauth2/openid/homarr";
                   AUTH_OIDC_CLIENT_ID = "homarr";
                   AUTH_OIDC_CLIENT_NAME = "Homelab";
                   AUTH_OIDC_CLIENT_SECRET.valueFrom.secretKeyRef = {

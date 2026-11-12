@@ -11,7 +11,7 @@ let
   compute = host.settings.virtualization.compute;
   telemetry = host.settings.services.host-telemetry;
   monitoring = self.nixosConfigurations.${cluster.hostName}.config.homelab.monitoring;
-  route = cluster.routes.grafana;
+  route = config.flake.clusterRoutes.prod-home.routes.grafana;
   namespace = route.namespace;
   metrics = compute.retainedPaths.monitoring-metrics;
   quote = value: "`${value}`";

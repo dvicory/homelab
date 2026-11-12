@@ -55,23 +55,25 @@
                     "10.0.0.11/32"
                     "10.0.0.12/32"
                   ];
-                  routes.idm = {
-                    hostnames = [ "id.bzfx.net" ];
-                    exposure = "public";
-                    pathPrefix = "/";
-                  };
-                  routes.service = {
-                    hostnames = [
-                      "service.primary.test"
-                      "service.backup.test"
-                    ];
-                    exposure = "public";
-                    pathPrefix = "/";
-                  };
                 };
                 environments.prod = {
                   domain = "primary.test";
                   backupDomain = "backup.test";
+                };
+              };
+              flake.clusterRoutes.prod-home = {
+                routes.idm = {
+                  hostnames = [ "id.bzfx.net" ];
+                  exposure = "public";
+                  pathPrefix = "/";
+                };
+                routes.service = {
+                  hostnames = [
+                    "service.primary.test"
+                    "service.backup.test"
+                  ];
+                  exposure = "public";
+                  pathPrefix = "/";
                 };
               };
             };

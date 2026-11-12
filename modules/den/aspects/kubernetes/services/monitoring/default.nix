@@ -74,13 +74,14 @@ in
         computeResources,
         charts ? { },
         lib,
+        routes,
         ...
       }:
       let
         host = inputs.self.nixosConfigurations.${cluster.hostName}.config.homelab.monitoring;
-        identityHostname = builtins.head cluster.routes.idm.hostnames;
-        grafanaPods = lib.optional (cluster.routes ? grafana) {
-          podSelector.matchLabels = cluster.routes.grafana.backendPodSelector;
+        identityHostname = builtins.head routes.idm.hostnames;
+        grafanaPods = lib.optional (routes ? grafana) {
+          podSelector.matchLabels = routes.grafana.backendPodSelector;
         };
         retained = computeResources.retainedPaths.monitoring-metrics;
         stateMarker = "${computeResources.stateRoot.guestPath}/${computeResources.stateRoot.marker}";
@@ -95,7 +96,7 @@ in
           lib.filter (object: object.kind == "HTTPRoute") (
             config.applications.gateway.objects ++ (config.applications.identity-gateway.objects or [ ])
           )
-        )) cluster.routes;
+        )) routes;
         # Send each probe to the gateway NodePort with the route's SNI and Host:
         # the hop the host forwards household HTTPS to.
         probes = lib.mapAttrs (

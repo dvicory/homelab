@@ -67,7 +67,12 @@ let
               description = "Runtime Secret key containing this instance's native API key.";
             };
             role = lib.mkOption {
-              type = lib.types.nullOr (lib.types.enum [ "standard" "4k" ]);
+              type = lib.types.nullOr (
+                lib.types.enum [
+                  "standard"
+                  "4k"
+                ]
+              );
               default = if name == kind then "standard" else null;
               description = "Optional Seerr role. Exactly one standard and at most one 4k instance per kind; the current managed HD policy rejects the 4k role.";
             };
@@ -82,11 +87,13 @@ let
               description = "Distinct managed download category: an alphanumeric name with dots, underscores or hyphens, never SABnzbd's reserved wildcard.";
             };
             qualityProfiles = lib.mkOption {
-              type = lib.types.addCheck (lib.types.listOf (lib.types.enum [
-                "hd-preferred"
-                "web-1080p"
-                "remux-web-1080p"
-              ])) (profiles: profiles != [ ] && lib.unique profiles == profiles);
+              type = lib.types.addCheck (lib.types.listOf (
+                lib.types.enum [
+                  "hd-preferred"
+                  "web-1080p"
+                  "remux-web-1080p"
+                ]
+              )) (profiles: profiles != [ ] && lib.unique profiles == profiles);
               default = [
                 "hd-preferred"
                 "web-1080p"
@@ -109,7 +116,7 @@ let
       );
       routeFor =
         {
-          cluster,
+          routes,
           instanceName,
           cfg,
         }:
@@ -120,10 +127,10 @@ let
         if routeKey == null then
           null
         else
-          assert lib.assertMsg (builtins.hasAttr routeKey cluster.routes)
+          assert lib.assertMsg (builtins.hasAttr routeKey routes)
             "Media instance ${kind}/${instanceName} references missing route ${routeKey}.";
           let
-            route = builtins.getAttr routeKey cluster.routes;
+            route = builtins.getAttr routeKey routes;
           in
           assert lib.assertMsg
             (
@@ -136,6 +143,7 @@ let
       mkArrValues =
         {
           cluster,
+          routes,
           computeResources,
           kind,
           instanceName,
@@ -143,7 +151,7 @@ let
         }:
         let
           state = retainedEntry computeResources cfg.state;
-          route = routeFor { inherit cluster instanceName cfg; };
+          route = routeFor { inherit routes instanceName cfg; };
           prefix = routePrefix route;
           service = cfg.integration.service;
           secretName = cluster.settings.kubernetes.services.media.configurationSecret;
@@ -234,6 +242,7 @@ let
       mkArrApplications =
         {
           cluster,
+          routes,
           computeResources,
           charts,
         }:
@@ -250,6 +259,7 @@ let
               values = mkArrValues {
                 inherit
                   cluster
+                  routes
                   computeResources
                   kind
                   instanceName
@@ -269,6 +279,26 @@ let
         description = "Independent ${kind} instances and their state, routes and policy.";
       };
       aspect = {
+        route-metadata =
+          { cluster, ... }:
+          {
+            config = lib.mkMerge (
+              lib.mapAttrsToList (
+                _: cfg:
+                lib.optionalAttrs (cfg.integration.routeKey != null) {
+                  routes.${cfg.integration.routeKey} = lib.mapAttrs (_: lib.mkDefault) {
+                    inherit (cfg.integration) namespace service port;
+                    displayName = if kind == "radarr" then "Radarr" else "Sonarr";
+                    backendPodSelector = {
+                      "app.kubernetes.io/controller" = "main";
+                      "app.kubernetes.io/instance" = cfg.integration.service;
+                      "app.kubernetes.io/name" = cfg.integration.service;
+                    };
+                  };
+                }
+              ) cluster.settings.kubernetes.services.media.${kind}
+            );
+          };
         compute-resources =
           { cluster, ... }:
           let
@@ -297,6 +327,7 @@ let
         k8s-manifests =
           {
             cluster,
+            routes,
             computeResources,
             charts,
             ...
@@ -305,7 +336,14 @@ let
             settings = cluster.settings.kubernetes.services.media;
           in
           {
-            config.applications = mkArrApplications { inherit cluster computeResources charts; };
+            config.applications = mkArrApplications {
+              inherit
+                cluster
+                routes
+                computeResources
+                charts
+                ;
+            };
           };
       };
     };

@@ -1,6 +1,8 @@
 { config, lib, ... }:
 let
-  cluster = config.den.clusters."prod-home";
+  cluster = config.den.clusters."prod-home" // {
+    routes = config.flake.clusterRoutes.prod-home.routes;
+  };
   environment = config.den.environments.${cluster.environment};
   routes = cluster.routes;
   peerCIDRs = [
@@ -24,6 +26,7 @@ let
           clusters."prod-home" = inventory;
           environments.${inventory.environment} = environment;
         };
+        flake.clusterRoutes.prod-home.routes = inventory.routes;
       };
       inherit lib;
     };
@@ -168,6 +171,7 @@ let
     (builtins.tryEval (
       builtins.seq (gateway.k8s-manifests {
         cluster = inventory;
+        routes = inventory.routes;
         computeResources.instance = "compute-1";
         charts = { };
         inherit lib;

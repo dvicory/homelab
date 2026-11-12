@@ -32,6 +32,21 @@ in
     };
     description = "Read-only Seerr Service endpoint and API Secret key for consumers.";
   };
+  den.aspects.kubernetes.services.seerr.route-metadata =
+    { cluster, ... }:
+    let
+      endpoint = cluster.settings.kubernetes.services.seerr.integration;
+    in
+    {
+      routes.requests = lib.mapAttrs (_: lib.mkDefault) {
+        inherit (endpoint) namespace service port;
+        backendPodSelector = {
+          "app.kubernetes.io/controller" = "main";
+          "app.kubernetes.io/instance" = endpoint.service;
+          "app.kubernetes.io/name" = endpoint.service;
+        };
+      };
+    };
   den.aspects.kubernetes.services.seerr.compute-resources = { cluster, ... }: {
     retainedPaths.seerr = {
       uid = 1000;
@@ -56,6 +71,7 @@ in
   den.aspects.kubernetes.services.seerr.k8s-manifests =
     {
       cluster,
+      routes,
       computeResources,
       charts,
       config,
@@ -64,10 +80,9 @@ in
     let
       state = retainedEntry computeResources "seerr";
       route =
-        assert lib.assertMsg (builtins.hasAttr "requests" cluster.routes)
-          "Media route requests is not declared.";
+        assert lib.assertMsg (builtins.hasAttr "requests" routes) "Media route requests is not declared.";
         let
-          value = cluster.routes.requests;
+          value = routes.requests;
         in
         assert lib.assertMsg (
           value.namespace == app.namespace

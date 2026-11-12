@@ -44,6 +44,22 @@ in
     };
     description = "Read-only Prowlarr Service endpoint and API Secret key for consumers.";
   };
+  den.aspects.kubernetes.services.prowlarr.route-metadata =
+    { cluster, ... }:
+    let
+      endpoint = cluster.settings.kubernetes.services.prowlarr.integration;
+    in
+    {
+      routes.prowlarr = lib.mapAttrs (_: lib.mkDefault) {
+        inherit (endpoint) namespace service port;
+        displayName = "Prowlarr";
+        backendPodSelector = {
+          "app.kubernetes.io/controller" = "main";
+          "app.kubernetes.io/instance" = endpoint.service;
+          "app.kubernetes.io/name" = endpoint.service;
+        };
+      };
+    };
   den.aspects.kubernetes.services.prowlarr.compute-resources = { cluster, ... }: {
     retainedPaths.prowlarr = {
       inherit (identity) uid gid;
@@ -60,6 +76,7 @@ in
   den.aspects.kubernetes.services.prowlarr.k8s-manifests =
     {
       cluster,
+      routes,
       computeResources,
       charts,
       config,
@@ -68,10 +85,9 @@ in
     let
       state = retainedEntry computeResources "prowlarr";
       route =
-        assert lib.assertMsg (builtins.hasAttr "prowlarr" cluster.routes)
-          "Media route prowlarr is not declared.";
+        assert lib.assertMsg (builtins.hasAttr "prowlarr" routes) "Media route prowlarr is not declared.";
         let
-          value = cluster.routes.prowlarr;
+          value = routes.prowlarr;
         in
         assert lib.assertMsg (
           value.namespace == app.namespace && value.service == app.service && value.port == app.port

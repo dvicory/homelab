@@ -292,7 +292,7 @@ let
             root = true;
             ownedStorage = true;
           };
-          loopbackHost = builtins.head config.den.clusters."prod-home".routes.idm.hostnames;
+          loopbackHost = builtins.head config.flake.clusterRoutes.prod-home.routes.idm.hostnames;
           cleanupPrefix = "household";
         }
         {
