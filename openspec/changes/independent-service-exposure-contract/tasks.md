@@ -1,15 +1,18 @@
 ## 1. Declared Route Contract
 
 - [x] 1.1 Add typed route fields for one or more non-empty hostnames, backend service, authentication mode, private/public exposure, backend protocol/TLS and declared trust source, and request timeouts; verify absent required declarations fail evaluation without introducing a separate boolean presence flag.
-- [x] 1.2 Render internal Gateway routes and backend isolation from the declared inventory; verify generated manifests contain the declared hostnames, services, trust policy, timeouts, and narrow pod selectors.
-- [x] 1.3 Render independent public entrances from only public routes; have each edge consumer validate its own hostname cardinality/domain-family policy, verify private routes are absent, and verify a rejected shape fails closed.
+- [ ] 1.2 Split private and public Gateway data planes, receiving ports and selectors while retaining the private entry; verify rendered parents, listener policies and backend admission cannot attach a private route to public entry.
+- [ ] 1.3 Attach only eligible public routes to public entry after existing bootstrap gates; verify hostname overrides, undeclared hosts and initial identity/Homarr/Seerr states cannot expose a private or unready backend.
+- [ ] 1.4 Build on PR #122's resolved route projection without another registry; verify existing route-selection checks and unchanged route inventory when public transport is unconfigured.
 
-## 2. Proxy and Backend Trust
+## 2. Transport and Backend Trust
 
-- [x] 2.1 Add explicit direct and trusted-edge ingress modes with fail-closed peer-list consistency; verify direct mode derives identity from its peer, declared public edges require exact trusted peers, and the gateway accepts forwarded identity only from those peers.
-- [x] 2.2 Strip client-supplied forwarding, identity, and request-ID metadata at the public edge, generate a fresh trusted request identifier there, configure the gateway to preserve it unchanged, and emit queryless structured access logs; verify the rendered configurations enforce each boundary.
+- [ ] 2.1 Separate ordinary private TLS from the restricted public receiver requiring PROXY metadata; verify valid declared peers work, malformed/missing metadata is rejected, and direct clients cannot supply a trusted relay identity.
+- [ ] 2.2 Move header sanitation and fresh request-ID generation to the Gateway; verify forged forwarding, user and request-ID values are discarded and backend requests match the Gateway's generated ID and declared client-address source.
 - [x] 2.3 Configure generic backend TLS chain verification from each route's declared trust source, and configure Kanidm strict hostname verification for its primary declared identity hostname through public-PKI system roots; verify no disabled verification, invented backend-hostname field, or private-CA runtime trust input remains.
-- [x] 2.4 Pin the Gateway controller to `docker.io/envoyproxy/gateway:v1.9.1@sha256:0049bcb384c591c6a6dd043fe5c9929ef6e74f230e12dd678d2d3701df9b301e` and the data-plane to `docker.io/envoyproxy/envoy:distroless-v1.39.1@sha256:eb2c01c13125d1629637cb4e4cce7207009fb7cc2c8027f9742758549d15b6f4`; verify evaluated and generated resources use those exact multi-architecture identities.
+- [x] 2.4 Keep controller and data-plane image references immutable and paired with the selected compatible chart; existing rendered-image checks verify the exact selected references. Preserve separately approved release updates rather than freezing this plan to an older release.
+- [ ] 2.5 Add the TCP relay using native HAProxy and WireGuard modules, passing TLS unchanged with PROXY v2 and existing agenix-owned key delivery; verify real fixture connections preserve the reported client address and the relay holds no application TLS key.
+- [ ] 2.6 Wire host forwarding, bridge filtering, guest firewall and backend/identity admission for the public receiver only; extend the existing packet fixture to reject peer access to private entry, backends, Kubernetes API, SSH and Incus through routed and bridge paths.
 
 ## 3. Identity Lifecycle and Ownership
 
@@ -22,5 +25,10 @@
 ## 4. Convergence and Evidence
 
 - [x] 4.1 Order retained state before workloads, Gateway CRDs before the controller, the controller before Gateway resources, cross-namespace RBAC before provisioning, and administrator policy before route publication; verify child readiness uses actual health rather than annotations alone.
-- [x] 4.2 Add focused evaluation checks for route filtering, edge hostname-policy rejection, direct/trusted-edge client-address handling, request-ID preservation, queryless logs, three-phase fail-closed identity activation, exact image identity, real Argo dependencies, bootstrap guidance, unique desired-state ownership, public-PKI trust, Preserve seam ownership, and generated-manifest freshness.
-- [ ] 4.3 Keep live DNS, certificate, public/private routing, spoofed-header, authentication, long-request, logging, and unrelated-application failure-isolation gates open until exercised on deployed infrastructure; require a live two-layer request proof that captures one fresh edge-generated request identifier unchanged in both edge and gateway logs, with queryless paths, and report structural and live results separately.
+- [ ] 4.2 Update affected evaluation and rendered-policy checks for both Gateway attachments, public filtering, bootstrap gates, metadata trust, immutable release selection and unique ownership; retain counterfactual cases that reject unsafe policy and route declarations.
+- [ ] 4.3 Reuse existing Kubernetes API and host-network fixtures for one real relay → private link → rendered Envoy → backend proof with generated test keys/certificates; verify TLS, private-host rejection, administrator/nonmember and native application sign-in, spoofed metadata, queryless logs, long requests, peer containment, startup/replacement isolation and continued private access after relay/link loss.
+- [ ] 4.4 Remove obsolete NGINX roles, trusted-HTTP-edge settings, callers and superseded fixtures after the new proof passes; verify affected declaration, policy and runtime gates pass without compatibility aliases, duplicate route models or added application phases.
+
+## 5. Commissioning
+
+- [ ] 5.1 Keep activation pending until the intended service list, real addresses, agenix-managed keys, DNS, certificates and required network-isolation startup/replacement evidence are approved; verify the actual client, authentication, logging, long-request and private-recovery paths before public rollout. Disposable proof does not complete this task.
