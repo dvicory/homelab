@@ -33,6 +33,11 @@ their original observation windows.
 The VM scenario runs only inside the disposable fixture-host VM of
 checks.compute-network-policy-runtime; --self-test checks recovery acceptance
 without a guest.
+
+After an established guest-restart failure, read-only snapshots are followed
+by SIGQUIT to the exact API/CRI-correlated enforcer container, never a process
+name or a reused PID. This terminates that failed disposable process to obtain
+Go stacks; it is not a recovery action and cannot turn the failed oracle green.
 """
 
 from __future__ import annotations
@@ -194,6 +199,21 @@ def self_check() -> None:
         pass
     else:
         raise AssertionError("a watcher execution error satisfied traffic denial")
+    container_id = "a" * 64
+    running = {"status": {"id": container_id, "state": "CONTAINER_RUNNING"}, "info": {"pid": 42}}
+    check(enforcer_pid(container_id, running) == 42, "the exact running CRI container supplies the PID")
+    for expected_id, state, pid in (
+        ("a", "CONTAINER_RUNNING", 42),
+        ("b" * 64, "CONTAINER_RUNNING", 42),
+        (container_id, "CONTAINER_EXITED", 42),
+        (container_id, "CONTAINER_RUNNING", 1),
+    ):
+        try:
+            enforcer_pid(expected_id, {"status": {"id": container_id, "state": state}, "info": {"pid": pid}})
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("an ambiguous or stopped container was accepted for stack capture")
     print("PASS: crash recovery uses fresh traffic, bounded refusal and nonempty denial; exec failures reject")
 
 
@@ -546,6 +566,16 @@ def migrate(lib, guest: Guest, args) -> None:
     WMEM.write_text(str(KERNEL_DEFAULT))
 
 
+def enforcer_pid(container_id: str, container: dict) -> int:
+    """Reject partial IDs and stale CRI identities before any diagnostic signal."""
+    pid = int(container["info"]["pid"])
+    if (not re.fullmatch(r"[0-9a-f]{64}", container_id) or pid <= 1
+            or container["status"]["id"] != container_id
+            or container["status"]["state"] != "CONTAINER_RUNNING"):
+        raise ValueError("CRI did not identify the exact running enforcer")
+    return pid
+
+
 def capture_enforcer_failure(guest: Guest, label: str) -> dict | None:
     try:
         snapshot = json.loads(guest.kubectl(
@@ -578,8 +608,9 @@ def capture_enforcer_failure(guest: Guest, label: str) -> dict | None:
 
 
 def capture_enforce_failure(guest: Guest, label: str) -> None:
-    """Read live failure state without another traffic probe or table replay."""
+    """Capture live state first; only a failed restarted fixture may then dump stacks."""
     pod = capture_enforcer_failure(guest, label)
+    process = None
 
     def capture(name: str, *command: str, limit: int = 16384) -> None:
         try:
@@ -590,6 +621,18 @@ def capture_enforce_failure(guest: Guest, label: str) -> None:
                 "returncode": result.returncode, "stdout": result.stdout[:limit],
                 "stderr": result.stderr[:4096],
                 "truncated": len(result.stdout) > limit or len(result.stderr) > 4096,
+            })
+        except subprocess.TimeoutExpired as error:
+            # A bounded log follower may time out after emitting useful stacks.
+            stdout = error.stdout or b""
+            stderr = error.stderr or b""
+            if isinstance(stdout, bytes):
+                stdout = stdout.decode(errors="replace")
+            if isinstance(stderr, bytes):
+                stderr = stderr.decode(errors="replace")
+            observe(f"{label}.failure.{name}", {
+                "error": type(error).__name__, "stdout": stdout[:limit], "stderr": stderr[:4096],
+                "truncated": len(stdout) > limit or len(stderr) > 4096,
             })
         except Exception as error:
             observe(f"{label}.failure.{name}", {"error": type(error).__name__, "detail": str(error)[:400]})
@@ -606,9 +649,8 @@ def capture_enforce_failure(guest: Guest, label: str) -> None:
         if result.returncode:
             raise RuntimeError(f"crictl inspect exited {result.returncode}: {result.stderr[:400]}")
         container = json.loads(result.stdout)
-        pid = int(container["info"]["pid"])
-        if pid <= 1 or container["status"]["id"] != container_id:
-            raise ValueError("CRI did not identify the requested running enforcer")
+        pid = enforcer_pid(container_id, container)
+        process = (container_id, pid)
         observe(f"{label}.failure.enforcer_process", {
             "container_id": container_id, "pid": pid,
             "status": {key: container["status"].get(key) for key in ("id", "state", "createdAt", "startedAt", "finishedAt")},
@@ -660,6 +702,24 @@ def capture_enforce_failure(guest: Guest, label: str) -> None:
     capture("nft.enforcer", "sh", "-c", tools + "nft -j list table inet kube-network-policies", limit=32768)
     capture("nfqueue", "cat", "/proc/net/netfilter/nfnetlink_queue")
     capture("iptables.filter", "sh", "-c", tools + "iptables-save -t filter")
+
+    # Last, after every unchanged observation and only after the restart oracle
+    # has failed. The runtime targets this immutable container ID's init task,
+    # not all tasks or a PID that could have been reused. SIGQUIT dumps Go stacks
+    # and terminates the failed process; the original assertion still propagates.
+    if label == "restarted" and process is not None:
+        container_id, pid = process
+        try:
+            current = json.loads(guest.runtime.guest("k3s", "crictl", "inspect", container_id, timeout=15))
+            if enforcer_pid(container_id, current) != pid:
+                raise ValueError("enforcer process changed after the read-only snapshots")
+            observe(f"{label}.failure.stack_target", {"container_id": container_id, "pid": pid, "signal": "SIGQUIT"})
+            capture("enforcer_stack", "sh", "-c",
+                    'k3s ctr -n k8s.io tasks kill --signal SIGQUIT "$1" && '
+                    'exec k3s crictl logs --follow --timestamps --limit-bytes=262145 "$1"',
+                    "enforcer-stack", container_id, limit=262144)
+        except Exception as error:
+            observe(f"{label}.failure.enforcer_stack", {"error": type(error).__name__, "detail": str(error)[:400]})
 
 
 def crash(lib, guest: Guest) -> None:
