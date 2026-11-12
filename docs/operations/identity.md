@@ -52,8 +52,12 @@ App-specific callbacks, scopes and Secret references stay beside their owning
 service. Change those inputs to configure a client; normal Nix overrides still
 apply there. The app, Gateway and Kanidm consume the same evaluated records.
 Callback and login-start paths must start with `/`.
-Two clients must not write to the same key in the same Secret. Different keys
-in one Secret are allowed.
+Two clients must not write to the same key in the same Secret.
+The source provisioner combines distinct keys for one Secret into one apply,
+then restores client grants. It keeps the `identity-provisioner` field owner.
+This requires the fixed helper image to be released and selected through the
+normal helper workflow; editing source does not change the deployed image.
+Until then, give different clients separate Secrets.
 
 `home.nix` chooses which routes exist, their hostnames, access rules and rollout
 phases. Selected service aspects supply backend names, ports and pod selectors

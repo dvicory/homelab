@@ -287,10 +287,13 @@ in
                   }
 
               def assert_published():
+                  expected_keys = {}
+                  for _, spec in secrets:
+                      expected_keys.setdefault((spec["namespace"], spec["name"]), set()).add(spec["key"])
                   for client, spec in secrets:
                       published = secret(spec["namespace"], spec["name"])
                       keys = sorted(published.get("data", {}))
-                      assert keys == [spec["key"]], (client, keys)
+                      assert keys == sorted(expected_keys[(spec["namespace"], spec["name"])]), (client, keys)
                       assert published["type"] == "Opaque", (client, published["type"])
                       assert probe("secret-matches", client=client, namespace=spec["namespace"],
                                    name=spec["name"], key=spec["key"]) is True, f"{client} Secret differs from Kanidm"
@@ -722,6 +725,33 @@ in
                   assert probe("private-oauth", person="fixture-invited", client="argocd",
                                redirect=callbacks[0], scopes=["openid", "groups_name"], allowed=False) == {"denied": True}
                   evidence("source-B-native-ordinary-user", claims)
+
+              with subtest("source B: two clients sharing a Secret keep both keys after repeated publication"):
+                  configmap = json.loads(cluster.succeed(
+                      f"{kubectl} get configmap --namespace identity kanidm-provision --output json"
+                  ))
+                  shared_clients = json.loads(configmap["data"]["clients.json"])
+                  shared_target = dict(target, key="argocdClientSecret")
+                  next(client for client in shared_clients if client["name"] == "argocd")["secrets"].append(shared_target)
+                  configmap["data"]["clients.json"] = json.dumps(shared_clients)
+                  cluster.succeed(
+                      "printf %s " + shlex.quote(json.dumps(configmap))
+                      + f" | {kubectl} apply --server-side --field-manager=argocd-controller --force-conflicts -f -"
+                  )
+                  secrets.append(("argocd", shared_target))
+                  run_job("Complete")
+                  assert_private_exit(0)
+                  assert_published()
+                  shared_published = secret(target["namespace"], target["name"])["data"]
+                  run_job("Complete")
+                  assert_private_exit(0)
+                  assert_published()
+                  assert secret(target["namespace"], target["name"])["data"] == shared_published
+                  selected, scopes, secrets = select_private(private_identity)
+                  run_job("Complete")
+                  assert_private(selected)
+                  assert_published()
+                  assert secret(target["namespace"], target["name"])["data"] == private_published
 
               with subtest("Home accepts household and administrator sign-in, not arbitrary identities"):
                   consumer = json.loads(cluster.succeed(
