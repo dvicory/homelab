@@ -38,6 +38,11 @@ After an established guest-restart failure, read-only snapshots are followed
 by SIGQUIT to the exact API/CRI-correlated enforcer container, never a process
 name or a reused PID. This terminates that failed disposable process to obtain
 Go stacks; it is not a recovery action and cannot turn the failed oracle green.
+
+This diagnostic variant gates the replacement enforcer before the guest
+restart and releases it only after application Pods have restarted. It tests
+late enforcer startup with the stock image and unchanged traffic assertions;
+it is not qualification of the unmodified production scheduling behavior.
 """
 
 from __future__ import annotations
@@ -935,12 +940,55 @@ def run_scenario(args) -> None:
         no_device_access(lib, guest)
     with lib.phase("enforcer crash"):
         crash(lib, guest)
+    with lib.phase("test-only gate enforcer scheduling"):
+        gate = [{"name": "diagnostic.homelab/enforcer-after-workloads"}]
+        guest.kubectl("patch", "daemonset", ENFORCER[1], "--type=merge", "-p",
+                      json.dumps({"spec": {"template": {"spec": {"schedulingGates": gate}}}}),
+                      namespace=ENFORCER[0])
+
+        def gated_enforcer():
+            pods = runtime.kubectl_json("get", "pods", "-l", f"app.kubernetes.io/name={ENFORCER[1]}",
+                                       "-o", "json", namespace=ENFORCER[0])["items"]
+            if len(pods) != 1:
+                return None
+            pod = pods[0]
+            if (pod["spec"].get("schedulingGates") != gate or pod["spec"].get("nodeName")
+                    or pod["metadata"].get("deletionTimestamp")
+                    or pod["status"].get("phase") != "Pending"):
+                return None
+            return pod
+
+        pending = lib.wait_for("only the gated replacement enforcer remains", gated_enforcer, timeout=300)
+        observe("restart_order.gated", {"pod": pending["metadata"]["name"], "uid": pending["metadata"]["uid"]})
     with lib.phase("enforcement after a guest restart"):
         before = guest.pod_ips()
         restarted = guest.now()
         lib.run("incus", "--force-local", "--project", runtime.project, "restart", runtime.instance, "--timeout=120",
                 timeout=900)
         lib.wait_for("K3s node after the restart", runtime.node_ready, timeout=600)
+
+        def workloads_ready_before_enforcer():
+            pending = gated_enforcer()
+            if pending is None:
+                return None
+            selected = guest.selected_pods()
+            if not selected or not all(ip and ip != before.get(key) for key, ip in selected.items()):
+                return None
+            if any(not any(c["type"] == "Ready" and c["status"] == "True"
+                           for c in pod["status"].get("conditions", []))
+                   for pod in guest.active() if pod["metadata"]["uid"] != pending["metadata"]["uid"]):
+                return None
+            return pending
+
+        pending = lib.wait_for("application Pods restarted while enforcer stays gated",
+                              workloads_ready_before_enforcer, timeout=900)
+        observe("restart_order.release", {"pod": pending["metadata"]["name"], "uid": pending["metadata"]["uid"],
+                                          "at": guest.now(), "selected_pods": len(guest.selected_pods())})
+        guest.kubectl("patch", "pod", pending["metadata"]["name"], "--type=json", "-p", json.dumps([
+            {"op": "test", "path": "/metadata/uid", "value": pending["metadata"]["uid"]},
+            {"op": "test", "path": "/spec/schedulingGates", "value": gate},
+            {"op": "remove", "path": "/spec/schedulingGates"},
+        ]), namespace=ENFORCER[0])
         guest.wait_ready("restarted", lambda: guest.enforcer()["ready"] and (selected := guest.selected_pods()) and all(
             ip and ip != before.get(key) for key, ip in selected.items()))
         observe("restarted.boot_window", boot_window(guest))
