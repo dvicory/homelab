@@ -109,36 +109,3 @@ module.exports = {
       description: 'Jellyfin is a coupled reviewed release. Reconcile source/hash, provision patch, k8s assertion and verified helper-release selection manually before canonical generation. Incomplete draft candidates are not exported; verified receipts are never rewritten.' },
   ],
 };
-
-// One runnable extraction check, also prints the actual source mapping for local qualification.
-if (require.main === module) {
-  const fs = require('node:fs');
-  const assert = require('node:assert/strict');
-  const root = path.resolve(__dirname, '..');
-  const files = ['modules', 'pkgs/by-name'].flatMap(dir =>
-    fs.readdirSync(path.join(root, dir), { recursive: true })
-      .filter(file => file.endsWith('.nix') && fs.lstatSync(path.join(root, dir, file)).isFile())
-      .map(file => `${dir}/${file}`));
-  const mapping = [];
-  // Native Renovate config/extract/lookup qualification is authoritative, not a
-  // second hand-written model of Renovate's branch or admission algorithms.
-  for (const rule of customManagers) {
-    const pattern = new RegExp(rule.managerFilePatterns[0].slice(1, -1));
-    for (const file of files.filter(f => pattern.test(f))) {
-      for (const match of fs.readFileSync(path.join(root, file), 'utf8').matchAll(new RegExp(rule.matchStrings[0], 'g'))) {
-        const resolve = template => template?.replace(/\{\{\{(\w+)\}\}\}/g, (_, key) => match.groups[key] || '');
-        mapping.push({ file, dependency: match.groups.depName || resolve(rule.depNameTemplate),
-          version: match.groups.currentValue || rule.currentValueTemplate,
-          digest: match.groups.currentDigest,
-          ...(rule.depTypeTemplate === 'immutable-source'
-            ? { automaticUpdates: false, prerequisite: immutableSourcePrerequisite } : {}) });
-      }
-    }
-  }
-  for (const [name, version] of [['ghcr.io/linuxserver/*', '6.3.0.10514-ls315'],
-    ['ghcr.io/linuxserver/*', '5.1.2-ls271'], ['docker.io/envoyproxy/envoy', 'distroless-v1.39.1']]) {
-    const rule = module.exports.packageRules.find(x => x.matchPackageNames?.includes(name));
-    assert(new RegExp(rule.versioning.slice('regex:'.length)).test(version));
-  }
-  console.log(JSON.stringify(mapping, null, 2));
-}

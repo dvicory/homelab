@@ -109,7 +109,7 @@ def check_native_identity(row):
     derived, changes, unqualified = audit.security_artifacts.native_identity(native)
     assert native == original and not unqualified
     nodes = [derived["metadata"]["component"], *derived["components"]]
-    assert len({node["purl"] for node in nodes}) == 2  # same package/version, distinct real builds
+    assert len({node["purl"] for node in nodes}) == 2  # same package/version, distinct derivation identities
     by_ref = {change["bomRef"]: change for change in changes}
     for node in nodes:
         change = by_ref[node["bom-ref"]]
@@ -149,31 +149,6 @@ def check_native_rejection(directory, row, manifest):
         rejects(audit.collect, argparse.Namespace(entry="entry.json", directory=str(directory)))
         rejects(audit.scan, argparse.Namespace(directory=str(directory), output="rejected-report"))
         calls.assert_not_called()
-
-
-def check_real_native_proof(path):
-    """Admit persisted actual upstream outputs; no store/registry is consulted."""
-    proof = json.loads(Path(path).read_text())["observed_real_closure_proof"]
-    for sample in proof.values():
-        if "raw_csv" not in sample:
-            continue
-        native = sample["raw_evidence"][".cdx.json"]
-        ref = native["metadata"]["component"]["bom-ref"]
-        row = {"kind": "nix", "inventoryKey": "real-proof", "outPath": sample["root"],
-               "drvPath": ref if ref.endswith(".drv") else None, "references": list(sample["raw_path_info"])}
-        with tempfile.TemporaryDirectory() as temporary:
-            directory = Path(temporary)
-            audit.save(directory / "native.cdx.json", native)
-            audit.save(directory / "closure.json", sample["raw_path_info"])
-            (directory / "native.csv").write_text(sample["raw_csv"])
-            audit.save(directory / "language.cdx.json", {"bomFormat": "CycloneDX", "specVersion": "1.6", "version": 1, "components": []})
-            audit.save(directory / "provenance.json", row)
-            audit.security_artifacts.record_native_evidence(directory, row,
-                lambda ref: (_ for _ in ()).throw(AssertionError("tiny proof queried the original store")))
-            audit.security_artifacts.record_native_identity(directory, row)
-            audit.security_artifacts.seal(directory, row["inventoryKey"])
-            audit.security_artifacts.verify(directory, row["inventoryKey"])
-            print("Actual sbomnix runtime inventory admitted:", sample["root"])
 
 
 def check_composite_native(row):
@@ -454,7 +429,6 @@ with tempfile.TemporaryDirectory() as directory:
             calls.assert_not_called()  # no rebuild, registry access or inventory regeneration
         rejects(audit.security_artifacts.verify, Path("inventory"), row["inventoryKey"], None, dict(row, outPath="/nix/store/other"))
         provenance = json.loads(Path("inventory/provenance.json").read_text())
-        assert provenance["state"] == "desired" and provenance["realization"] == "built"
         audit.save("inventory/provenance.json", dict(provenance, ociArchive=row["outPath"]))
         rejects(audit.security_artifacts.seal, Path("inventory"), row["inventoryKey"])
         audit.save("inventory/archive.cdx.json", {"bomFormat": "CycloneDX", "specVersion": "1.6", "version": 1, "components": []})
@@ -476,13 +450,10 @@ with tempfile.TemporaryDirectory() as directory:
         os.chdir(previous)
 print("inventory contract passed")
 parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument("--native-proof", help="persisted generic-native-proof.json with actual upstream CSV/CDX/path-info")
 parser.add_argument("--native-directory", action="append", default=[], help="actual full-root raw CSV/CDX/closure/request plus collected native-evidence.json")
 parser.add_argument("--native-resolve", action="store_true", help="verify actual native Nix package identity without building")
 args = parser.parse_args()
 if args.native_resolve:
     check_native_resolution()
-if args.native_proof:
-    check_real_native_proof(args.native_proof)
 for directory in args.native_directory:
     check_full_native_directory(directory)

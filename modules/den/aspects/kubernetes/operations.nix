@@ -136,8 +136,9 @@ in
         updates with read authority. Candidate evaluation and generation run in a
         disposable checkout/private store; package builds use unprivileged Nix
         build users. A separate publisher accepts validated regular-file patches
-        with exact source leases, not executable candidate code. It never merges
-        or activates software. Unsupported source policies and incomplete coupled
+        with validated source revisions and exact updater-branch leases, not
+        executable candidate code. It never merges or activates software.
+        Unsupported source policies and incomplete coupled
         releases remain explicit refusals, not guessed updates.
         Publishers recheck main immediately before pushing and refuse already-stale
         candidates. Main can still advance after that check; review against current
