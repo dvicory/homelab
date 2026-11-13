@@ -273,6 +273,38 @@ scenarios:
   mutate: del(.bundle.resources[] | select(.object.kind == "PersistentVolumeClaim" and .object.metadata.name ==
     "identity-kanidm"))
   fail: [native-idm-population]
+- name: identity-mounted-config-missing
+  mutate: >-
+    (.bundle.resources[] | select(.object.kind == "Deployment" and .object.metadata.namespace == "identity"
+    and .object.metadata.name == "kanidm").object.spec.template.spec) as $pod |
+    ($pod.containers[] | select(.name == "kanidm")) as $container |
+    ($container.volumeMounts[] | select(.mountPath == $container.args[]).name) as $volume |
+    ($pod.volumes[] | select(.name == $volume).configMap.name) as $config |
+    del(.bundle.resources[] | select(.object.kind == "ConfigMap" and .object.metadata.namespace == "identity"
+    and .object.metadata.name == $config))
+  fail: [identity-populations]
+- name: identity-mounted-config-wrong-reference
+  mutate: >-
+    (.bundle.resources[] | select(.object.kind == "ConfigMap" and .object.metadata.namespace == "identity"
+    and (.object.data | has("state.json"))).object.metadata.name) as $wrongConfig |
+    (.bundle.resources[] | select(.object.kind == "Deployment" and .object.metadata.namespace == "identity"
+    and .object.metadata.name == "kanidm").object.spec.template.spec) as $pod |
+    ($pod.containers[] | select(.name == "kanidm")) as $container |
+    ($container.volumeMounts[] | select(.mountPath == $container.args[]).name) as $volume |
+    (.bundle.resources[] | select(.object.kind == "Deployment" and .object.metadata.namespace == "identity"
+    and .object.metadata.name == "kanidm").object.spec.template.spec.volumes[] |
+    select(.name == $volume).configMap.name) = $wrongConfig
+  fail: [identity-populations]
+- name: identity-mounted-config-optional
+  mutate: >-
+    (.bundle.resources[] | select(.object.kind == "Deployment" and .object.metadata.namespace == "identity"
+    and .object.metadata.name == "kanidm").object.spec.template.spec) as $pod |
+    ($pod.containers[] | select(.name == "kanidm")) as $container |
+    ($container.volumeMounts[] | select(.mountPath == $container.args[]).name) as $volume |
+    (.bundle.resources[] | select(.object.kind == "Deployment" and .object.metadata.namespace == "identity"
+    and .object.metadata.name == "kanidm").object.spec.template.spec.volumes[] |
+    select(.name == $volume).configMap.optional) = true
+  fail: [identity-populations]
 - name: oidc-system-pki-replaced
   base: gateway.networking.k8s.io/v1/BackendTLSPolicy/identity/kanidm-oidc-tls
   mutate: .spec.validation.wellKnownCACertificates = "Private"

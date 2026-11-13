@@ -63,12 +63,22 @@ spec:
             Identity phase must have its own complete population, without initial provisioning or premature
             OIDC transport.
         - expression: >-
-            ['Deployment', 'Service', 'ConfigMap'].all(k, variables.objects.filter(o, o.kind == k && o.metadata.name
-            == (k == 'ConfigMap' ? 'kanidm-config' : 'kanidm') && has(o.metadata.namespace) && o.metadata.namespace
-            == 'identity').size() == 1)
+            ['Deployment', 'Service'].all(k, variables.objects.filter(o, o.kind == k && o.metadata.name
+            == 'kanidm' && has(o.metadata.namespace) && o.metadata.namespace == 'identity').size() == 1)
           message: >-
             Identity phase must have its own complete population, without initial provisioning or premature
             OIDC transport.
+        - expression: >-
+            variables.objects.filter(o, o.kind == 'Deployment' && o.metadata.name == 'kanidm'
+            && has(o.metadata.namespace) && o.metadata.namespace == 'identity').all(d,
+            d.spec.template.spec.containers.exists(c, c.name == 'kanidm' && has(c.volumeMounts)
+            && has(c.args) && c.volumeMounts.exists(m, m.mountPath in c.args && has(m.subPath)
+            && d.spec.template.spec.volumes.filter(v, v.name == m.name
+            && has(v.configMap) && (!has(v.configMap.optional) || !v.configMap.optional)
+            && variables.objects.filter(s, s.kind == 'ConfigMap' && has(s.metadata.namespace)
+            && s.metadata.namespace == d.metadata.namespace && s.metadata.name == v.configMap.name
+            && has(s.data) && m.subPath in s.data).size() == 1).size() == 1)))
+          message: Kanidm must mount its declared required server configuration.
         - expression: >-
             ['ConfigMap', 'ServiceAccount', 'Job'].all(k, variables.objects.filter(o, o.kind == k && o.metadata.name
             == 'kanidm-provision').size() == (variables.phase == 'initial' ? 0 : 1))
