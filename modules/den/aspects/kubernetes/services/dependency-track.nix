@@ -1,0 +1,491 @@
+{ lib, inputs, ... }:
+let
+  namespace = "dependency-track";
+  protect = {
+    "argocd.argoproj.io/sync-options" = "Prune=false,Delete=false";
+  };
+  images = {
+    api = "ghcr.io/dependencytrack/apiserver@sha256:e46d3dee171aaac6e0cce60da2fbb6b987b7fafa22b8ff7c1300b3f4c356491e";
+    frontend = "ghcr.io/dependencytrack/frontend@sha256:a0f6e91750425471710d77958dc50962fd5a7ec3bf6a1678561e25d1e6d5a13a";
+    postgres = "postgres@sha256:c935aff069a7bbe5c286411a08e9678850d79be7848b190a0e4637b266478626";
+  };
+  labels = name: { "app.kubernetes.io/name" = "dependency-track-${name}"; };
+  env = name: value: { inherit name value; };
+  password = name: {
+    inherit name;
+    valueFrom.secretKeyRef = {
+      name = "dependency-track-postgres";
+      key = "password";
+    };
+  };
+in
+{
+  # Select explicitly; no cluster or host includes this service by default.
+  den.aspects.kubernetes.services.dependency-track = {
+    settings = {
+      databasePhase = lib.mkOption {
+        type = lib.types.enum [
+          "restore"
+          "bootstrap"
+        ];
+        default = "restore";
+        description = "Restore requires existing PostgreSQL18 data. Bootstrap permits stock initdb on an empty retained directory; select only for an explicitly admitted new database.";
+      };
+      apiBaseUrl = lib.mkOption {
+        type = lib.types.strMatching "http://127\\.0\\.0\\.1:[0-9]+";
+        default = "http://127.0.0.1:18080";
+        description = "Browser-facing API URL for the operator's loopback-only kubectl port-forward; not a public service URL.";
+      };
+      advisoryRefresh = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = "Enable the stock task scheduler only after applying the source-owned advisory policy and admitting its resource use.";
+      };
+      initialMirror = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = "Serialize the first admitted advisory import and pause analysis/artifact workers; cannot be combined with scheduled refresh.";
+      };
+    };
+    compute-resources = _: {
+      retainedPaths = {
+        dependency-track-postgres = {
+          uid = 70;
+          gid = 70;
+          mode = "0700";
+        };
+        dependency-track-api = {
+          uid = 1000;
+          gid = 0;
+          mode = "0700";
+        };
+        # Canonical sealed originals, native companions, provenance and sync
+        # journal are separate from DT's normalized exports and database.
+        dependency-track-evidence = {
+          uid = 705;
+          gid = 705;
+          mode = "0700";
+        };
+      };
+      # The standard runtime-secrets bridge generates matching secretRequests.
+      # Existing encrypted credentials must be recovered, never regenerated on
+      # restore: database passwords and API encryption state travel together.
+      runtimeSecrets."dependency-track--dependency-track-postgres--password" = {
+        inherit namespace;
+        name = "dependency-track-postgres";
+        key = "password";
+        generator = { pkgs, ... }: ''
+          ${pkgs.openssl}/bin/openssl rand -hex 32 | ${pkgs.coreutils}/bin/tr -d '\n'
+        '';
+      };
+    };
+    k8s-manifests =
+      { cluster, computeResources, ... }:
+      let
+        settings = cluster.settings.kubernetes.services.dependency-track;
+        paths = lib.genAttrs [ "postgres" "api" "evidence" ] (
+          name: computeResources.retainedPaths.${"dependency-track-${name}"}
+        );
+        sizes = {
+          postgres = "10Gi";
+          api = "5Gi";
+          evidence = "20Gi";
+        };
+        claim = name: "dependency-track-${name}";
+        postgresHba = ''
+          local all postgres peer
+          host dtrack dtrack all scram-sha-256
+          host all all all reject
+        '';
+        security = uid: gid: {
+          runAsUser = uid;
+          runAsGroup = gid;
+          runAsNonRoot = true;
+          allowPrivilegeEscalation = false;
+          capabilities.drop = [ "ALL" ];
+          seccompProfile.type = "RuntimeDefault";
+        };
+        resources = memory: cpu: {
+          requests = { inherit memory cpu; };
+          limits = { inherit memory cpu; };
+        };
+        workload = name: container: volumes: {
+          apiVersion = "apps/v1";
+          kind = "Deployment";
+          metadata = {
+            name = claim name;
+            inherit namespace;
+          };
+          spec = {
+            replicas = 1;
+            strategy.type = "Recreate";
+            selector.matchLabels = labels name;
+            template = {
+              metadata.labels = labels name;
+              metadata.annotations = lib.optionalAttrs (name == "postgres") {
+                "homelab.danielvicory/config-sha256" = builtins.hashString "sha256" postgresHba;
+              };
+              spec = {
+                automountServiceAccountToken = false;
+                nodeSelector."kubernetes.io/hostname" = computeResources.instance;
+                containers = [ (container // { name = name; }) ];
+                inherit volumes;
+                initContainers =
+                  lib.optional (name == "api" && settings.databasePhase == "restore") {
+                    name = "require-restored-api-keyset";
+                    image = images.api;
+                    command = [
+                      "/bin/sh"
+                      "-ec"
+                      "test -s /data/.dependency-track/keys/secret-management-kek.json"
+                    ];
+                    securityContext = security paths.api.uid paths.api.gid;
+                    resources = resources "32Mi" "10m";
+                    volumeMounts = [ (mount "/data") ];
+                  }
+                  ++ lib.optional (name == "api") {
+                    name = "require-restricted-database-role";
+                    image = images.postgres;
+                    securityContext = security paths.postgres.uid paths.postgres.gid;
+                    resources = resources "32Mi" "10m";
+                    env = [
+                      (env "PGHOST" "dependency-track-postgres")
+                      (env "PGDATABASE" "dtrack")
+                      (env "PGUSER" "dtrack")
+                      (password "PGPASSWORD")
+                    ];
+                    command = [
+                      "/bin/sh"
+                      "-ec"
+                      ''
+                        role_safe="$(psql -XAt -v ON_ERROR_STOP=1 -c "
+                          SELECT r.rolcanlogin
+                            AND NOT (r.rolsuper OR r.rolcreatedb OR r.rolcreaterole OR r.rolreplication OR r.rolbypassrls)
+                            AND NOT EXISTS (
+                              SELECT 1 FROM pg_catalog.pg_roles privileged
+                              WHERE pg_has_role(current_user, privileged.oid, 'MEMBER')
+                                AND (privileged.rolsuper OR privileged.rolcreatedb OR privileged.rolcreaterole
+                                  OR privileged.rolreplication OR privileged.rolbypassrls
+                                  OR privileged.rolname IN ('pg_execute_server_program', 'pg_read_server_files', 'pg_write_server_files'))
+                            )
+                          FROM pg_catalog.pg_roles r WHERE r.rolname = current_user
+                        ")"
+                        test "$role_safe" = t || { echo "Dependency-Track requires a restricted application database role." >&2; exit 1; }
+                      ''
+                    ];
+                  };
+              };
+            };
+          };
+        };
+        volume = name: {
+          name = "data";
+          persistentVolumeClaim.claimName = claim name;
+        };
+        mount = mountPath: {
+          name = "data";
+          inherit mountPath;
+        };
+        service = name: port: {
+          apiVersion = "v1";
+          kind = "Service";
+          metadata = {
+            name = claim name;
+            inherit namespace;
+          };
+          spec = {
+            type = "ClusterIP";
+            selector = labels name;
+            ports = [
+              {
+                name = "http";
+                inherit port;
+                targetPort = port;
+              }
+            ];
+          };
+        };
+        policy = name: ingress: egress: {
+          apiVersion = "networking.k8s.io/v1";
+          kind = "NetworkPolicy";
+          metadata = {
+            name = claim name;
+            inherit namespace;
+          };
+          spec = {
+            podSelector.matchLabels = labels name;
+            policyTypes = [
+              "Ingress"
+              "Egress"
+            ];
+            inherit ingress egress;
+          };
+        };
+        peer = name: { podSelector.matchLabels = labels name; };
+        tcp = port: {
+          protocol = "TCP";
+          inherit port;
+        };
+      in
+      assert lib.assertMsg (
+        !(settings.initialMirror && settings.advisoryRefresh)
+      ) "Initial advisory import and scheduled refresh cannot run together.";
+      assert lib.assertMsg (lib.all (path: !path.readOnly) (
+        builtins.attrValues paths
+      )) "Dependency-Track database, API state and canonical evidence must be writable retained paths.";
+      assert lib.assertMsg (
+        settings.databasePhase == "bootstrap"
+        || builtins.pathExists (
+          inputs.self
+          + "/.secrets/hosts/${computeResources.instance}/dependency-track--dependency-track-postgres--password.age"
+        )
+      ) "Dependency-Track restore requires the recovered encrypted database credential.";
+      {
+        applications.dependency-track-retained = {
+          inherit namespace;
+          retained = true;
+          resources = {
+            namespaces.${namespace}.metadata.annotations = protect;
+            persistentVolumes = lib.mapAttrs' (
+              name: path:
+              lib.nameValuePair (claim name) {
+                metadata.annotations = protect;
+                spec = {
+                  capacity.storage = sizes.${name};
+                  accessModes = [ "ReadWriteOnce" ];
+                  persistentVolumeReclaimPolicy = "Retain";
+                  storageClassName = "";
+                  claimRef = {
+                    inherit namespace;
+                    name = claim name;
+                  };
+                  local.path = path.guestPath;
+                  nodeAffinity.required.nodeSelectorTerms = [
+                    {
+                      matchExpressions = [
+                        {
+                          key = "kubernetes.io/hostname";
+                          operator = "In";
+                          values = [ computeResources.instance ];
+                        }
+                      ];
+                    }
+                  ];
+                };
+              }
+            ) paths;
+            persistentVolumeClaims = lib.mapAttrs' (
+              name: _:
+              lib.nameValuePair (claim name) {
+                metadata.annotations = protect;
+                spec = {
+                  accessModes = [ "ReadWriteOnce" ];
+                  storageClassName = "";
+                  volumeName = claim name;
+                  resources.requests.storage = sizes.${name};
+                };
+              }
+            ) paths;
+          };
+        };
+        applications.dependency-track = {
+          inherit namespace;
+          objects = [
+            {
+              apiVersion = "v1";
+              kind = "ConfigMap";
+              metadata = {
+                name = "dependency-track-postgres-config";
+                inherit namespace;
+              };
+              data = {
+                "init.sql" = ''
+                  \getenv dtrack_password POSTGRES_PASSWORD
+                  BEGIN;
+                  SET LOCAL password_encryption = 'scram-sha-256';
+                  CREATE ROLE dtrack LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD :'dtrack_password';
+                  ALTER DATABASE dtrack OWNER TO dtrack;
+                  ALTER SCHEMA public OWNER TO dtrack;
+                  ALTER ROLE postgres PASSWORD NULL;
+                  COMMIT;
+                '';
+                "pg_hba.conf" = postgresHba;
+              };
+            }
+            (service "postgres" 5432)
+            (service "api" 8080)
+            (service "frontend" 8080)
+            # No route, host port, ingress exemption or trusted interface.
+            # Only authenticated API-server port-forward reaches the UI/API.
+            (policy "frontend" [ ] [ ])
+            (policy "api"
+              [ ]
+              [
+                {
+                  to = [ (peer "postgres") ];
+                  ports = [ (tcp 5432) ];
+                }
+                {
+                  to = [
+                    {
+                      namespaceSelector.matchLabels."kubernetes.io/metadata.name" = "kube-system";
+                      podSelector.matchLabels."k8s-app" = "kube-dns";
+                    }
+                  ];
+                  ports = [
+                    {
+                      protocol = "UDP";
+                      port = 53;
+                    }
+                    (tcp 53)
+                  ];
+                }
+                {
+                  to = [
+                    {
+                      ipBlock = {
+                        cidr = "0.0.0.0/0";
+                        except = [
+                          "0.0.0.0/8"
+                          "10.0.0.0/8"
+                          "100.64.0.0/10"
+                          "127.0.0.0/8"
+                          "169.254.0.0/16"
+                          "172.16.0.0/12"
+                          "192.168.0.0/16"
+                          "198.18.0.0/15"
+                          "224.0.0.0/4"
+                          "240.0.0.0/4"
+                        ];
+                      };
+                    }
+                  ];
+                  ports = [ (tcp 443) ];
+                }
+              ]
+            )
+            (policy "postgres"
+              [
+                {
+                  from = [ (peer "api") ];
+                  ports = [ (tcp 5432) ];
+                }
+              ]
+              [ ]
+            )
+            (workload "postgres"
+              {
+                image = images.postgres;
+                securityContext = security paths.postgres.uid paths.postgres.gid;
+                resources = resources "256Mi" "400m";
+                env = [
+                  (env "POSTGRES_DB" "dtrack")
+                  (env "POSTGRES_USER" "postgres")
+                  (env "PGDATA" "/var/lib/postgresql/18/docker")
+                  (password "POSTGRES_PASSWORD")
+                ];
+                command = [
+                  "/bin/sh"
+                  "-ec"
+                ];
+                args = [
+                  ''
+                    ${lib.optionalString (settings.databasePhase != "bootstrap") ''
+                      test -s "$PGDATA/PG_VERSION" && test "$(cat "$PGDATA/PG_VERSION")" = 18 || { echo "Restore requires existing PostgreSQL18 state; refusing substitute initialization." >&2; exit 1; }
+                    ''}
+                    exec /usr/local/bin/docker-entrypoint.sh postgres -c hba_file=/etc/dependency-track-postgres/pg_hba.conf -c shared_buffers=32MB -c max_connections=30
+                  ''
+                ];
+                volumeMounts = [
+                  (mount "/var/lib/postgresql")
+                  {
+                    name = "postgres-config";
+                    mountPath = "/etc/dependency-track-postgres";
+                    readOnly = true;
+                  }
+                  {
+                    name = "postgres-config";
+                    mountPath = "/docker-entrypoint-initdb.d/10-dependency-track.sql";
+                    subPath = "init.sql";
+                    readOnly = true;
+                  }
+                ];
+                readinessProbe.exec.command = [
+                  "pg_isready"
+                  "-U"
+                  "dtrack"
+                  "-d"
+                  "dtrack"
+                ];
+              }
+              [
+                (volume "postgres")
+                {
+                  name = "postgres-config";
+                  configMap.name = "dependency-track-postgres-config";
+                }
+              ]
+            )
+            (workload "api" {
+              image = images.api;
+              securityContext = security paths.api.uid paths.api.gid;
+              resources = resources "1024Mi" "1500m";
+              env = [
+                (env "DT_DATASOURCE_URL" "jdbc:postgresql://dependency-track-postgres:5432/dtrack")
+                (env "DT_DATASOURCE_USERNAME" "dtrack")
+                (password "DT_DATASOURCE_PASSWORD")
+                (env "DT_DATASOURCE_POOL_MAX_SIZE" "8")
+                (env "DT_DATASOURCE_POOL_MIN_IDLE" "2")
+                (env "DT_TASK_SCHEDULER_ENABLED" (lib.boolToString settings.advisoryRefresh))
+                (env "DT_TASK_PORTFOLIO_ANALYSIS_MAX_IN_FLIGHT_ANALYSES" "1")
+                (env "DT_TASK_OSV_VULN_DATA_SOURCE_MIRROR_CRON" "0 3 * * *")
+                (env "DT_TASK_NVD_VULN_DATA_SOURCE_MIRROR_CRON" "0 4 * * *")
+                (env "DT_DEX_ENGINE_ACTIVITY_WORKER_DEFAULT_MAX_CONCURRENCY" "1")
+                (env "DT_DEX_ENGINE_ACTIVITY_WORKER_VULN_ANALYSIS_MAX_CONCURRENCY" "1")
+                (env "DT_DEX_ENGINE_ACTIVITY_WORKER_VULN_ANALYSIS_RECONCILIATION_MAX_CONCURRENCY" "1")
+                (env "DT_DEX_ENGINE_ACTIVITY_WORKER_ARTIFACT_IMPORT_MAX_CONCURRENCY" "1")
+                (env "DT_DEX_ENGINE_ACTIVITY_WORKER_VULN_ANALYSIS_ENABLED" (
+                  lib.boolToString (!settings.initialMirror)
+                ))
+                (env "DT_DEX_ENGINE_ACTIVITY_WORKER_VULN_ANALYSIS_RECONCILIATION_ENABLED" (
+                  lib.boolToString (!settings.initialMirror)
+                ))
+                (env "DT_DEX_ENGINE_ACTIVITY_WORKER_ARTIFACT_IMPORT_ENABLED" (
+                  lib.boolToString (!settings.initialMirror)
+                ))
+                (env "DT_DEX_ENGINE_ACTIVITY_MIRROR_VULN_DATA_SOURCE_EXECUTION_TIMEOUT_MS" (
+                  if settings.initialMirror then "86400000" else "3600000"
+                ))
+                (env "DT_OUTBOUND_ALLOWED_DESTINATIONS" "storage.googleapis.com,nvd.nist.gov")
+                (env "DT_TELEMETRY_SUBMISSION_DEFAULT_ENABLED" "false")
+                (env "EXTRA_JAVA_OPTIONS" "-Xms128m -Xmx600m -XX:MaxMetaspaceSize=192m -XX:ActiveProcessorCount=2")
+              ];
+              volumeMounts = [ (mount "/data") ];
+              startupProbe = {
+                httpGet = {
+                  path = "/health";
+                  port = 9000;
+                };
+                failureThreshold = 60;
+                periodSeconds = 10;
+              };
+              readinessProbe.httpGet = {
+                path = "/health";
+                port = 9000;
+              };
+            } [ (volume "api") ])
+            (workload "frontend" {
+              image = images.frontend;
+              securityContext = security 101 101;
+              resources = resources "64Mi" "100m";
+              env = [ (env "API_BASE_URL" settings.apiBaseUrl) ];
+              readinessProbe.httpGet = {
+                path = "/";
+                port = 8080;
+              };
+            } [ ])
+          ];
+        };
+      };
+  };
+}
