@@ -202,6 +202,19 @@ This is a credential migration, not a Jellyfin account migration.
 POSIX accounts enter Kanidm's anonymous directory view; private LDAPS does
 not make the corresponding anonymous HTTPS Unix-account attributes private.
 
+## Server configuration changes
+
+Changing the declared `server.toml` replaces Kanidm's Pod and interrupts
+identity service and dependent sign-ins. Before syncing, confirm host-level
+kubectl access that does not depend on Kanidm and allow for that interruption.
+
+The replacement waits if its exact configuration revision is missing; it
+cannot reuse an older revision. If it stays Pending with `FailedMount`, check
+the ConfigMap named by its volume and Argo CD's sync error. Fix publication
+before retrying the sync; restarting the Pod cannot supply a missing revision.
+
+TLS Secret renewal is separate; this change does not add certificate reload.
+
 ## Upgrade
 
 This deployment does not schedule local backups.
