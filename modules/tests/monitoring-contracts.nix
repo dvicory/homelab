@@ -3,6 +3,7 @@
 # application.objects here would force foreign-platform Helm during inventory.
 {
   config,
+  extendModules,
   lib,
   self,
   ...
@@ -18,6 +19,39 @@ let
         network: network.name == compute.network
       ) null hvn.virtualisation.incus.preseed.networks).config."ipv4.address"
   );
+  # Exercise native same-host quirk assembly, not a manually supplied target list.
+  localTarget = {
+    host = "hvn-hyp1";
+    job = "local-fixture";
+    port = 19101;
+    path = "/fixture-metrics";
+    interval = "47s";
+    labels = {
+      host = "hvn-hyp1";
+      fixture = "local";
+    };
+  };
+  targetFixture = extendModules {
+    modules = [
+      {
+        den.aspects.hvn-hyp1.prometheus-targets = [ localTarget ];
+        den.aspects.compute-1.prometheus-targets = [
+          (
+            localTarget
+            // {
+              host = "compute-1";
+              job = "foreign-fixture";
+              port = 19102;
+              labels.host = "compute-1";
+            }
+          )
+        ];
+      }
+    ];
+  };
+  fixtureHost = targetFixture.config.flake.nixosConfigurations.hvn-hyp1.config;
+  sortTargets = lib.sort (a: b: a.job < b.job);
+  firewallLines = rules: lib.sort builtins.lessThan (lib.splitString "\n" rules);
   hostChecks = {
     "the host exporter listens beyond the compute bridge address" =
       hvn.systemd.sockets.host-telemetry-node-exporter.socketConfig.ListenStream
@@ -33,6 +67,27 @@ let
           "host-telemetry-zpool-status"
           "host-telemetry-smart-status"
         ];
+    "a local telemetry contribution is lost or another host gains firewall admission" =
+      sortTargets fixtureHost.homelab.monitoring.scrapeTargets == sortTargets (
+        telemetry.scrapeTargets
+        ++ [
+          (
+            (builtins.removeAttrs localTarget [
+              "host"
+              "port"
+            ])
+            // {
+              address = "${bridgeAddress}:${toString localTarget.port}";
+            }
+          )
+        ]
+      )
+      &&
+        firewallLines fixtureHost.networking.firewall.extraInputRules == firewallLines (
+          hvn.networking.firewall.extraInputRules
+          + "\n"
+          + ''iifname "${compute.network}" ip saddr ${compute.address} tcp dport ${toString localTarget.port} accept''
+        );
   };
 in
 {
