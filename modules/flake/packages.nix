@@ -34,6 +34,7 @@
       };
       compute-runtime = callPackage (self + "/pkgs/by-name/compute-runtime/package.nix") { };
       helper-release = callPackage (self + "/pkgs/by-name/helper-release/package.nix") { };
+      dependency-track-sync = callPackage (self + "/pkgs/by-name/dependency-track-sync/package.nix") { };
       prepare-luks-storage = lib.optionalAttrs isLinux {
         prepare-luks-storage = callPackage (self + "/pkgs/by-name/prepare-luks-storage/package.nix") { };
       };
@@ -76,6 +77,7 @@
           compute-runtime
           ;
         inherit helper-release;
+        inherit dependency-track-sync;
       }
       // agenix-restart-guard
       // prepare-luks-storage
@@ -87,6 +89,7 @@
 
       checks = {
         compute-runtime = config.packages.compute-runtime;
+        dependency-track-sync = config.packages.dependency-track-sync.tests;
         helper-source =
           pkgs.runCommand "helper-source-authorization" { nativeBuildInputs = [ pkgs.python3 ]; }
             ''
