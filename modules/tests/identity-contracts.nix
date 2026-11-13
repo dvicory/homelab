@@ -134,7 +134,17 @@ let
   ];
   kanidmDeployment = findObject normalObjects "Deployment" namespace "kanidm";
   kanidmService = findObject normalObjects "Service" namespace "kanidm";
-  serverConfig = (findObject normalObjects "ConfigMap" namespace "kanidm-config").data."server.toml";
+  serverConfig = builtins.fromTOML (mountedServerConfig normalObjects);
+  mountedServerConfig =
+    objects:
+    let
+      pod = (findObject objects "Deployment" namespace "kanidm").spec.template.spec;
+      container = lib.findFirst (container: container.name == "kanidm") null pod.containers;
+      mount = lib.findFirst (mount: lib.elem mount.mountPath container.args) null container.volumeMounts;
+      volume = lib.findFirst (volume: volume.name == mount.name) null pod.volumes;
+      configMap = findObject objects "ConfigMap" namespace volume.configMap.name;
+    in
+    configMap.data.${mount.subPath};
   # NetworkPolicies are additive, regardless of name or application owner.
   admissionObjects =
     identityRendered: gatewayRendered:
@@ -256,9 +266,20 @@ let
       ) rule.verbs
     ) role.rules;
   failures = lib.filterAttrs (_: value: !value) {
+    server-local-backup-disabled =
+      lib.all
+        (
+          rendered:
+          !((builtins.fromTOML (mountedServerConfig rendered.applications.identity.objects)) ? online_backup)
+        )
+        [
+          initial
+          provisioning
+          normal
+        ];
     # Kanidm serves LDAPS on the declared directory port, on its Service.
     directory-listens =
-      lib.hasInfix ''ldapbindaddress = "0.0.0.0:${toString directory.port}"'' serverConfig
+      serverConfig.ldapbindaddress == "0.0.0.0:${toString directory.port}"
       && builtins.elem {
         name = "ldaps";
         containerPort = directory.port;
