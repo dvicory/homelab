@@ -229,6 +229,8 @@ def collect(args):
     if (directory / "complete.json").exists():
         security_artifacts.verify(directory, row["inventoryKey"], entry=row)
         original = json.loads((directory / "provenance.json").read_text())
+        if row["kind"] == "oci":
+            original.update({field: row.get(field) for field in ("pointer", "image", "references")})
         save(directory / "provenance.json", dict(original, reused=True,
              target=row.get("target"), state=row["state"],
              source=row.get("source"), location=row.get("location"), update=row.get("update"),

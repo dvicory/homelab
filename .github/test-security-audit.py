@@ -235,6 +235,11 @@ def check_trusted_restore(directory, row):
     workflow = audit.security_artifacts.WORKFLOW
     producer = {"GITHUB_REPOSITORY": repository, "GITHUB_WORKFLOW_REF": f"{repository}/{workflow}@refs/heads/{branch}",
                 "GITHUB_REF": "refs/heads/" + branch, "GITHUB_EVENT_NAME": "schedule", "GITHUB_SHA": sha}
+    if row["kind"] == "oci":
+        with patch.dict(os.environ, producer), patch.object(audit, "current_entry", return_value=row), \
+                patch.object(audit, "capture", return_value="Trivy test version"), patch.object(audit, "run") as execution:
+            audit.collect(argparse.Namespace(entry="resolved.json", directory=str(directory), staging_directory=None))
+            execution.assert_not_called()
     with patch.dict(os.environ, producer):
         audit.security_artifacts.seal(directory, row["inventoryKey"])
     artifact = {"id": 1, "name": f"security-inventory-v1-{row['id']}-{row['inventoryKey']}",
@@ -261,11 +266,97 @@ def check_trusted_restore(directory, row):
         for path in directory.iterdir():
             archive.write(path, path.name)
     process = SimpleNamespace(stdout=io.BytesIO(archive_bytes.getvalue()), wait=lambda: 0, poll=lambda: 0)
+    artifact.update(size_in_bytes=len(archive_bytes.getvalue()),
+                    digest="sha256:" + audit.hashlib.sha256(archive_bytes.getvalue()).hexdigest())
     with patch.object(audit.security_artifacts, "api", side_effect=[{"artifacts": [artifact]}, run]), \
             patch.object(audit.security_artifacts.subprocess, "Popen", return_value=process):
         audit.security_artifacts.restore(row, Path("restored"), repository, branch)
     audit.security_artifacts.verify(Path("restored"), row["inventoryKey"], producer, row)
     rejects(audit.security_artifacts.verify, Path("restored"), row["inventoryKey"], dict(producer, GITHUB_SHA="b" * 40))
+    for field, value in (("digest", "sha256:" + "0" * 64),
+                         ("size_in_bytes", artifact["size_in_bytes"] + 1)):
+        process = SimpleNamespace(stdout=io.BytesIO(archive_bytes.getvalue()), wait=lambda: 0, poll=lambda: 0)
+        with patch.object(audit.security_artifacts.subprocess, "Popen", return_value=process):
+            rejects(audit.security_artifacts.download, dict(artifact, **{field: value}), repository, Path("bad-download.zip"))
+    # A plan is data from the same trusted run, not an executable/resolved entry supplied by an operator.
+    provenance = json.loads((directory / "provenance.json").read_text())
+    audit.save(directory / "provenance.json", dict(provenance, sourceRevision=sha,
+               requestedByRevision=sha, requestedSourceNarHash=row["plannedSourceNarHash"]))
+    with patch.dict(os.environ, producer):
+        audit.security_artifacts.seal(directory, row["inventoryKey"])
+    inventory_bytes = io.BytesIO()
+    with zipfile.ZipFile(inventory_bytes, "w") as archive:
+        for path in directory.iterdir():
+            archive.write(path, path.name)
+    plan = {"schema": 1, "entries": [row], "unsupported": []}
+    plan_bytes = io.BytesIO()
+    with zipfile.ZipFile(plan_bytes, "w") as archive:
+        archive.writestr("security-plan.json", json.dumps(plan))
+    inventory_artifact = dict(artifact, size_in_bytes=len(inventory_bytes.getvalue()),
+                              digest="sha256:" + audit.hashlib.sha256(inventory_bytes.getvalue()).hexdigest())
+    plan_artifact = dict(artifact, id=3, name="security-plan", size_in_bytes=len(plan_bytes.getvalue()),
+                         digest="sha256:" + audit.hashlib.sha256(plan_bytes.getvalue()).hexdigest())
+    completed = dict(run, id=2, status="completed", conclusion="failure", updated_at="2026-11-06T00:00:00Z")
+    def transfer(command, **kwargs):
+        data = plan_bytes.getvalue() if command[-1].endswith("/3/zip") else inventory_bytes.getvalue()
+        return SimpleNamespace(stdout=io.BytesIO(data), wait=lambda: 0, poll=lambda: 0)
+    acquired = Path("automatic")
+    acquired.mkdir()
+    with patch.object(audit.security_artifacts, "api", side_effect=[
+            {"workflow_runs": [completed]}, completed, {"artifacts": [plan_artifact, inventory_artifact]}]), \
+            patch.object(audit.security_artifacts.subprocess, "Popen", side_effect=transfer):
+        discovered, receipt, artifacts = audit.security_artifacts.discover_plan(repository, branch, acquired)
+        assert discovered == plan and receipt["run"]["conclusion"] == "failure"
+        audit.security_artifacts.acquire_planned(row, receipt, artifacts, repository, acquired / "inventory")
+        # A same-run valid seal may not switch declaration/scope/source associations.
+        for field, value in (("state", "exported" if row["state"] != "exported" else "desired"),
+                             ("target", "nixosConfigurations.other.config.system.build.toplevel"),
+                             ("plannedSourceNarHash", "sha256-" + "B" * 43 + "=")):
+            rejects(audit.security_artifacts.acquire_planned, dict(row, **{field: value}), receipt,
+                    artifacts, repository, acquired / ("reject-" + field))
+    for mismatch in (dict(completed, event="pull_request"), dict(completed, head_branch="other"),
+                     dict(completed, head_repository={"full_name": "fork/repository"})):
+        rejects(audit.security_artifacts.trusted_run, mismatch, repository, branch)
+
+
+def check_retained_download():
+    with tempfile.TemporaryDirectory() as temporary:
+        archive = Path(temporary) / "retained.zip"
+        original, corrupt = b"authenticated archive bytes", b"changed retained evidence"
+        artifact = {"id": 1, "expired": False, "size_in_bytes": len(original),
+                    "digest": "sha256:" + audit.hashlib.sha256(original).hexdigest()}
+        archive.write_bytes(corrupt)
+        process = SimpleNamespace(stdout=io.BytesIO(original), wait=lambda: 0, poll=lambda: 0)
+        with patch.object(audit.security_artifacts.subprocess, "Popen", return_value=process):
+            rejects(audit.security_artifacts.download, artifact, "owner/repository", archive)
+        assert archive.read_bytes() == corrupt
+
+def check_oci_cache_reuse():
+    previous = Path.cwd()
+    with tempfile.TemporaryDirectory() as temporary:
+        try:
+            os.chdir(temporary)
+            directory = Path("inventory")
+            directory.mkdir()
+            row = {
+                "id": "d" * 24, "inventoryKey": "e" * 24, "kind": "oci", "system": "x86_64-linux",
+                "state": "referenced", "source": "generated/manifests/prod-home/a.yaml",
+                "pointer": "/spec/image", "location": "generated/manifests/prod-home/a.yaml",
+                "update": "owning image declaration", "image": "registry/app:current@" + digest,
+                "resolvedImage": "registry/app@" + digest, "ociPlatform": "linux/amd64",
+                "plannedSourceNarHash": source["locked"]["narHash"],
+                "sourceNarHash": source["locked"]["narHash"],
+                "references": ["generated/manifests/prod-home/a.yaml", "generated/manifests/prod-home/b.yaml"],
+            }
+            audit.save(directory / "provenance.json", dict(row, image="registry/app:old@" + digest,
+                       sourceRevision="b" * 40, references=row["references"][:1]))
+            audit.save(directory / "language.cdx.json",
+                       {"bomFormat": "CycloneDX", "specVersion": "1.6", "version": 1, "components": []})
+            audit.security_artifacts.seal(directory, row["inventoryKey"])
+            check_trusted_restore(directory, row)
+        finally:
+            os.chdir(previous)
+
 
 def check_native_resolution():
     """Exercise the actual Nix serializer, not an assumed JSON response."""
@@ -448,6 +539,8 @@ with tempfile.TemporaryDirectory() as directory:
             rejects(audit.security_artifacts.unpack, "oversized.zip", Path("unpacked"))
     finally:
         os.chdir(previous)
+check_oci_cache_reuse()
+check_retained_download()
 print("inventory contract passed")
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--native-directory", action="append", default=[], help="actual full-root raw CSV/CDX/closure/request plus collected native-evidence.json")
