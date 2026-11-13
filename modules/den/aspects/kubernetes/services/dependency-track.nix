@@ -1,13 +1,19 @@
-{ lib, inputs, ... }:
+{
+  config,
+  lib,
+  inputs,
+  ...
+}:
 let
   namespace = "dependency-track";
   protect = {
     "argocd.argoproj.io/sync-options" = "Prune=false,Delete=false";
   };
   images = {
-    api = "ghcr.io/dependencytrack/apiserver@sha256:e46d3dee171aaac6e0cce60da2fbb6b987b7fafa22b8ff7c1300b3f4c356491e";
-    frontend = "ghcr.io/dependencytrack/frontend@sha256:a0f6e91750425471710d77958dc50962fd5a7ec3bf6a1678561e25d1e6d5a13a";
-    postgres = "postgres@sha256:c935aff069a7bbe5c286411a08e9678850d79be7848b190a0e4637b266478626";
+    # Upstream indexes retain the exact versions and admit amd64 and arm64.
+    api = "ghcr.io/dependencytrack/apiserver@sha256:a7ce7a42928c6c03e94e8255e2ee871f5268f55b638a69729cae7afc47ef43b8";
+    frontend = "ghcr.io/dependencytrack/frontend@sha256:1c0f63b083af8e89ff4ede5e7ed5cfc4e23ab871fa140ed101e8dc56f53eb51c";
+    postgres = "postgres@sha256:9ba53c7d41ea093baf5c1ba635ba5434c4f979880527d49bb7d9237d3193085b";
   };
   labels = name: { "app.kubernetes.io/name" = "dependency-track-${name}"; };
   env = name: value: { inherit name value; };
@@ -46,39 +52,72 @@ in
         default = false;
         description = "Serialize the first admitted advisory import and pause analysis/artifact workers; cannot be combined with scheduled refresh.";
       };
-    };
-    compute-resources = _: {
-      retainedPaths = {
-        dependency-track-postgres = {
-          uid = 70;
-          gid = 70;
-          mode = "0700";
-        };
-        dependency-track-api = {
-          uid = 1000;
-          gid = 0;
-          mode = "0700";
-        };
-        # Canonical sealed originals, native companions, provenance and sync
-        # journal are separate from DT's normalized exports and database.
-        dependency-track-evidence = {
-          uid = 705;
-          gid = 705;
-          mode = "0700";
-        };
-      };
-      # The standard runtime-secrets bridge generates matching secretRequests.
-      # Existing encrypted credentials must be recovered, never regenerated on
-      # restore: database passwords and API encryption state travel together.
-      runtimeSecrets."dependency-track--dependency-track-postgres--password" = {
-        inherit namespace;
-        name = "dependency-track-postgres";
-        key = "password";
-        generator = { pkgs, ... }: ''
-          ${pkgs.openssl}/bin/openssl rand -hex 32 | ${pkgs.coreutils}/bin/tr -d '\n'
-        '';
+      automaticInventory = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = "Declare operator-supplied inventory API/GitHub credentials for the explicitly selected same-guest importer variant; this alone enables no importer or ingress.";
       };
     };
+    compute-resources =
+      { cluster, ... }:
+      let
+        compute =
+          config.den.hosts.${cluster.hostSystem}.${cluster.hostName}.settings.virtualization.compute;
+      in
+      assert lib.assertMsg (
+        cluster.settings.kubernetes.services.dependency-track.databasePhase == "bootstrap"
+        || builtins.pathExists (
+          inputs.self
+          + "/.secrets/hosts/${compute.instance}/dependency-track--dependency-track-postgres--password.age"
+        )
+      ) "Dependency-Track restore requires the recovered encrypted database credential.";
+      {
+        retainedPaths = {
+          dependency-track-postgres = {
+            uid = 70;
+            gid = 70;
+            mode = "0700";
+          };
+          dependency-track-api = {
+            uid = 1000;
+            gid = 0;
+            mode = "0700";
+          };
+          # Canonical sealed originals, native companions, provenance and sync
+          # journal are separate from DT's normalized exports and database.
+          dependency-track-evidence = {
+            uid = 705;
+            gid = 705;
+            mode = "0700";
+          };
+        };
+        # The standard runtime-secrets bridge generates matching secretRequests.
+        # Existing encrypted credentials must be recovered, never regenerated on
+        # restore: database passwords and API encryption state travel together.
+        runtimeSecrets = {
+          "dependency-track--dependency-track-postgres--password" = {
+            inherit namespace;
+            name = "dependency-track-postgres";
+            key = "password";
+            generator = { pkgs, ... }: ''
+              ${pkgs.openssl}/bin/openssl rand -hex 32 | ${pkgs.coreutils}/bin/tr -d '\n'
+            '';
+          };
+        }
+        // lib.optionalAttrs cluster.settings.kubernetes.services.dependency-track.automaticInventory {
+          # These existing operator-issued credentials are never generated.
+          "dependency-track--dependency-track-sync--api-key" = {
+            inherit namespace;
+            name = "dependency-track-sync";
+            key = "api-key";
+          };
+          "dependency-track--dependency-track-sync--github-token" = {
+            inherit namespace;
+            name = "dependency-track-sync";
+            key = "github-token";
+          };
+        };
+      };
     k8s-manifests =
       { cluster, computeResources, ... }:
       let
@@ -233,13 +272,6 @@ in
       assert lib.assertMsg (lib.all (path: !path.readOnly) (
         builtins.attrValues paths
       )) "Dependency-Track database, API state and canonical evidence must be writable retained paths.";
-      assert lib.assertMsg (
-        settings.databasePhase == "bootstrap"
-        || builtins.pathExists (
-          inputs.self
-          + "/.secrets/hosts/${computeResources.instance}/dependency-track--dependency-track-postgres--password.age"
-        )
-      ) "Dependency-Track restore requires the recovered encrypted database credential.";
       {
         applications.dependency-track-retained = {
           inherit namespace;
@@ -305,7 +337,9 @@ in
                   SET LOCAL password_encryption = 'scram-sha-256';
                   CREATE ROLE dtrack LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD :'dtrack_password';
                   ALTER DATABASE dtrack OWNER TO dtrack;
+                  REVOKE ALL ON DATABASE dtrack FROM PUBLIC;
                   ALTER SCHEMA public OWNER TO dtrack;
+                  REVOKE ALL ON SCHEMA public FROM PUBLIC;
                   ALTER ROLE postgres PASSWORD NULL;
                   COMMIT;
                 '';
@@ -377,7 +411,7 @@ in
               {
                 image = images.postgres;
                 securityContext = security paths.postgres.uid paths.postgres.gid;
-                resources = resources "256Mi" "400m";
+                resources = resources "512Mi" "500m";
                 env = [
                   (env "POSTGRES_DB" "dtrack")
                   (env "POSTGRES_USER" "postgres")
@@ -410,13 +444,26 @@ in
                     readOnly = true;
                   }
                 ];
-                readinessProbe.exec.command = [
-                  "pg_isready"
-                  "-U"
-                  "dtrack"
-                  "-d"
-                  "dtrack"
-                ];
+                # pg_isready reports success even when authentication is refused.
+                # Exercise the same TCP/SCRAM credential and database as the API.
+                startupProbe = {
+                  exec.command = [
+                    "/bin/sh"
+                    "-ec"
+                    ''PGPASSWORD="$POSTGRES_PASSWORD" psql -XAt -h 127.0.0.1 -U dtrack -d dtrack -v ON_ERROR_STOP=1 -c 'SELECT 1' | /bin/grep -qx 1''
+                  ];
+                  periodSeconds = 5;
+                  failureThreshold = 60;
+                  timeoutSeconds = 5;
+                };
+                readinessProbe = {
+                  exec.command = [
+                    "/bin/sh"
+                    "-ec"
+                    ''PGPASSWORD="$POSTGRES_PASSWORD" psql -XAt -h 127.0.0.1 -U dtrack -d dtrack -v ON_ERROR_STOP=1 -c 'SELECT 1' | /bin/grep -qx 1''
+                  ];
+                  timeoutSeconds = 5;
+                };
               }
               [
                 (volume "postgres")
@@ -429,8 +476,12 @@ in
             (workload "api" {
               image = images.api;
               securityContext = security paths.api.uid paths.api.gid;
-              resources = resources "1024Mi" "1500m";
+              resources = resources "2Gi" "2";
               env = [
+                (env "DT_DATA_DIRECTORY" "/data/.dependency-track")
+                (env "DT_SECRET_MANAGEMENT_DATABASE_KEK_KEYSET_CREATE_IF_MISSING" (
+                  lib.boolToString (settings.databasePhase == "bootstrap")
+                ))
                 (env "DT_DATASOURCE_URL" "jdbc:postgresql://dependency-track-postgres:5432/dtrack")
                 (env "DT_DATASOURCE_USERNAME" "dtrack")
                 (password "DT_DATASOURCE_PASSWORD")
@@ -458,26 +509,30 @@ in
                 ))
                 (env "DT_OUTBOUND_ALLOWED_DESTINATIONS" "storage.googleapis.com,nvd.nist.gov")
                 (env "DT_TELEMETRY_SUBMISSION_DEFAULT_ENABLED" "false")
-                (env "EXTRA_JAVA_OPTIONS" "-Xms128m -Xmx600m -XX:MaxMetaspaceSize=192m -XX:ActiveProcessorCount=2")
+                (env "EXTRA_JAVA_OPTIONS" "-Xms256m -Xmx1400m -XX:ActiveProcessorCount=2")
               ];
               volumeMounts = [ (mount "/data") ];
               startupProbe = {
                 httpGet = {
-                  path = "/health";
+                  path = "/health/started";
                   port = 9000;
                 };
                 failureThreshold = 60;
                 periodSeconds = 10;
+                timeoutSeconds = 5;
               };
-              readinessProbe.httpGet = {
-                path = "/health";
-                port = 9000;
+              readinessProbe = {
+                httpGet = {
+                  path = "/health/ready";
+                  port = 9000;
+                };
+                timeoutSeconds = 5;
               };
             } [ (volume "api") ])
             (workload "frontend" {
               image = images.frontend;
               securityContext = security 101 101;
-              resources = resources "64Mi" "100m";
+              resources = resources "128Mi" "500m";
               env = [ (env "API_BASE_URL" settings.apiBaseUrl) ];
               readinessProbe.httpGet = {
                 path = "/";

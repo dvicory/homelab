@@ -345,6 +345,146 @@ def api(*args):
     return json.loads(subprocess.check_output(["gh", "api", *args], text=True))
 
 
+def trusted_run(run, repository, branch):
+    if (run["repository"]["full_name"] != repository or run["head_repository"]["full_name"] != repository
+            or run["path"] != WORKFLOW or run["head_branch"] != branch or run["event"] not in EVENTS
+            or not re.fullmatch(r"[0-9a-f]{40}", run["head_sha"])):
+        raise ValueError("untrusted workflow run")
+    return {"GITHUB_REPOSITORY": repository, "GITHUB_WORKFLOW_REF": f"{repository}/{WORKFLOW}@refs/heads/{branch}",
+            "GITHUB_REF": "refs/heads/" + branch, "GITHUB_EVENT_NAME": run["event"], "GITHUB_SHA": run["head_sha"]}
+
+
+def download(artifact, repository, archive):
+    """Verify retained bytes; gh owns authenticated redirects for missing data."""
+    expected = artifact.get("digest", "")
+    if (not re.fullmatch(r"sha256:[0-9a-f]{64}", expected)
+            or not 0 < artifact["size_in_bytes"] <= MAX_ARCHIVE or artifact["expired"]
+            or not isinstance(artifact["id"], int) or artifact["id"] <= 0):
+        raise ValueError("artifact lacks a bounded, live SHA256 identity")
+    if archive.is_symlink() or archive.exists():
+        if (archive.is_symlink() or not archive.is_file()
+                or archive.stat().st_size != artifact["size_in_bytes"] or "sha256:" + digest(archive) != expected):
+            raise ValueError("retained artifact API archive digest/size/type mismatch")
+        return
+    partial = archive.with_suffix(".partial")
+    if partial.is_symlink() or (partial.exists() and not partial.is_file()):
+        raise ValueError("artifact staging path is not a regular file")
+    partial.unlink(missing_ok=True)
+    process = subprocess.Popen(["gh", "api", f"repos/{repository}/actions/artifacts/{artifact['id']}/zip"],
+                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    try:
+        with partial.open("xb") as stream:
+            size = 0
+            for chunk in iter(lambda: process.stdout.read(1024 * 1024), b""):
+                size += len(chunk)
+                if size > MAX_ARCHIVE:
+                    raise ValueError("artifact download exceeds 64 MiB")
+                stream.write(chunk)
+        if process.wait() != 0:
+            raise RuntimeError("artifact download failed")
+        if size != artifact["size_in_bytes"] or "sha256:" + digest(partial) != expected:
+            raise ValueError("artifact API archive digest/size mismatch")
+        partial.replace(archive)
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+        process.stdout.close()
+        partial.unlink(missing_ok=True)
+
+
+def discover_plan(repository, branch, directory, archive_directory=None):
+    """Latest completed trusted run, even if partial/failed; never hide it with an older success."""
+    runs = api("--method", "GET", f"repos/{repository}/actions/workflows/{quote(WORKFLOW, safe='')}/runs",
+               "-f", "branch=" + branch, "-f", "per_page=100")["workflow_runs"]
+    candidates = [run for run in runs if run["event"] in EVENTS and run["status"] == "completed"
+                  and run["head_branch"] == branch]
+    if not candidates:
+        raise ValueError("no completed trusted producer run in the latest 100 runs")
+    run_id = max(candidates, key=lambda item: item["id"])["id"]
+    if not isinstance(run_id, int) or run_id <= 0:
+        raise ValueError("invalid producer run identity")
+    run = api(f"repos/{repository}/actions/runs/{run_id}")
+    producer = trusted_run(run, repository, branch)
+    if run["id"] != run_id or run["status"] != "completed":
+        raise ValueError("producer run identity/status changed")
+    artifacts = []
+    for page in range(1, 12):
+        batch = api("--method", "GET", f"repos/{repository}/actions/runs/{run['id']}/artifacts",
+                    "-f", "per_page=100", "-f", "page=" + str(page))["artifacts"]
+        artifacts.extend(batch)
+        if len(artifacts) > 1000:
+            raise ValueError("producer artifact listing exceeds 1000 entries")
+        if len(batch) < 100:
+            break
+    else:
+        raise ValueError("producer artifact listing exceeds 1000 entries")
+    for artifact in artifacts:
+        reference = artifact.get("workflow_run") or {}
+        if (reference.get("id") != run["id"] or reference.get("head_sha") != run["head_sha"]
+                or reference.get("head_branch") != branch):
+            raise ValueError("artifact/run identity mismatch")
+    plans = [artifact for artifact in artifacts if artifact["name"] == "security-plan"]
+    if len(plans) != 1:
+        raise ValueError("producer run must have exactly one security-plan artifact")
+    archive = (archive_directory / f"{plans[0]['id']}.zip" if archive_directory is not None
+               else directory / "security-plan.zip")
+    download(plans[0], repository, archive)
+    with zipfile.ZipFile(archive) as source:
+        entries = source.infolist()
+        if (len(entries) != 1 or entries[0].filename != "security-plan.json"
+                or entries[0].file_size > 4 * 1024 * 1024
+                or (entries[0].external_attr >> 16) & 0o170000 not in (0, 0o100000)):
+            raise ValueError("plan archive must contain one bounded regular security-plan.json")
+        raw = source.read(entries[0])
+    (directory / "security-plan.json").write_bytes(raw)
+    plan = json.loads(raw)
+    if (plan.get("schema") != 1 or not isinstance(plan.get("entries"), list)
+            or not isinstance(plan.get("unsupported"), list)
+            or len(plan["entries"]) + len(plan["unsupported"]) > 1000):
+        raise ValueError("unsupported or unbounded security plan")
+    seen = set()
+    for entry in [*plan["entries"], *plan["unsupported"]]:
+        if (not re.fullmatch(r"[a-f0-9]{24}", entry.get("id", ""))
+                or entry["state"] not in ("desired", "exported", "referenced")
+                or entry["kind"] not in ("nix", "oci")
+                or (entry["id"], entry["system"]) in seen):
+            raise ValueError("invalid or duplicate planned declaration")
+        seen.add((entry["id"], entry["system"]))
+    receipt = {"run": run, "planArtifact": plans[0], "producer": producer}
+    (directory / "source.json").write_text(json.dumps(receipt, indent=2) + "\n")
+    return plan, receipt, artifacts
+
+
+def acquire_planned(entry, receipt, artifacts, repository, directory, archive_directory=None):
+    """Join a descriptor to one sealed inventory from the same admitted run."""
+    pattern = re.compile(r"security-inventory-v1-" + re.escape(entry["id"]) + r"-([a-f0-9]{24})")
+    candidates = [artifact for artifact in artifacts if pattern.fullmatch(artifact["name"])]
+    if len(candidates) != 1:
+        raise ValueError("planned target lacks exactly one complete inventory artifact")
+    artifact = candidates[0]
+    key = pattern.fullmatch(artifact["name"])[1]
+    archive = (archive_directory / f"{artifact['id']}.zip" if archive_directory is not None
+               else directory.parent / (directory.name + ".zip"))
+    download(artifact, repository, archive)
+    directory.mkdir()
+    unpack(archive, directory)
+    verify(directory, key, receipt["producer"])
+    provenance = json.loads((directory / "provenance.json").read_text())
+    for field in ("id", "kind", "system", "target", "source", "pointer", "state", "location", "update",
+                  "image", "resolvedImage", "ociPlatform"):
+        if provenance.get(field) != entry.get(field):
+            raise ValueError("planned inventory declaration mismatch: " + field)
+    if entry["kind"] == "oci" and provenance.get("references") != entry.get("references"):
+        raise ValueError("planned image associations mismatch")
+    if (provenance.get("requestedByRevision", provenance.get("sourceRevision")) != receipt["run"]["head_sha"]
+            or provenance.get("requestedSourceNarHash", provenance.get("sourceNarHash")) != entry["plannedSourceNarHash"]
+            or not re.fullmatch(r"[0-9a-f]{40}", provenance.get("sourceRevision", ""))
+            or not re.fullmatch(r"sha256-[A-Za-z0-9+/]{43}=", provenance.get("sourceNarHash", ""))):
+        raise ValueError("inventory source/request/run identity mismatch")
+    return artifact
+
+
 def restore(entry, directory, repository, branch):
     name = f"security-inventory-v1-{entry['id']}-{entry['inventoryKey']}"
     artifacts = api("--method", "GET", f"repos/{repository}/actions/artifacts",
@@ -364,26 +504,10 @@ def restore(entry, directory, repository, branch):
             raise ValueError("inventory archive compressed size exceeds 64 MiB")
         producer = {"GITHUB_REPOSITORY": repository, "GITHUB_WORKFLOW_REF": f"{repository}/{WORKFLOW}@refs/heads/{branch}",
                     "GITHUB_REF": "refs/heads/" + branch, "GITHUB_EVENT_NAME": run["event"], "GITHUB_SHA": sha}
-        # gh owns authentication/redirect handling; never forward our read token
-        # to a signed blob URL ourselves. Bound bytes before any ZIP parsing.
+        # Keep producer reuse and private-consumer admission on the same download boundary.
         with tempfile.TemporaryDirectory() as temporary:
             archive = Path(temporary) / "inventory.zip"
-            process = subprocess.Popen(["gh", "api", f"repos/{repository}/actions/artifacts/{artifact['id']}/zip"], stdout=subprocess.PIPE)
-            try:
-                with archive.open("wb") as stream:
-                    size = 0
-                    for chunk in iter(lambda: process.stdout.read(1024 * 1024), b""):
-                        size += len(chunk)
-                        if size > MAX_ARCHIVE:
-                            raise ValueError("inventory download exceeds 64 MiB")
-                        stream.write(chunk)
-                if process.wait() != 0:
-                    raise RuntimeError("inventory download failed")
-            finally:
-                if process.poll() is None:
-                    process.kill()
-                    process.wait()
-                process.stdout.close()
+            download(artifact, repository, archive)
             directory.mkdir(parents=True, exist_ok=False)
             unpack(archive, directory)
             verify(directory, entry["inventoryKey"], producer, entry)

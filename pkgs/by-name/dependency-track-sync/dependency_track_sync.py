@@ -1,6 +1,7 @@
 """Sealed PR120 inventories to stock Dependency-Track; originals are the archive."""
 import argparse
 import base64
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import fcntl
 import hashlib
@@ -154,6 +155,39 @@ def archive_inventory(source, root):
         return destination, provenance, manifest, description
 
 
+def credential(path):
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    with os.fdopen(descriptor) as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o077 or info.st_size > 65536:
+            raise ValueError("credential file must be bounded, regular and inaccessible to group/other")
+        value = stream.read().strip()
+    if not value or "\n" in value or "\r" in value:
+        raise ValueError("credential file must contain one nonempty value")
+    return value
+
+
+@contextmanager
+def github_credentials(path):
+    """Never consult an operator's gh profile, enterprise token or inherited host."""
+    keys = ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN",
+            "GH_HOST", "GH_CONFIG_DIR", "GH_PROMPT_DISABLED", "GH_DEBUG")
+    previous = {key: os.environ.get(key) for key in keys}
+    with tempfile.TemporaryDirectory() as configuration:
+        try:
+            for key in keys:
+                os.environ.pop(key, None)
+            os.environ.update(GH_TOKEN=credential(path), GH_HOST="github.com",
+                              GH_CONFIG_DIR=configuration, GH_PROMPT_DISABLED="1")
+            yield
+        finally:
+            for key, value in previous.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+
 class NoRedirect(HTTPRedirectHandler):
     def redirect_request(self, request, fp, code, message, headers, newurl):
         return None  # Never send an API key to a redirect target, including same-origin.
@@ -175,14 +209,7 @@ class Client:
         if parsed.scheme == "http" and parsed.hostname not in ("127.0.0.1", "::1", "localhost"):
             raise ValueError("unencrypted API is allowed only over loopback")
         self.url = url.rstrip("/")
-        descriptor = os.open(key_file, os.O_RDONLY | os.O_NOFOLLOW)
-        with os.fdopen(descriptor) as stream:
-            info = os.fstat(stream.fileno())
-            if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o077:
-                raise ValueError("credential file must be regular and inaccessible to group/other")
-            self.key = stream.read().strip()
-        if not self.key or "\n" in self.key or "\r" in self.key:
-            raise ValueError("credential file must contain one nonempty value")
+        self.key = credential(key_file)
         self.bearer = bearer
         self.opener = build_opener(NoRedirect())
 
@@ -304,9 +331,11 @@ def retire_history(client, record, checkpoint):
         checkpoint()
 
 
-def synchronize(args, database, checkpoint, client):
+def synchronize(args, database, checkpoint, client, *, expected_target=None):
     archived, provenance, manifest, description = archive_inventory(args.inventory, args.state_dir)
     target = description["target"]
+    if expected_target is not None and target != expected_target:
+        raise ValueError("admitted archive belongs to another lifecycle target")
     record = database["targets"].setdefault(target, {"source": provenance, "history": [], "receipts": []})
     record["input"] = str(args.inventory)
     if str(archived) not in record["receipts"]:
@@ -439,6 +468,181 @@ def annotate_origins(args, database, checkpoint, client):
         raise
 
 
+def failed_target(record, attempt, client):
+    record["lastAttempt"] = dict(attempt)
+    if record.get("collection"):
+        try:
+            client.project(project_name(record["source"]), "collection", collection=True,
+                           cached=record["collection"], identity=project_identity(record["source"]))
+            client.properties(record["collection"], {"collection_status": attempt["status"],
+                              "last_attempt": attempt["at"], "deployment": "unobserved"})
+            record["statusPublishFailed"] = False
+        except Exception:
+            record["statusPublishFailed"] = True
+
+
+def refresh(args, database, checkpoint, client):
+    """Acquire data only, then use the existing resumable single-writer lifecycle."""
+    policy = {"repository": args.repository, "branch": args.branch}
+    states = sorted(set(getattr(args, "scope", None) or ["desired", "referenced"]))
+    selection = {"states": states if not args.target else [], "targetIds": sorted(set(args.target))}
+    if (not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", args.repository)
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_./-]*", args.branch)
+            or ".." in args.branch or "//" in args.branch
+            or any(not re.fullmatch(r"[a-f0-9]{24}", target) for target in args.target)
+            or set(states) - {"desired", "exported", "referenced"}
+            or not 1 <= args.max_age_seconds <= 90 * 86400):
+        raise ValueError("invalid explicit producer policy, target selection or freshness bound")
+    previous_source = database.get("sourcePolicy", policy)
+    if {key: previous_source.get(key) for key in policy} != policy:
+        raise ValueError("state belongs to another source trust policy; use separate API/evidence state for canaries")
+    previous_selection = database.get("selectionPolicy")
+    if previous_selection is None and "targetIds" in previous_source:
+        previous_selection = {"states": [] if previous_source["targetIds"] else ["desired", "exported", "referenced"],
+                              "targetIds": previous_source["targetIds"]}
+    if previous_selection is not None and previous_selection != selection:
+        database.setdefault("selectionHistory", []).append(
+            {"at": now(), "previous": previous_selection, "current": selection})
+    database["sourcePolicy"] = policy
+    database["selectionPolicy"] = selection
+    attempt = {"at": now(), "status": "discovering", "targets": {}, "selection": selection}
+    database["refresh"] = attempt
+    checkpoint()
+    def selected(entry):
+        return entry["id"] in args.target if args.target else entry["state"] in states
+    try:
+        evidence = args.state_dir / "acquisitions"
+        evidence.mkdir(exist_ok=True)
+        archives = args.state_dir / "artifacts"
+        archives.mkdir(exist_ok=True)
+        directory = Path(tempfile.mkdtemp(prefix="refresh-", dir=evidence))
+        attempt["evidence"] = str(directory)
+        checkpoint()
+        with github_credentials(args.github_token_file), tempfile.TemporaryDirectory(prefix="dependency-track-refresh-") as temporary:
+            plan, receipt, artifacts = security_artifacts.discover_plan(
+                args.repository, args.branch, directory, archive_directory=archives)
+            attempt["run"] = receipt["run"]["id"]
+            attempt["sourceCompletedAt"] = receipt["run"]["updated_at"]
+            completed = datetime.fromisoformat(receipt["run"]["updated_at"].replace("Z", "+00:00"))
+            age = (datetime.now(timezone.utc) - completed).total_seconds()
+            if not 0 <= age <= args.max_age_seconds:
+                raise ValueError("latest completed producer run is stale or future-dated")
+            all_entries = [*plan["entries"], *plan["unsupported"]]
+            attempt["excluded"] = [entry for entry in all_entries if not selected(entry)]
+            attempt["unsupported"] = [{"source": entry, "selected": selected(entry)} for entry in plan["unsupported"]]
+            if set(args.target) - {entry["id"] for entry in all_entries}:
+                raise ValueError("configured target IDs are absent from the producer plan")
+            if not any(selected(entry) for entry in plan["entries"]):
+                raise ValueError("configured scope has no importable targets; zero-target success is not coverage")
+            previous = database.get("expected", {})
+            expected = {target_key(entry): {"source": entry, "selected": selected(entry),
+                                            "coverage": "pending-unknown" if selected(entry) else "unselected"}
+                        for entry in all_entries}
+            if len(expected) != len(all_entries):
+                raise ValueError("producer plan aliases multiple declarations to one lifecycle target")
+            for target, old in previous.items():
+                if target not in expected:
+                    expected[target] = dict(old, selected=selected(old["source"]), coverage="missing-from-plan-unknown")
+            for target, record in database["targets"].items():
+                if target not in expected:
+                    expected[target] = {"source": record["source"], "selected": selected(record["source"]),
+                                        "coverage": "missing-from-plan-unknown"}
+                record["selection"] = {"at": now(), "selected": expected[target]["selected"]}
+                if not expected[target]["selected"] and record.get("collection"):
+                    try:
+                        client.project(project_name(record["source"]), "collection", collection=True,
+                                       cached=record["collection"], identity=project_identity(record["source"]))
+                        client.properties(record["collection"], {"selection_status": "unselected-retained",
+                                          "selection_policy": selection, "deployment": "unobserved"})
+                    except Exception:
+                        record["selection"]["statusPublishFailed"] = True
+                        attempt.setdefault("selectionPublishFailures", []).append(target)
+            database["expected"] = expected
+            checkpoint()
+            for target, item in expected.items():
+                entry = item["source"]
+                if not item["selected"]:
+                    continue  # Explicit scope changes retain current/history and active DT data.
+                result = {"at": now(), "status": "failed-unknown"}
+                attempt["targets"][target] = result
+                try:
+                    if item["coverage"] == "missing-from-plan-unknown":
+                        raise ValueError("previously tracked declaration disappeared from the plan")
+                    if entry not in plan["entries"]:
+                        if entry.get("inventoryFailure"):
+                            raise ValueError("producer failed to discover the selected inventory")
+                        result["status"] = item["coverage"] = "unsupported-unknown"
+                        if target in database["targets"]:
+                            failed_target(database["targets"][target], result, client)
+                        checkpoint()
+                        continue
+                    inventory = Path(temporary) / target
+                    artifact = security_artifacts.acquire_planned(
+                        entry, receipt, artifacts, args.repository, inventory, archive_directory=archives)
+                    save(directory / (target + "-artifact.json"), artifact)
+                    options = argparse.Namespace(**vars(args))
+                    pending = database["targets"].get(target, {}).get("pending")
+                    if pending:
+                        # Resume only the previously admitted journaled original, once,
+                        # before moving to a newer producer inventory.
+                        options.inventory = Path(pending["archive"])
+                        synchronize(options, database, checkpoint, client, expected_target=target)
+                    options.inventory = inventory
+                    synchronize(options, database, checkpoint, client, expected_target=target)
+                    if target in database["targets"]:
+                        acquisition = {"repository": args.repository, "branch": args.branch,
+                                       "run": receipt["run"]["id"], "sha": receipt["run"]["head_sha"],
+                                       "completedAt": receipt["run"]["updated_at"], "artifact": artifact,
+                                       "evidence": str(directory)}
+                        database["targets"][target]["acquisition"] = acquisition
+                        database["targets"][target]["selection"] = {"at": now(), "selected": True}
+                        client.properties(database["targets"][target]["collection"], {
+                            "source_run": acquisition, "selection_status": "selected",
+                            "selection_policy": selection})
+                        checkpoint()
+                    if entry["kind"] == "nix" and homelab_origins.supported(entry):
+                        if args.repository != "dvicory/homelab":
+                            raise ValueError("host origins require the explicitly trusted Homelab repository")
+                        options.flake = "github:dvicory/homelab/" + receipt["run"]["head_sha"]
+                        annotate_origins(options, database, checkpoint, client)
+                    elif target in database["targets"]:
+                        database["targets"][target]["origins"] = {
+                            "lastAttempt": {"at": now(), "status": "unsupported",
+                                            "reason": "only NixOS toplevel roots support inclusion origins"}}
+                    result["status"] = "complete"
+                    item["coverage"] = "complete-inventory"
+                except Exception as error:
+                    result["errorType"] = type(error).__name__
+                    item["coverage"] = ("missing-from-plan-unknown" if item["coverage"] == "missing-from-plan-unknown"
+                                        else "failed-unknown")
+                    if target in database["targets"]:
+                        failed_target(database["targets"][target], result, client)
+                checkpoint()
+        if (attempt.get("selectionPublishFailures") or any(
+                result["status"] not in ("complete", "unsupported-unknown")
+                or database["targets"].get(target, {}).get("statusPublishFailed", False)
+                for target, result in attempt["targets"].items())):
+            raise ValueError("refresh has missing or failed targets; last-good inventories retained")
+        attempt["status"] = ("complete-with-unsupported" if any(item["selected"] for item in attempt["unsupported"])
+                             else "complete")
+        checkpoint()
+        print(json.dumps({"status": attempt["status"], "run": attempt["run"], "evidence": str(directory),
+                          "targets": len(attempt["targets"]), "excluded": len(attempt["excluded"]),
+                          "unsupported": len(attempt["unsupported"]), "deployment": "unobserved"}))
+    except Exception as error:
+        attempt.update(status="failed-unknown", errorType=type(error).__name__)
+        for target, item in database.get("expected", {}).items():
+            if target not in attempt["targets"] and item.get("selected", True):
+                item["coverage"] = "failed-unknown"
+        for target, record in database["targets"].items():
+            if target not in attempt["targets"] and selected(record["source"]):
+                failed_target(record, {"at": now(), "status": "failed-unknown"}, client)
+        checkpoint()
+        raise
+
+
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -448,6 +652,18 @@ def main():
     sync.add_argument("--inventory", required=True, type=Path)
     sync.add_argument("--state-dir", required=True, type=Path)
     sync.add_argument("--timeout", type=int, default=180, help="per-upload processing deadline in seconds")
+    automatic = commands.add_parser("refresh", help="acquire a trusted producer plan, import its selected sealed inventories and host origins")
+    automatic.add_argument("--api-url", required=True)
+    automatic.add_argument("--api-key-file", required=True, type=Path)
+    automatic.add_argument("--state-dir", required=True, type=Path)
+    automatic.add_argument("--repository", required=True)
+    automatic.add_argument("--branch", default="main", help="explicit admin-owned source trust; use separate API/evidence state for canaries")
+    automatic.add_argument("--github-token-file", required=True, type=Path)
+    automatic.add_argument("--target", action="append", default=[], help="explicit 24hex declaration IDs; overrides state selection")
+    automatic.add_argument("--scope", action="append", choices=("desired", "referenced", "exported"),
+                           help="repeat declared-state selection; default desired+referenced, never deployed")
+    automatic.add_argument("--max-age-seconds", type=int, default=604800)
+    automatic.add_argument("--timeout", type=int, default=180)
     origins = commands.add_parser("origins", help="add proven inclusion paths to an already-imported current Nix view")
     origins.add_argument("--api-url", required=True)
     origins.add_argument("--api-key-file", required=True, type=Path)
@@ -490,8 +706,9 @@ def main():
             return 0
         if args.command == "acquire":
             if (not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", args.repository)
-                    or args.branch != "main" or args.output.exists()):
-                raise ValueError("acquisition requires an explicit repository, trusted main branch and new output directory")
+                    or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_./-]*", args.branch)
+                    or ".." in args.branch or "//" in args.branch or args.output.exists()):
+                raise ValueError("acquisition requires an explicit repository, trusted branch and new output directory")
             entry = load(args.entry)
             if not all(re.fullmatch(r"[a-f0-9]{24}", entry.get(key, "")) for key in ("id", "inventoryKey")):
                 raise ValueError("malformed admitted inventory identity")
@@ -505,11 +722,20 @@ def main():
             if args.max_age_seconds < 0:
                 raise ValueError("freshness age must be nonnegative")
             for record in database["targets"].values():
-                last = record.get("lastSuccess")
+                last = record.get("acquisition", {}).get("completedAt", record.get("lastSuccess"))
                 record["coverage"] = ("unknown" if not last else "stale" if
                     (datetime.now(timezone.utc) - datetime.fromisoformat(last)).total_seconds() > args.max_age_seconds
-                    else "failed-unknown" if record.get("lastAttempt", {}).get("status") != "complete" else "complete-inventory")
+                    else "unsupported-unknown" if record.get("lastAttempt", {}).get("status") == "unsupported-unknown"
+                    else "failed-unknown" if record.get("lastAttempt", {}).get("status") != "complete"
+                    else "complete-inventory")
+                origins = record.get("origins", {}).get("lastAttempt", {}).get("status")
+                if origins and origins not in ("complete", "unsupported"):
+                    record["coverage"] = "failed-unknown"
                 record["deployment"] = "unobserved"
+            if isinstance(database.get("expected"), dict):
+                for target, item in database["expected"].items():
+                    if item["coverage"] == "complete-inventory":
+                        item["coverage"] = database["targets"].get(target, {}).get("coverage", "missing-unknown")
             if args.plan:
                 plan = load(args.plan)
                 database["expected"] = [
@@ -534,6 +760,9 @@ def main():
                 if database.get("apiOrigin", client.url) != client.url:
                     raise ValueError("state belongs to a different API origin")
                 database["apiOrigin"] = client.url
+                if args.command == "refresh":
+                    refresh(args, database, checkpoint, client)
+                    return 0
                 if args.command == "origins":
                     annotate_origins(args, database, checkpoint, client)
                     return 0
@@ -543,7 +772,7 @@ def main():
                 database["lastInput"]["status"] = "complete"
                 checkpoint()
             except Exception as error:
-                if args.command == "origins":
+                if args.command in ("origins", "refresh"):
                     raise
                 database["lastInput"] = {"at": now(), "inventory": str(args.inventory),
                                          "status": "missing-unknown" if isinstance(error, FileNotFoundError) else "failed-unknown",

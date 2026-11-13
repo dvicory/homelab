@@ -466,7 +466,7 @@ jobs:
     name: ${{ matrix.name }} (${{ matrix.system }})
     needs: plan
     if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.native == 'true' }}
-    runs-on: ${{ matrix.system == 'x86_64-linux' && 'ubuntu-24.04' || matrix.system == 'aarch64-linux' && 'ubuntu-24.04-arm' || 'macos-15' }}
+    runs-on: ${{ matrix.system == 'x86_64-linux' && 'ubuntu-26.04' || matrix.system == 'aarch64-linux' && 'ubuntu-26.04-arm' || 'macos-15' }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.applications) }}
@@ -577,6 +577,8 @@ jobs:
           /usr/bin/time -p nix build "$drv^*" --out-link "$RUNNER_TEMP/native-app" --json \
             > "$RUNNER_TEMP/native-evidence/build.json"
       - name: Run complete declared native acceptance
+        env:
+          GH_TOKEN: ${{ matrix.name == 'qualify-dependency-track' && github.token || '' }}
         run: |
           set -euo pipefail
           deadline=$(jq -er .timeoutSeconds <<< "$APPLICATION")
@@ -591,9 +593,17 @@ jobs:
             cd "$RUNNER_TEMP/native-evidence"
             test ! -e "$report"
           fi
+          if [ "$(jq -r .name <<< "$APPLICATION")" = qualify-dependency-track ]; then
+            token_file="$RUNNER_TEMP/dependency-track-github-token"
+            test ! -e "$token_file"
+            trap 'rm -f -- "$token_file"' EXIT
+            (umask 077; printf '%s' "$GH_TOKEN" > "$token_file")
+          fi
           runner=()
           if [ "$(jq -r .requirements.root <<< "$APPLICATION")" = true ]; then
-            runner=(sudo env "TMPDIR=$TMPDIR" "NIX_CONFIG=$NIX_CONFIG")
+            runner=(sudo env "TMPDIR=${TMPDIR:-$RUNNER_TEMP}" "NIX_CONFIG=${NIX_CONFIG:-}"
+              "GITHUB_ACTIONS=${GITHUB_ACTIONS:-}" "RUNNER_ENVIRONMENT=${RUNNER_ENVIRONMENT:-}"
+              "RUNNER_OS=${RUNNER_OS:-}" "RUNNER_ARCH=${RUNNER_ARCH:-}")
           fi
           "${runner[@]}" /usr/bin/time -p timeout --signal=INT "${deadline}s" "$program" "${arguments[@]}" \
             2>&1 | tee "$RUNNER_TEMP/native-evidence/acceptance.log"

@@ -134,6 +134,12 @@ def _location(filename, root, revision, sources):
             "https://github.com/" + owner + "/" + repo + "/blob/" + source_revision + "/" + quote(repository_file, safe="/"))
 
 
+
+def supported(provenance):
+    target = provenance.get("target")
+    return (provenance.get("kind") == "nix" and isinstance(target, str)
+            and _TARGET.fullmatch(target) is not None)
+
 def collect(flake: str, provenance: dict) -> dict:
     """Evaluate without builds; refuse any source, platform or inventory-root drift."""
     pin = _PIN.fullmatch(flake) if isinstance(flake, str) else None

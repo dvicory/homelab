@@ -119,6 +119,7 @@ let
     "verify-kubernetes-api"
     "media-live-acceptance"
     "household-sign-in-runtime"
+    "qualify-dependency-track"
   ];
 
   requiredFeaturesFor =
@@ -312,6 +313,35 @@ let
           timeoutSeconds = 7200;
           requirements.docker = true;
           cleanupPrefix = "homelab-api-";
+        }
+        {
+          name = "qualify-dependency-track";
+          package = "packages.${system}.qualify-dependency-track";
+          arguments = [
+            "--docker-context"
+            "default"
+            "--admit-disposable-github-runner"
+            "--report"
+            "dependency-track-result.json"
+            "--producer-branch"
+            "main"
+            "--github-token-file"
+            "../dependency-track-github-token"
+          ];
+          reportFile = "dependency-track-result.json";
+          reportCheckArguments = [
+            "--check-report"
+            "dependency-track-result.json"
+            "--producer-branch"
+            "main"
+          ];
+          timeoutSeconds = 3600;
+          requirements = {
+            docker = true;
+            root = true;
+            ownedStorage = true;
+          };
+          cleanupPrefix = "homelab-dt-";
         }
       ];
     in

@@ -54,8 +54,10 @@ normalized dashboard exports need not preserve all source evidence.
 
 Saved inventories can be rescanned with current advisory data without
 rebuilding software or querying hosts/registries. Reuse verifies source,
-producer, target identity and file hashes. Scanner configuration and
-ignore files from the repository are not loaded. Raw portable reports
+producer, target identity and file hashes.
+Reused image inventories keep the original software evidence; their
+Homelab references come from the current plan, not the original scan.
+Scanner configuration and ignore files from the repository are not loaded. Raw portable reports
 remain downloadable; this workflow does not submit Code Scanning alerts.
 
 Version/CPE matches are candidates, not Nix backport or runtime-reachability
