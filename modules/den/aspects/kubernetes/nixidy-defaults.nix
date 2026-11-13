@@ -26,19 +26,21 @@
                     inherit namespace;
                     server = config.nixidy.defaults.destination.server;
                   })
-                  [
-                    "argocd"
-                    "cert-manager"
-                    "kube-system"
-                    "local-path-storage"
-                    "gateway"
-                    "identity"
-                    "jellyfin"
-                    "media"
-                    "monitoring"
-                    "portal"
-                    "dependency-track"
-                  ];
+                  (
+                    [
+                      "argocd"
+                      "cert-manager"
+                      "kube-system"
+                      "local-path-storage"
+                      "gateway"
+                      "identity"
+                      "jellyfin"
+                      "media"
+                      "monitoring"
+                      "portal"
+                    ]
+                    ++ lib.optional (config.applications ? dependency-track) "dependency-track"
+                  );
               clusterResourceWhitelist = [
                 {
                   group = "";

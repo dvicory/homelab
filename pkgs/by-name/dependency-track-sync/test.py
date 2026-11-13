@@ -314,6 +314,223 @@ def origin_regression():
     print("origin root, multi-route, output, cycle and metadata boundaries passed")
 
 
+def refresh_regression():
+    """Offline protocol spies exercise real archive/lifecycle orchestration, not a stock-server claim."""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        token = root / "github-token"
+        token.write_text("fixture-only-never-transmitted")
+        token.chmod(0o600)
+        state = root / "state"
+        state.mkdir()
+        def entry(letter):
+            return {"id": letter * 24, "inventoryKey": "b" * 24, "kind": "oci", "system": "x86_64-linux",
+                    "state": "referenced", "source": "generated/manifests/" + letter + "/workload.yaml",
+                    "location": "declaration", "update": "owning declaration", "pointer": "/spec/image",
+                    "resolvedImage": "example.invalid/" + letter + "@sha256:" + "c" * 64,
+                    "ociPlatform": "linux/amd64"}
+        missing, available = entry("a"), entry("d")
+        previous_current = {"revision": ["last-good"], "projects": {"image": "last-good-project"}}
+        database = {"schema": 1, "targets": {sync.target_key(missing): {
+            "source": missing, "current": copy.deepcopy(previous_current), "history": [], "receipts": [],
+            "lastSuccess": sync.now()}}}
+        args = SimpleNamespace(repository="dvicory/homelab", branch="main", target=[], state_dir=state,
+                               github_token_file=token, max_age_seconds=604800, timeout=1)
+        checkpoint = lambda: sync.save(state / "state.json", database)
+        plan = {"entries": [missing, available], "unsupported": []}
+        receipt = {"run": {"id": 1, "head_sha": "e" * 40, "updated_at": sync.now()}}
+        attempts, uploads, transitions = [], [], []
+        def acquire(source, admitted, artifacts, repository, directory, archive_directory=None):
+            attempts.append(source["id"])
+            if source == missing:
+                raise ValueError("missing complete artifact")
+            directory.mkdir()
+            sync.save(directory / "provenance.json", source)
+            sync.save(directory / "language.cdx.json", {
+                "bomFormat": "CycloneDX", "specVersion": "1.5", "version": 1,
+                "components": [], "dependencies": []})
+            security_artifacts.seal(directory, source["inventoryKey"])
+            return {"id": 2, "digest": "sha256:" + "f" * 64}
+        client = SimpleNamespace(
+            project=lambda *values, **options: options["identity"],
+            properties=lambda *values: None,
+            upload=lambda project, file, timeout: uploads.append((project, file.read_bytes())),
+            request=lambda method, path, data: transitions.append((method, path, data)))
+        with patch.object(security_artifacts, "discover_plan", return_value=(plan, receipt, [])), \
+                patch.object(security_artifacts, "acquire_planned", side_effect=acquire), \
+                redirect_stdout(io.StringIO()):
+            try:
+                sync.refresh(args, database, checkpoint, client)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("one missing artifact became a successful fleet refresh")
+            assert attempts == [missing["id"], available["id"]] and len(uploads) == 1
+            assert database["targets"][sync.target_key(missing)]["current"] == previous_current
+            good = copy.deepcopy(database["targets"][sync.target_key(available)]["current"])
+            assert database["expected"][sync.target_key(missing)]["coverage"] == "failed-unknown"
+            assert database["expected"][sync.target_key(available)]["coverage"] == "complete-inventory"
+            # Removing a declaration cannot retire the retained target or make the next run clean.
+            plan["entries"] = [available]
+            try:
+                sync.refresh(args, database, checkpoint, client)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("plan removal silently retired inventory")
+            assert database["expected"][sync.target_key(missing)]["coverage"] == "missing-from-plan-unknown"
+            assert database["targets"][sync.target_key(missing)]["current"] == previous_current
+            assert database["targets"][sync.target_key(available)]["current"] == good
+            assert all(data["active"] for _, _, data in transitions)
+            clean = {"schema": 1, "targets": {}}
+            sync.refresh(args, clean, lambda: None, client)
+            assert clean["refresh"]["status"] == "complete"
+            assert clean["targets"][sync.target_key(available)]["current"]["complete"] == ["image"]
+            # An interrupted admitted original resumes before a changed/reverted latest run.
+            interrupted = root / "interrupted"
+            acquire(dict(available, resolvedImage="example.invalid/d@sha256:" + "e" * 64),
+                    receipt, [], args.repository, interrupted)
+            original, _, _, pending = sync.archive_inventory(interrupted, state)
+            record = clean["targets"][sync.target_key(available)]
+            record["pending"] = {key: pending[key] for key in ("revision", "revisionId", "hashes", "contentHashes")}
+            record["pending"].update(archive=str(original), projects={}, complete=[])
+            sync.refresh(args, clean, lambda: None, client)
+            assert "pending" not in record and record["current"]["revision"] == good["revision"]
+            assert any(item["revision"] == pending["revision"] for item in record["history"])
+            before_binding = copy.deepcopy(clean)
+            try:
+                sync.synchronize(SimpleNamespace(inventory=original, state_dir=state, timeout=1),
+                                 clean, lambda: None, client, expected_target="0" * 64)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("pending archive switched lifecycle target")
+            assert clean == before_binding
+            plan["entries"] = []
+            try:
+                sync.refresh(args, clean, lambda: None, client)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("zero-target plan became a successful clean fleet")
+            assert clean["targets"][sync.target_key(available)]["current"]["complete"] == ["image"]
+            plan["entries"] = [available]
+            before = len(attempts)
+            receipt["run"]["updated_at"] = "2000-01-01T00:00:00+00:00"
+            try:
+                sync.refresh(args, database, checkpoint, client)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("stale producer run refreshed freshness")
+            assert len(attempts) == before
+            assert database["targets"][sync.target_key(available)]["current"] == good
+            assert database["expected"][sync.target_key(available)]["coverage"] == "failed-unknown"
+        # Harmless explicit selection changes preserve active data, with visible history.
+        args.target = [available["id"]]
+        receipt["run"]["updated_at"] = sync.now()
+        with patch.object(security_artifacts, "discover_plan", return_value=(plan, receipt, [])), \
+                patch.object(security_artifacts, "acquire_planned", side_effect=acquire), \
+                redirect_stdout(io.StringIO()):
+            sync.refresh(args, database, checkpoint, client)
+        assert database["refresh"]["status"] == "complete"
+        assert database["selectionHistory"][-1]["current"]["targetIds"] == [available["id"]]
+        assert not database["expected"][sync.target_key(missing)]["selected"]
+        assert database["expected"][sync.target_key(missing)]["coverage"] == "missing-from-plan-unknown"
+        assert database["targets"][sync.target_key(missing)]["current"] == previous_current
+        assert not any(path.endswith("/last-good-project") and not data["active"]
+                       for _, path, data in transitions)
+        args.branch = "another-source"
+        try:
+            sync.refresh(args, database, checkpoint, client)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("source trust changed within an existing journal")
+        args.branch = "main"
+        args.target = []
+        unsupported = {"id": "f" * 24, "kind": "nix", "state": "exported", "system": "aarch64-darwin",
+                       "target": "darwinConfigurations.fixture.system", "reason": "Linux-only collector"}
+        plan["unsupported"] = [unsupported]
+        catalogue = {"schema": 1, "targets": {}}
+        with patch.object(security_artifacts, "discover_plan", return_value=(plan, receipt, [])), \
+                patch.object(security_artifacts, "acquire_planned", side_effect=acquire), \
+                redirect_stdout(io.StringIO()):
+            sync.refresh(args, catalogue, lambda: None, client)
+            assert catalogue["refresh"]["status"] == "complete"
+            assert len(catalogue["refresh"]["excluded"]) == 1
+            assert len(catalogue["refresh"]["unsupported"]) == 1
+            assert not catalogue["expected"][sync.target_key(unsupported)]["selected"]
+            args.scope = ["desired", "referenced", "exported"]
+            sync.refresh(args, catalogue, lambda: None, client)
+            assert catalogue["refresh"]["status"] == "complete-with-unsupported"
+            assert catalogue["expected"][sync.target_key(unsupported)]["coverage"] == "unsupported-unknown"
+            catalogue_current = copy.deepcopy(catalogue["targets"][sync.target_key(available)]["current"])
+            unsupported["inventoryFailure"] = True
+            try:
+                sync.refresh(args, catalogue, lambda: None, client)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("actual discovery failure was treated as intentional unsupported coverage")
+            assert catalogue["refresh"]["status"] == "failed-unknown"
+            assert catalogue["expected"][sync.target_key(unsupported)]["coverage"] == "failed-unknown"
+            assert catalogue["targets"][sync.target_key(available)]["current"] == catalogue_current
+            # A previously scanned image becoming local must not hide a failed
+            # ownership/status check behind otherwise healthy selected targets.
+            retained = copy.deepcopy(catalogue["targets"][sync.target_key(available)])
+            local = dict(available, image="localhost/unpublished:latest", reason="local-only image")
+            healthy = entry("e")
+            plan.update(entries=[healthy], unsupported=[dict(unsupported, inventoryFailure=False), local])
+            blocked = SimpleNamespace(**vars(client))
+            def reject_retained(*values, **options):
+                if options.get("cached") == retained["collection"]:
+                    raise ValueError("retained collection ownership changed")
+                return client.project(*values, **options)
+            blocked.project = reject_retained
+            try:
+                sync.refresh(args, catalogue, lambda: None, blocked)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("failed unsupported-status publication became a successful refresh")
+            record = catalogue["targets"][sync.target_key(available)]
+            assert catalogue["refresh"]["status"] == "failed-unknown"
+            assert catalogue["expected"][sync.target_key(available)]["coverage"] == "unsupported-unknown"
+            assert record["statusPublishFailed"] is True
+            assert record["current"] == retained["current"] and record["history"] == retained["history"]
+            assert catalogue["expected"][sync.target_key(healthy)]["coverage"] == "complete-inventory"
+        args.scope = None
+        host = {"id": "a" * 24, "kind": "nix", "system": "x86_64-linux", "state": "desired",
+                "target": "nixosConfigurations.fixture.config.system.build.toplevel",
+                "flake": "github:attacker/untrusted/" + "f" * 40}
+        origin_calls = []
+        args.target = []
+        receipt["run"]["updated_at"] = sync.now()
+        with patch.object(security_artifacts, "discover_plan", return_value=(
+                {"entries": [host], "unsupported": []}, receipt, [])), \
+                patch.object(security_artifacts, "acquire_planned", return_value={"id": 3}), \
+                patch.object(sync, "synchronize"), \
+                patch.object(sync, "annotate_origins", side_effect=lambda options, *rest: origin_calls.append(options.flake)), \
+                redirect_stdout(io.StringIO()):
+            sync.refresh(args, {"schema": 1, "targets": {}}, lambda: None, client)
+        assert origin_calls == ["github:dvicory/homelab/" + receipt["run"]["head_sha"]]
+        with patch.dict(os.environ, {"GH_TOKEN": "inherited-not-allowed", "GH_HOST": "untrusted.invalid",
+                                     "GH_DEBUG": "api"}):
+            with sync.github_credentials(token):
+                assert os.environ["GH_TOKEN"] == token.read_text()
+                assert os.environ["GH_HOST"] == "github.com" and "GH_DEBUG" not in os.environ
+            assert os.environ["GH_TOKEN"] == "inherited-not-allowed"
+        token.chmod(0o644)
+        try:
+            with sync.github_credentials(token):
+                raise AssertionError("public credential file admitted")
+        except ValueError:
+            pass
+    print("automatic refresh partial/removal/staleness/source-pin/credential boundaries passed")
+
+
 if __name__ == "__main__":
     regression()
     origin_regression()
+    refresh_regression()
