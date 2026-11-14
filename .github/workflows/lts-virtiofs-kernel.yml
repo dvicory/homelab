@@ -1,18 +1,23 @@
-name: Disposable LTS virtiofs kernel compilation
+name: Disposable FUSE direct-I/O diagnosis
 
 on:
   push:
     branches:
-      - experiment/virtiofs-lts-6-18-62-hosted
+      - experiment/virtiofs-direct-eof
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   compile:
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
+      - name: Require disposable KVM acceleration
+        run: |
+          test -c /dev/kvm
+          sudo chmod a+rw /dev/kvm
       - name: Check out the frozen compiler target
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -40,6 +45,7 @@ jobs:
             max-jobs = 1
             cores = 4
             builders =
+            system-features = kvm nixos-test big-parallel
       - name: Create runner-owned artifact storage after installation
         run: sudo install -d -m 0755 -o "$(id -u)" -g "$(id -g)" /nix/qualification
       - name: Configure the existing public caches
@@ -54,22 +60,50 @@ jobs:
             '
             printf 'EOF\n'
           } >> "$GITHUB_ENV"
-      - name: Build the exact previously admitted kernel
+      - name: Restore the previously built exact LTS kernel
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          github-token: ${{ github.token }}
+          run-id: 43630402967
+          artifact-ids: 14131833839
+          merge-multiple: true
+          path: ${{ runner.temp }}/fuse-prior-kernel
+      - name: Import only the authenticated kernel closure
+        run: |
+          test "$(cat "$RUNNER_TEMP/fuse-prior-kernel/kernel-evidence/source-commit")" = 819332d4c3a855e0809051316d1b45bf81fd87cd
+          test "$(cat "$RUNNER_TEMP/fuse-prior-kernel/kernel-evidence/kernel-drv")" = /nix/store/wq6fwwa4vdsj5wvz66sm6fbp35b036wp-linux-6.18.62.drv
+          nix copy --no-check-sigs --from "file://$RUNNER_TEMP/fuse-prior-kernel/kernel-cache" \
+            /nix/store/dqam29r4q9cmlqqjf87155324kkjgfv5-linux-6.18.62 \
+            /nix/store/iyk4d4znzi92sndwal88pvmvsvasz9sv-linux-6.18.62-dev \
+            /nix/store/hkl5ximvdf9lzqwfn87x9m046qwc53wz-linux-6.18.62-modules
+          mv "$RUNNER_TEMP/fuse-prior-kernel/kernel-cache" /nix/qualification/kernel-cache
+          mv "$RUNNER_TEMP/fuse-prior-kernel/kernel-evidence" /nix/qualification/imported-kernel-provenance
+      - name: Build and run the isolated fixed-LTS reproducer
         run: |
           set -euo pipefail
-          drv=$(nix eval --raw --file .github/lts-virtiofs-kernel.nix --apply 'kernel: kernel.drvPath')
-          test "$drv" = /nix/store/wq6fwwa4vdsj5wvz66sm6fbp35b036wp-linux-6.18.62.drv
+          kernel_drv=$(nix eval --raw --file .github/fuse-eof.nix --apply 'q: q.kernel.drvPath')
+          test "$kernel_drv" = /nix/store/wq6fwwa4vdsj5wvz66sm6fbp35b036wp-linux-6.18.62.drv
+          drv=$(nix eval --raw --file .github/fuse-eof.nix --apply 'q: q.diagnostic.drvPath')
           mkdir -p /nix/qualification/kernel-evidence
           printf '%s\n' "$GITHUB_SHA" > /nix/qualification/kernel-evidence/source-commit
-          printf '%s\n' "$drv" > /nix/qualification/kernel-evidence/kernel-drv
+          printf '%s\n' "$kernel_drv" > /nix/qualification/kernel-evidence/kernel-drv
+          printf '%s\n' "$drv" > /nix/qualification/kernel-evidence/diagnostic-drv
           nix derivation show "$drv" > /nix/qualification/kernel-evidence/derivation.json
-          nix build --no-link --json "$drv^*" > /nix/qualification/kernel-evidence/build.json
-          nix copy --to file:///nix/qualification/kernel-cache "$drv^*"
-      - name: Preserve the kernel binary cache and provenance
+          nix build --no-link --json "$kernel_drv^*" > /nix/qualification/kernel-evidence/kernel-build.json
+          nix build --no-link --json "$drv^out" > /nix/qualification/kernel-evidence/diagnostic-build.json
+          result=$(nix eval --raw --file .github/fuse-eof.nix --apply 'q: q.diagnostic.outPath')
+          cp -r "$result" /nix/qualification/diagnostic-results
+      - name: Preserve diagnostic logs
+        if: always()
+        run: |
+          drv=$(nix eval --raw --file .github/fuse-eof.nix --apply 'q: q.diagnostic.drvPath')
+          nix log "$drv" > /nix/qualification/diagnostic.log
+      - name: Preserve raw results and provenance
+        if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: frozen-lts-kernel-${{ github.run_id }}
+          name: fuse-direct-eof-${{ github.run_id }}
           path: /nix/qualification
           if-no-files-found: error
           compression-level: 0
-          retention-days: 3
+          retention-days: 7

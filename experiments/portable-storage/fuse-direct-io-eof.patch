@@ -1,0 +1,16 @@
+--- a/fs/fuse/file.c
++++ b/fs/fuse/file.c
+@@ -1636,6 +1636,13 @@
+ 	if (!ia)
+ 		return -ENOMEM;
+ 
++	if (write && !cuse) {
++		loff_t old_size = i_size_read(inode);
++
++		if (pos > old_size)
++			truncate_pagecache_range(inode, old_size, pos - 1);
++	}
++
+ 	if (fopen_direct_io) {
+ 		res = filemap_write_and_wait_range(mapping, pos, pos + count - 1);
+ 		if (res) {
