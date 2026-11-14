@@ -57,6 +57,9 @@ rebuilding software or querying hosts/registries. Reuse verifies source,
 producer, target identity and file hashes.
 Reused image inventories keep the original software evidence; their
 Homelab references come from the current plan, not the original scan.
+Automated consumers use `.github/security_artifacts.py` to verify the trusted
+producer and sealed files. Its `discover_plan(..., run_id=...)` recovery
+option selects an exact run without bypassing source, event or artifact checks.
 Scanner configuration and ignore files from the repository are not loaded. Raw portable reports
 remain downloadable; this workflow does not submit Code Scanning alerts.
 
