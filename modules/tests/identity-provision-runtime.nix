@@ -45,6 +45,8 @@ let
       cluster = inventory;
       inherit lib;
       computeResources = compute;
+    } {
+      config.applications = { };
     }).applications.identity.objects;
   identityObjects = renderIdentity cluster;
   rolloutDirectoryPort =

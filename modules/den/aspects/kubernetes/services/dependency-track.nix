@@ -29,6 +29,11 @@ in
   # Select explicitly; no cluster or host includes this service by default.
   den.aspects.kubernetes.services.dependency-track = {
     settings = {
+      privateAccess = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = "Request the selected service's private HTTPS/native Kanidm profile; routes remain staged until restored state and normal identity are admitted.";
+      };
       databasePhase = lib.mkOption {
         type = lib.types.enum [
           "restore"
@@ -40,7 +45,7 @@ in
       apiBaseUrl = lib.mkOption {
         type = lib.types.strMatching "http://127\\.0\\.0\\.1:[0-9]+";
         default = "http://127.0.0.1:18080";
-        description = "Browser-facing API URL for the operator's loopback-only kubectl port-forward; not a public service URL.";
+        description = "Browser-facing API URL only for the operator's loopback kubectl port-forward when privateAccess is false; private HTTPS derives its URL from the API route.";
       };
       advisoryRefresh = lib.mkOption {
         type = lib.types.bool;
@@ -63,6 +68,8 @@ in
       let
         compute =
           config.den.hosts.${cluster.hostSystem}.${cluster.hostName}.settings.virtualization.compute;
+        settings = cluster.settings.kubernetes.services.dependency-track;
+        privateAccess = settings.privateAccess or false;
       in
       assert lib.assertMsg (
         cluster.settings.kubernetes.services.dependency-track.databasePhase == "bootstrap"
@@ -71,6 +78,14 @@ in
           + "/.secrets/hosts/${compute.instance}/dependency-track--dependency-track-postgres--password.age"
         )
       ) "Dependency-Track restore requires the recovered encrypted database credential.";
+      assert lib.assertMsg (
+        !privateAccess
+        || settings.databasePhase == "bootstrap"
+        || builtins.pathExists (
+          inputs.self
+          + "/.secrets/hosts/${compute.instance}/dependency-track--dependency-track-admin--password.age"
+        )
+      ) "Dependency-Track private restore requires the recovered encrypted administrator credential.";
       {
         retainedPaths = {
           dependency-track-postgres = {
@@ -104,6 +119,19 @@ in
             '';
           };
         }
+        // lib.optionalAttrs privateAccess {
+          # Only the separately privileged access-policy reconciler consumes it.
+          # No stock environment variable can initialize or replace this password.
+          "dependency-track--dependency-track-admin--password" = {
+            inherit namespace;
+            name = "dependency-track-admin";
+            key = "password";
+          } // lib.optionalAttrs (settings.databasePhase == "bootstrap") {
+            generator = { pkgs, ... }: ''
+              ${pkgs.openssl}/bin/openssl rand -hex 32 | ${pkgs.coreutils}/bin/tr -d '\n'
+            '';
+          };
+        }
         // lib.optionalAttrs cluster.settings.kubernetes.services.dependency-track.automaticInventory {
           # These existing operator-issued credentials are never generated.
           "dependency-track--dependency-track-sync--api-key" = {
@@ -122,6 +150,30 @@ in
       { cluster, computeResources, ... }:
       let
         settings = cluster.settings.kubernetes.services.dependency-track;
+        privateAccess = settings.privateAccess or false;
+        privateReady =
+          privateAccess
+          && settings.databasePhase == "restore"
+          && cluster.settings.kubernetes.services.identity.phase == "normal";
+        issuer = "https://${builtins.head cluster.routes.idm.hostnames}/oauth2/openid/dependency-track";
+        apiBaseUrl =
+          if privateReady then
+            "https://${builtins.head cluster.routes.dependency-track-api.hostnames}"
+          else
+            settings.apiBaseUrl;
+        frontendConfig = builtins.toJSON {
+          API_BASE_URL = apiBaseUrl;
+          API_WITH_CREDENTIALS = "false";
+          FEATURE_FLAGS = {
+            GLOBAL_POLICY_VIOLATION_AUDIT = true;
+            GLOBAL_VULNERABILITY_AUDIT = true;
+          };
+          OIDC_CLIENT_ID = if privateReady then "dependency-track" else "";
+          OIDC_FLOW = "code";
+          OIDC_ISSUER = if privateReady then issuer else "";
+          OIDC_LOGIN_BUTTON_TEXT = if privateReady then "Kanidm" else "";
+          OIDC_SCOPE = "openid profile email groups_name";
+        };
         paths = lib.genAttrs [ "postgres" "api" "evidence" ] (
           name: computeResources.retainedPaths.${"dependency-track-${name}"}
         );
@@ -161,14 +213,23 @@ in
             selector.matchLabels = labels name;
             template = {
               metadata.labels = labels name;
-              metadata.annotations = lib.optionalAttrs (name == "postgres") {
-                "homelab.danielvicory/config-sha256" = builtins.hashString "sha256" postgresHba;
-              };
+              metadata.annotations =
+                lib.optionalAttrs (name == "postgres") {
+                  "homelab.danielvicory/config-sha256" = builtins.hashString "sha256" postgresHba;
+                }
+                // lib.optionalAttrs (name == "frontend") {
+                  "homelab.danielvicory/config-sha256" = builtins.hashString "sha256" frontendConfig;
+                };
               spec = {
                 automountServiceAccountToken = false;
                 nodeSelector."kubernetes.io/hostname" = computeResources.instance;
                 containers = [ (container // { name = name; }) ];
                 inherit volumes;
+                # A fresh Pod has no True condition: the API remains absent from
+                # Service endpoints until root reconciles policy for this Pod UID.
+                readinessGates = lib.optional (name == "api" && privateAccess) {
+                  conditionType = "security.homelab/access-policy-ready";
+                };
                 initContainers =
                   lib.optional (name == "api" && settings.databasePhase == "restore") {
                     name = "require-restored-api-keyset";
@@ -265,6 +326,18 @@ in
           protocol = "TCP";
           inherit port;
         };
+        gatewayIngress = lib.optional privateReady {
+          from = [
+            {
+              namespaceSelector.matchLabels."kubernetes.io/metadata.name" = "gateway";
+              podSelector.matchLabels = {
+                "gateway.envoyproxy.io/owning-gateway-namespace" = "gateway";
+                "gateway.envoyproxy.io/owning-gateway-name" = "household";
+              };
+            }
+          ];
+          ports = [ (tcp 8080) ];
+        };
       in
       assert lib.assertMsg (
         !(settings.initialMirror && settings.advisoryRefresh)
@@ -346,15 +419,46 @@ in
                 "pg_hba.conf" = postgresHba;
               };
             }
+            {
+              apiVersion = "v1";
+              kind = "ConfigMap";
+              metadata = {
+                name = "dependency-track-frontend-config";
+                inherit namespace;
+              };
+              data = {
+                "config.json" = frontendConfig;
+                # Stock frontend template, rendered for the required root context.
+                "default.conf" = ''
+                  server {
+                    listen 8080;
+                    server_name _;
+                    location / {
+                      root /opt/owasp/dependency-track-frontend;
+                      index index.html;
+                      try_files $uri $uri/ /index.html;
+                      location ~ (config\.json|index\.html)$ {
+                        add_header Cache-Control "max-age=0, no-cache, no-store, must-revalidate";
+                        add_header Pragma "no-cache";
+                        add_header Expires 0;
+                      }
+                    }
+                    error_page 500 502 503 504 /50x.html;
+                    location = /50x.html {
+                      root /usr/share/nginx/html;
+                    }
+                  }
+                '';
+              };
+            }
             (service "postgres" 5432)
             (service "api" 8080)
             (service "frontend" 8080)
-            # No route, host port, ingress exemption or trusted interface.
-            # Only authenticated API-server port-forward reaches the UI/API.
-            (policy "frontend" [ ] [ ])
+            # The service owns port-specific admission; no additive Gateway policy.
+            (policy "frontend" gatewayIngress [ ])
             (policy "api"
-              [ ]
-              [
+              gatewayIngress
+              ([
                 {
                   to = [ (peer "postgres") ];
                   ports = [ (tcp 5432) ];
@@ -396,7 +500,15 @@ in
                   ];
                   ports = [ (tcp 443) ];
                 }
-              ]
+              ] ++ lib.optional privateReady {
+                to = [
+                  {
+                    namespaceSelector.matchLabels."kubernetes.io/metadata.name" = "identity";
+                    podSelector.matchLabels."app.kubernetes.io/name" = "kanidm";
+                  }
+                ];
+                ports = [ (tcp 8443) ];
+              })
             )
             (policy "postgres"
               [
@@ -510,6 +622,16 @@ in
                 (env "DT_OUTBOUND_ALLOWED_DESTINATIONS" "storage.googleapis.com,nvd.nist.gov")
                 (env "DT_TELEMETRY_SUBMISSION_DEFAULT_ENABLED" "false")
                 (env "EXTRA_JAVA_OPTIONS" "-Xms256m -Xmx1400m -XX:ActiveProcessorCount=2")
+              ] ++ lib.optionals privateReady [
+                (env "DT_OIDC_ENABLED" "true")
+                (env "DT_OIDC_ISSUER" issuer)
+                (env "DT_OIDC_CLIENT_ID" "dependency-track")
+                (env "DT_OIDC_USERNAME_CLAIM" "preferred_username")
+                (env "DT_OIDC_USER_PROVISIONING" "true")
+                (env "DT_OIDC_TEAM_SYNCHRONIZATION" "true")
+                (env "DT_OIDC_TEAMS_CLAIM" "groups")
+                (env "DT_CORS_ENABLED" "true")
+                (env "DT_CORS_ALLOW_CREDENTIALS" "false")
               ];
               volumeMounts = [ (mount "/data") ];
               startupProbe = {
@@ -531,14 +653,43 @@ in
             } [ (volume "api") ])
             (workload "frontend" {
               image = images.frontend;
-              securityContext = security 101 101;
+              securityContext = (security 101 101) // { readOnlyRootFilesystem = true; };
               resources = resources "128Mi" "500m";
-              env = [ (env "API_BASE_URL" settings.apiBaseUrl) ];
+              volumeMounts = [
+                {
+                  name = "frontend-config";
+                  mountPath = "/opt/owasp/dependency-track-frontend/static/config.json";
+                  subPath = "config.json";
+                  readOnly = true;
+                }
+                {
+                  name = "frontend-config";
+                  mountPath = "/etc/nginx/conf.d/default.conf";
+                  subPath = "default.conf";
+                  readOnly = true;
+                }
+                {
+                  name = "frontend-tmp";
+                  mountPath = "/tmp";
+                }
+              ];
               readinessProbe.httpGet = {
                 path = "/";
                 port = 8080;
               };
-            } [ ])
+            } [
+              {
+                name = "frontend-config";
+                configMap.name = "dependency-track-frontend-config";
+              }
+              {
+                name = "frontend-tmp";
+                emptyDir = {
+                  medium = "Memory";
+                  sizeLimit = "32Mi";
+                };
+              }
+            ])
           ];
         };
       };
