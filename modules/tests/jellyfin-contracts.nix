@@ -7,7 +7,9 @@
 let
   # Exercise the real renderer's selected-release assertions, independently
   # of the current producer packages.
-  releaseCluster = config.den.clusters.prod-home;
+  releaseCluster = config.den.clusters.prod-home // {
+    routes = config.flake.clusterRoutes.prod-home.routes;
+  };
   releaseCompute =
     config.den.hosts.${releaseCluster.hostSystem}.${releaseCluster.hostName}.settings.virtualization.compute;
   releaseComputeResources = {
@@ -63,6 +65,7 @@ let
     ).den.aspects.kubernetes.services.jellyfin.k8s-manifests
       {
         inherit cluster;
+        routes = cluster.routes;
         computeResources = releaseComputeResources;
       };
   configurationFor =

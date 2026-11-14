@@ -1,41 +1,35 @@
 { lib, ... }:
-let
-  inherit (lib) mkOption types;
-in
 {
   den.aspects.kubernetes.services.argocd = {
-    settings.oidc = mkOption {
-      type = types.submodule {
-        options = {
-          # Kanidm refuses an authorization request unless every requested
-          # scope is in a scope map of a group the user belongs to.
-          # `groups_name` makes Kanidm 1.11 emit the `groups` claim as short
-          # group names (`homelab-admin`), not SPNs or UUIDs.
-          scopes = mkOption {
-            type = types.listOf types.str;
-            default = [
-              "openid"
-              "profile"
-              "email"
-              "groups_name"
-            ];
-            description = "Scopes Argo CD requests; identity provisioning maps each one to the administrator group.";
-          };
-          secretName = mkOption {
-            type = types.str;
-            default = "argocd-kanidm-oidc";
-            description = "Secret in Argo CD's namespace where identity provisioning publishes the client secret.";
-          };
-          secretKey = mkOption {
-            type = types.str;
-            default = "clientSecret";
-            description = "Key of the client secret in that Secret.";
+    route-metadata.routes.argocd = lib.mapAttrs (_: lib.mkDefault) {
+      namespace = "argocd";
+      service = "argocd-server";
+      port = 80;
+      backendPodSelector = {
+        "app.kubernetes.io/instance" = "argocd";
+        "app.kubernetes.io/name" = "argocd-server";
+      };
+      displayName = "Argo CD";
+    };
+    native-oidc =
+      { cluster, ... }:
+      lib.optionalAttrs (cluster.routes ? argocd) {
+        argocd = {
+          callbackPath = "/auth/callback";
+          landingPath = "/auth/login";
+          scopes = lib.mkDefault [
+            "openid"
+            "profile"
+            "email"
+            "groups_name"
+          ];
+          secret = {
+            name = lib.mkDefault "argocd-kanidm-oidc";
+            key = lib.mkDefault "clientSecret";
+            labels."app.kubernetes.io/part-of" = "argocd";
           };
         };
       };
-      default = { };
-      description = "Argo CD's sign-in through Kanidm. Identity provisioning adds these values to the Kanidm client of the `argocd` route, which the Gateway also uses.";
-    };
     compute-resources.runtimeSecrets = {
       "argocd--argocd-secret--admin.password" = {
         namespace = "argocd";
@@ -57,27 +51,27 @@ in
     k8s-manifests =
       {
         cluster,
+        config,
         charts,
         lib,
+        routes,
         ...
       }:
       let
         identity = cluster.settings.kubernetes.services.identity;
-        oidc = cluster.settings.kubernetes.services.argocd.oidc;
+        oidc = config.oidcClients.argocd;
         identityNormal = identity.phase == "normal";
-        idmHostname = builtins.head cluster.routes.idm.hostnames;
-        urls = map (hostname: "https://${hostname}") cluster.routes.argocd.hostnames;
-        # Identity names each administrator route's Kanidm client after the
-        # route, so Argo CD and its Gateway sign-in share one client.
-        clientName = "argocd";
+        idmHostname = builtins.head routes.idm.hostnames;
+        route = routes.${oidc.routeKey};
+        urls = map (hostname: "https://${hostname}") route.hostnames;
         # Argo CD parses oidc.config as YAML; JSON is valid YAML.
         # Kanidm 1.11 requires PKCE; Argo CD 3.5 performs it server-side
         # and still authenticates with the client secret.
         oidcConfig = {
           name = "Kanidm";
-          issuer = "https://${idmHostname}/oauth2/openid/${clientName}";
-          clientID = clientName;
-          clientSecret = "$" + oidc.secretName + ":" + oidc.secretKey;
+          issuer = "https://${idmHostname}/oauth2/openid/${oidc.clientID}";
+          clientID = oidc.clientID;
+          clientSecret = "$" + oidc.secret.name + ":" + oidc.secret.key;
           requestedScopes = oidc.scopes;
           enablePKCEAuthentication = true;
         };

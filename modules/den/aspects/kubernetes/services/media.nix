@@ -1,4 +1,9 @@
-{ config, lib, den, ... }:
+{
+  config,
+  lib,
+  den,
+  ...
+}:
 let
   retained = {
     "argocd.argoproj.io/sync-options" = "Prune=false,Delete=false";
@@ -14,7 +19,12 @@ in
       den.aspects.kubernetes.services.seerr
     ];
     k8s-manifests =
-      { cluster, computeResources, ... }:
+      {
+        cluster,
+        routes,
+        computeResources,
+        ...
+      }:
       let
         settings = cluster.settings.kubernetes.services.media;
         prowlarr = cluster.settings.kubernetes.services.prowlarr.integration;
@@ -110,8 +120,8 @@ in
             _: route:
             route.namespace == "media"
             && lib.elem route.service loginlessServices
-            && (route.auth != "admin" || route.sameNamespaceIngress)
-          ) cluster.routes
+            && (route.auth != "admin-gateway" || route.sameNamespaceIngress)
+          ) routes
         );
         ingressPolicy = app: {
           apiVersion = "networking.k8s.io/v1";
@@ -145,7 +155,8 @@ in
           name:
           map (secret: secret.key) (
             builtins.attrValues (
-              (config.den.aspects.kubernetes.services.${name}.compute-resources { inherit cluster; }).runtimeSecrets
+              (config.den.aspects.kubernetes.services.${name}.compute-resources { inherit cluster; })
+              .runtimeSecrets
             )
           )
         ) reserved;
@@ -264,9 +275,9 @@ in
       assert lib.assertMsg (
         lib.unique secretKeys == secretKeys
       ) "Media instances must not share private API credentials.";
-      assert lib.assertMsg (lib.all (
-        key: !(lib.elem key reservedSecretKeys)
-      ) secretKeys) "Media instance API credentials may not reuse credentials owned by another media service.";
+      assert lib.assertMsg (lib.all (key: !(lib.elem key reservedSecretKeys))
+        secretKeys
+      ) "Media instance API credentials may not reuse credentials owned by another media service.";
       assert lib.assertMsg (
         !unapprovedRootOverlap instances
       ) "Overlapping library roots require both instances to grant a common library path below /data.";
@@ -279,21 +290,21 @@ in
       assert lib.assertMsg sharedDataDeclared
         "Every media instance must declare its shared writable /data path.";
       assert lib.assertMsg (openLoginlessRoutes == [ ])
-        "Routes to media apps without their own login must use auth = \"admin\" and sameNamespaceIngress = false: ${lib.concatStringsSep ", " openLoginlessRoutes}";
+        "Routes to media apps without their own login must use auth = \"admin-gateway\" and sameNamespaceIngress = false: ${lib.concatStringsSep ", " openLoginlessRoutes}";
       assert lib.assertMsg (
         lib.unique allClaims == allClaims
       ) "Media retained storage claims must be unique.";
       {
         applications = {
           media-access = {
-            namespace = cluster.routes.jellyfin.namespace;
+            namespace = routes.jellyfin.namespace;
             objects = [
               {
                 apiVersion = "networking.k8s.io/v1";
                 kind = "NetworkPolicy";
                 metadata = {
                   name = "media-jellyfin-ingress";
-                  namespace = cluster.routes.jellyfin.namespace;
+                  namespace = routes.jellyfin.namespace;
                 };
                 spec = {
                   podSelector.matchLabels = {
@@ -313,7 +324,7 @@ in
                       ports = [
                         {
                           protocol = "TCP";
-                          port = cluster.routes.jellyfin.port;
+                          port = routes.jellyfin.port;
                         }
                       ];
                     }

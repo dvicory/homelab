@@ -1650,8 +1650,8 @@ in
                 (aspect.den.aspects.kubernetes.services.monitoring.alerting.k8s-manifests {
                   cluster = {
                     inherit hostName;
-                    routes = { };
                   };
+                  routes = { };
                   computeResources.instance = "compute-1";
                   # Only extract rules here; manifest checks render real charts.
                   charts = throw "mount-stage rules do not require Helm rendering";

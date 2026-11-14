@@ -12,7 +12,7 @@ let
   manifests = ../../generated/manifests/prod-home;
   productionK3s = self.nixosConfigurations.compute-1.config.services.k3s;
   k3sPackage = productionK3s.package;
-  jellyfinSelector = config.den.clusters.prod-home.routes.jellyfin.backendPodSelector;
+  jellyfinSelector = config.flake.clusterRoutes.prod-home.routes.jellyfin.backendPodSelector;
   nodeAddress = "10.0.0.10";
 in
 {
@@ -164,7 +164,10 @@ in
                 }
               ];
               networking.firewall.enable = false;
-              environment.systemPackages = [ pkgs.nftables pkgs.procps ];
+              environment.systemPackages = [
+                pkgs.nftables
+                pkgs.procps
+              ];
               virtualisation = {
                 cores = 4;
                 memorySize = 4096;
@@ -176,8 +179,14 @@ in
                 enable = true;
                 role = "server";
                 package = k3sPackage;
-                disable = [ "traefik" "metrics-server" ];
-                images = [ k3sPackage.airgap-images image ];
+                disable = [
+                  "traefik"
+                  "metrics-server"
+                ];
+                images = [
+                  k3sPackage.airgap-images
+                  image
+                ];
                 extraKubeProxyConfig = productionK3s.extraKubeProxyConfig;
                 extraFlags = [
                   "--node-ip=${nodeAddress}"
@@ -262,11 +271,12 @@ in
                   assert verdicts.get("accept", 0) > 0 and verdicts.get("drop", 0) > 0, verdicts
                   print(f"EVIDENCE NET_ADMIN-only enforcer, nftables kube-proxy, no kube-router; verdicts={verdicts}")
             '';
-          }).overrideTestDerivation (_: {
-            # Match compute-network-policy-runtime: its digest-pinned enforcer
-            # is pulled in the disposable VM; the builder needs sandbox=relaxed.
-            __noChroot = true;
-          });
+          }).overrideTestDerivation
+            (_: {
+              # Match compute-network-policy-runtime: its digest-pinned enforcer
+              # is pulled in the disposable VM; the builder needs sandbox=relaxed.
+              __noChroot = true;
+            });
       in
       {
         checks.household-directory-runtime = test // {

@@ -11,7 +11,7 @@ let
   compute = host.settings.virtualization.compute;
   telemetry = host.settings.services.host-telemetry;
   monitoring = self.nixosConfigurations.${cluster.hostName}.config.homelab.monitoring;
-  route = cluster.routes.grafana;
+  route = config.flake.clusterRoutes.prod-home.routes.grafana;
   namespace = route.namespace;
   metrics = compute.retainedPaths.monitoring-metrics;
   quote = value: "`${value}`";
@@ -34,11 +34,13 @@ in
         ## Access
 
         Open [Grafana](https://${builtins.head route.hostnames}) or its Kanidm tile.
-        Normal access is central-administrator-only at both the Gateway and
-        Grafana. Grafana refuses its local login form, basic authentication and
-        anonymous access. The secondary hostname returns sign-in to the canonical
-        hostname. See the generated [route inventory](../operations.md#declared-routes)
-        for hostnames and backends.
+        Both the Gateway and Grafana require central administrator sign-in;
+        Kanidm approval is reused unless the requested permissions change.
+        Grafana refuses its local login form, basic authentication and anonymous
+        access. The secondary hostname returns sign-in to the canonical hostname.
+        See the generated [route inventory](../operations.md#declared-routes)
+        for hostnames and backends, and [identity operations](identity.md#verify-application-upgrades)
+        for sign-in checks after upgrades.
 
         Core collection and delivery do not require Kanidm, the Gateway or
         cert-manager. Grafana does; endpoint probes and certificate monitoring
@@ -216,7 +218,7 @@ in
         enabling any local-auth override. Route deletion alone is not proof of
         propagation. This procedure assumes usable native Argo/cluster access and
         already verified SSH identities; if either is unavailable, stop rather
-        than exposing an alternate login. It has no claim of live recovery proof.
+        than exposing an alternate login.
 
         1. In Bash on the host, use `k` from [Access](#access). Record the existing
            automated-sync policies. Hold the root, route owner and workload owner:

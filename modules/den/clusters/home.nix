@@ -15,18 +15,9 @@ let
   kubeVersion = builtins.head (
     lib.splitString "+" inputs.nixpkgs.legacyPackages.${cluster.hostSystem}.k3s.version
   );
-  route = key: namespace: service: port: auth: exposure: backendPodSelector: {
-    inherit
-      namespace
-      service
-      port
-      auth
-      exposure
-      backendPodSelector
-      ;
+  route = key: auth: exposure: {
+    inherit auth exposure;
     hostnames = hosts key;
-    pathPrefix = "/";
-    backendTLS = false;
   };
 in
 {
@@ -48,113 +39,39 @@ in
     settings.kubernetes.services.seerr.phase = "ready";
     settings.kubernetes.services.homarr.phase = "initial";
     routes = {
-      home =
-        (route "home" "portal" "homarr" 7575 "native" "public" {
-          "app.kubernetes.io/controller" = "main";
-          "app.kubernetes.io/instance" = "homarr";
-          "app.kubernetes.io/name" = "homarr";
-        })
-        // {
-          displayName = "Home";
-          sameNamespaceIngress = false;
-          # Homarr owns admission even while first-run onboarding is private.
-          manageBackendIngress = false;
-          timeouts = {
-            request = "0s";
-            backendRequest = "0s";
-          };
-        };
-      argocd =
-        (route "argocd" "argocd" "argocd-server" 80 "admin" "public" {
-          "app.kubernetes.io/instance" = "argocd";
-          "app.kubernetes.io/name" = "argocd-server";
-        })
-        // {
-          displayName = "Argo CD";
-        };
-      grafana =
-        (route "grafana" "monitoring" "grafana" 80 "admin" "public" {
-          "app.kubernetes.io/instance" = "grafana";
-          "app.kubernetes.io/name" = "grafana";
-        })
-        // {
-          displayName = "Grafana";
-          # Nothing in the monitoring namespace connects to Grafana, so only
-          # the Gateway proxy may.
-          sameNamespaceIngress = false;
-        };
-      # Radarr, Sonarr, Prowlarr and SABnzbd have no login of their own.
-      # The media aspect admits their declared in-cluster clients, so their
-      # Gateway policies admit only the Gateway proxy.
-      radarr =
-        (route "radarr" "media" "radarr" 7878 "admin" "public" {
-          "app.kubernetes.io/controller" = "main";
-          "app.kubernetes.io/instance" = "radarr";
-          "app.kubernetes.io/name" = "radarr";
-        })
-        // {
-          displayName = "Radarr";
-          sameNamespaceIngress = false;
-        };
-      sonarr =
-        (route "sonarr" "media" "sonarr" 8989 "admin" "public" {
-          "app.kubernetes.io/controller" = "main";
-          "app.kubernetes.io/instance" = "sonarr";
-          "app.kubernetes.io/name" = "sonarr";
-        })
-        // {
-          displayName = "Sonarr";
-          sameNamespaceIngress = false;
-        };
-      prowlarr =
-        (route "prowlarr" "media" "prowlarr" 9696 "admin" "public" {
-          "app.kubernetes.io/controller" = "main";
-          "app.kubernetes.io/instance" = "prowlarr";
-          "app.kubernetes.io/name" = "prowlarr";
-        })
-        // {
-          displayName = "Prowlarr";
-          sameNamespaceIngress = false;
-        };
-      sabnzbd =
-        (route "sabnzbd" "media" "sabnzbd" 8080 "admin" "public" {
-          "app.kubernetes.io/controller" = "main";
-          "app.kubernetes.io/instance" = "sabnzbd";
-          "app.kubernetes.io/name" = "sabnzbd";
-        })
-        // {
-          displayName = "SABnzbd";
-          sameNamespaceIngress = false;
-        };
-      requests = route "requests" "media" "seerr" 5055 "native" "public" {
-        "app.kubernetes.io/controller" = "main";
-        "app.kubernetes.io/instance" = "seerr";
-        "app.kubernetes.io/name" = "seerr";
+      home = route "home" "app-managed" "public" // {
+        sameNamespaceIngress = false;
+        # Homarr owns admission even while first-run onboarding is private.
+        manageBackendIngress = false;
       };
-      jellyfin =
-        (route "jellyfin" "jellyfin" "jellyfin" 8096 "native" "private" {
-          "app.kubernetes.io/controller" = "main";
-          "app.kubernetes.io/instance" = "jellyfin";
-          "app.kubernetes.io/name" = "jellyfin";
-        })
-        // {
-          timeouts = {
-            request = "0s";
-            backendRequest = "0s";
-          };
-        };
-      idm =
-        (route "idm" "identity" "kanidm" 443 "native" "public" {
-          "app.kubernetes.io/name" = "kanidm";
-        })
-        // {
-          hostnames = [ "id.bzfx.net" ];
-          # Kanidm owns port-specific HTTPS and LDAPS admission. A second
-          # all-port Gateway policy would override that directory boundary.
-          manageBackendIngress = false;
-          backendTLS = true;
-          backendHostname = builtins.head cluster.routes.idm.hostnames;
-        };
+      argocd = route "argocd" "admin-gateway" "public";
+      grafana = route "grafana" "admin-gateway" "public" // {
+        # Nothing in the monitoring namespace connects to Grafana.
+        sameNamespaceIngress = false;
+      };
+      # These apps have no login of their own. Media owns in-cluster admission;
+      # their Gateway policies admit only the Gateway proxy.
+      radarr = route "radarr" "admin-gateway" "public" // {
+        sameNamespaceIngress = false;
+      };
+      sonarr = route "sonarr" "admin-gateway" "public" // {
+        sameNamespaceIngress = false;
+      };
+      prowlarr = route "prowlarr" "admin-gateway" "public" // {
+        sameNamespaceIngress = false;
+      };
+      sabnzbd = route "sabnzbd" "admin-gateway" "public" // {
+        sameNamespaceIngress = false;
+      };
+      requests = route "requests" "app-managed" "public";
+      jellyfin = route "jellyfin" "app-managed" "private";
+      idm = {
+        hostnames = [ "id.bzfx.net" ];
+        auth = "app-managed";
+        exposure = "public";
+        # Kanidm owns port-specific HTTPS and LDAPS admission.
+        manageBackendIngress = false;
+      };
     };
     # The existing Arr instances intentionally share the host-owned media
     # namespace. Private configuration remains on each instance's own claim.

@@ -26,7 +26,7 @@ let
       test -s /desired/members.json
       test -s /desired/clients.json
       test -s /desired/policies.json
-      trap 'rm -f auth.json headers response request.json provision.log client.json client-spec.json client-secret.json groups existing-clients undeclared secret-publish.log policy.json' EXIT
+      trap 'rm -f auth.json headers response request.json provision.log client.json client-spec.json client-secret.json secret-data.json groups existing-clients undeclared secret-publish.log policy.json' EXIT
 
       # Authenticate using runtime body files. The upstream provisioner calls
       # this password a TOKEN, but it is the idm_admin recovery password.
@@ -132,30 +132,40 @@ let
       # clients.json declares the sole eligible group for each client's scopes
       # and the name-scoped Secrets that receive its generated credential.
       client_count=$(jq -er 'length' /desired/clients.json)
+      : > secret-data.json
+      for ((index = 0; index < client_count; index++)); do
+        jq -e --argjson index "$index" '.[$index]' /desired/clients.json > client-spec.json
+        client=$(jq -er '.name | select(test("^[a-z0-9_-]+$"))' client-spec.json)
+        printf '%s' '{"attrs":{"oauth2_strict_redirect_uri":["true"]}}' > request.json
+        api PATCH "/v1/oauth2/$client" --data-binary @request.json
+
+        # Unpatched Kanidm generates this secret; the Job is its only Kubernetes
+        # publisher. Never put a configured basicSecretFile into the state.
+        # Collect every key before applying a shared Secret. GitOps owns its
+        # metadata; RBAC allows patching its data and creating no Secrets.
+        api GET "/v1/oauth2/$client/_basic_secret"
+        jq -ce --slurpfile spec client-spec.json '(select(type == "string" and length > 0) | @base64) as $value
+          | $spec[0].secrets | select(type == "array" and length > 0) | .[]
+          | {apiVersion:"v1",kind:"Secret",metadata:{name:.name,namespace:.namespace},data:{(.key):$value}}' \
+          response >> secret-data.json
+      done
+
+      # One apply per Secret keeps this manager from pruning another client's key.
+      jq -s '{apiVersion:"v1",kind:"List",items:
+        (group_by([.metadata.namespace,.metadata.name])
+        | map(.[0] + {data:(map(.data) | add)}))}' secret-data.json > client-secret.json
+      if (( client_count > 0 )) && ! kubectl apply --server-side --field-manager=identity-provisioner -f client-secret.json > secret-publish.log 2>&1; then
+        echo 'Kanidm client Secret publication failed (credential-bearing diagnostics withheld)' >&2
+        exit 1
+      fi
+
+      # A publication failure must leave every client's earlier grants revoked.
       for ((index = 0; index < client_count; index++)); do
         jq -e --argjson index "$index" '.[$index]' /desired/clients.json > client-spec.json
         client=$(jq -er '.name | select(test("^[a-z0-9_-]+$"))' client-spec.json)
         eligible_group=$(jq -er '.eligibleGroup | select(test("^[a-z][a-z0-9_-]*$"))' client-spec.json)
-        printf '%s' '{"attrs":{"oauth2_strict_redirect_uri":["true"]}}' > request.json
-        api PATCH "/v1/oauth2/$client" --data-binary @request.json
-
         jq -ce '.scopes | select(type == "array" and length > 0)' client-spec.json > request.json
         api POST "/v1/oauth2/$client/_scopemap/$eligible_group" --data-binary @request.json
-
-        # Unpatched Kanidm generates this secret; the Job is its only Kubernetes
-        # publisher. Never put a configured basicSecretFile into the state.
-        # Each Secret is declared without data by GitOps. This apply sets only
-        # `data`; RBAC allows patching those Secrets and creating none.
-        api GET "/v1/oauth2/$client/_basic_secret"
-        jq -e --slurpfile spec client-spec.json '(select(type == "string" and length > 0) | @base64) as $value
-          | $spec[0].secrets | select(type == "array" and length > 0)
-          | {apiVersion:"v1",kind:"List",items:map(
-              {apiVersion:"v1",kind:"Secret",metadata:{name:.name,namespace:.namespace},data:{(.key):$value}})}' \
-          response > client-secret.json
-        if ! kubectl apply --server-side --field-manager=identity-provisioner -f client-secret.json > secret-publish.log 2>&1; then
-          echo "Kanidm client Secret publication for $client failed (credential-bearing diagnostics withheld)" >&2
-          exit 1
-        fi
       done
 
       # The declaration owns every OAuth2 client. Delete the ones it no longer

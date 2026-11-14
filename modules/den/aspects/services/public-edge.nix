@@ -163,17 +163,18 @@ let
         let
           cfg = host.settings.services.${aspectName};
           cluster = config.den.clusters."prod-home";
+          routeInventory = config.flake.clusterRoutes.prod-home.routes;
           environment = config.den.environments.${cluster.environment};
           identityNormal = cluster.settings.kubernetes.services.identity.phase == "normal";
           routes = lib.filterAttrs (
             name: route:
             route.exposure == "public"
-            && (identityNormal || (route.auth != "admin" && name != "idm"))
+            && (identityNormal || (route.auth != "admin-gateway" && name != "idm"))
             && (name != "requests" || cluster.settings.kubernetes.services.seerr.phase == "ready")
             && (
               name != "home" || (identityNormal && cluster.settings.kubernetes.services.homarr.phase == "ready")
             )
-          ) cluster.routes;
+          ) routeInventory;
           tlsConfig = cfg.tls;
           selectedTLS = if variant == 0 then tlsConfig.primary else tlsConfig.backup;
           selectedDomain = if variant == 0 then environment.domain else environment.backupDomain;
@@ -213,7 +214,7 @@ let
             in
             builtins.length (lib.unique hosts) == builtins.length hosts;
           bareRouteValid =
-            cfg.bareRoute != null && builtins.hasAttr cfg.bareRoute cluster.routes && routesValid;
+            cfg.bareRoute != null && builtins.hasAttr cfg.bareRoute routeInventory && routesValid;
           bareRoutePublishable = bareRouteValid && builtins.hasAttr cfg.bareRoute routes;
           bareTarget =
             if bareRoutePublishable then
