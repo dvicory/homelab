@@ -393,16 +393,17 @@ def download(artifact, repository, archive):
         partial.unlink(missing_ok=True)
 
 
-def discover_plan(repository, branch, directory, archive_directory=None):
-    """Latest completed trusted run, even if partial/failed; never hide it with an older success."""
-    runs = api("--method", "GET", f"repos/{repository}/actions/workflows/{quote(WORKFLOW, safe='')}/runs",
-               "-f", "branch=" + branch, "-f", "per_page=100")["workflow_runs"]
-    candidates = [run for run in runs if run["event"] in EVENTS and run["status"] == "completed"
-                  and run["head_branch"] == branch]
-    if not candidates:
-        raise ValueError("no completed trusted producer run in the latest 100 runs")
-    run_id = max(candidates, key=lambda item: item["id"])["id"]
-    if not isinstance(run_id, int) or run_id <= 0:
+def discover_plan(repository, branch, directory, archive_directory=None, run_id=None):
+    """Latest completed trusted run, even if partial/failed, or an explicit pin."""
+    if run_id is None:
+        runs = api("--method", "GET", f"repos/{repository}/actions/workflows/{quote(WORKFLOW, safe='')}/runs",
+                   "-f", "branch=" + branch, "-f", "per_page=100")["workflow_runs"]
+        candidates = [run for run in runs if run["event"] in EVENTS and run["status"] == "completed"
+                      and run["head_branch"] == branch]
+        if not candidates:
+            raise ValueError("no completed trusted producer run in the latest 100 runs")
+        run_id = max(candidates, key=lambda item: item["id"])["id"]
+    if type(run_id) is not int or run_id <= 0:
         raise ValueError("invalid producer run identity")
     run = api(f"repos/{repository}/actions/runs/{run_id}")
     producer = trusted_run(run, repository, branch)
