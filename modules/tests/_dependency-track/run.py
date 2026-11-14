@@ -73,6 +73,7 @@ SAFE_ERROR_SIGNATURES = {
     "database-password-refused": b"password authentication failed",
     "connection-refused": b"connection refused",
     "dns-resolution-failed": b"could not resolve",
+    "cri-cli-dispatch-refused": b"no help topic for 'crictl'",
 }
 SAFE_CONTAINER_REASONS = {
     "Completed", "Error", "OOMKilled", "CrashLoopBackOff", "ContainerCannotRun",
@@ -1299,12 +1300,15 @@ def main():
             # Docker save reconstructs manifests and can lose the original pinned index reference.
             # Pull through the actual CRI instead; never invent an alias for different manifest bytes.
             phase = "runtime-image-fetch"
-            image_runtime = ("k3s", "crictl", "--runtime-endpoint=unix:///run/k3s/containerd/containerd.sock",
+            # The released OCI image embeds cmd/server, not the extracting cmd/k3s launcher.
+            # Its Linux `k3s crictl` path retains "crictl" in os.Args; use the registered multicall alias.
+            image_runtime = ("/bin/crictl", "--runtime-endpoint=unix:///run/k3s/containerd/containerd.sock",
                              "--image-endpoint=unix:///run/k3s/containerd/containerd.sock")
             receipt["runtimeManifestDigests"] = {}
             for image in sorted(images):
-                native(*image_runtime, "pull", image, timeout=600)
-                status = json.loads(native(*image_runtime, "inspecti", "-o", "json", image).stdout)["status"]
+                native(*image_runtime, "pull", image, timeout=600, operation="cri-image-pull")
+                status = json.loads(native(*image_runtime, "inspecti", "-o", "json", image,
+                                           operation="cri-image-inspect").stdout)["status"]
                 digests = sorted({reference.rsplit("@", 1)[-1] for reference in status.get("repoDigests", [])
                                   if re.fullmatch(r"sha256:[0-9a-f]{64}", reference.rsplit("@", 1)[-1])})
                 if image.rsplit("@", 1)[1] not in digests:
