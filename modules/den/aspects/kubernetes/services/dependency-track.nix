@@ -674,6 +674,12 @@ in
               (workload "frontend"
                 {
                   image = images.frontend;
+                  # Both configurations are source-rendered; skip stock write-on-start hooks.
+                  command = [ "nginx" ];
+                  args = [
+                    "-g"
+                    "daemon off;"
+                  ];
                   securityContext = (security 101 101) // {
                     readOnlyRootFilesystem = true;
                   };

@@ -12,6 +12,7 @@ import re
 import shutil
 import signal
 import stat
+import struct
 import sys
 import tempfile
 import time
@@ -160,8 +161,23 @@ def credential(path, *, password=False):
     descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     with os.fdopen(descriptor) as stream:
         info = os.fstat(stream.fileno())
-        if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o077 or info.st_size > 65536:
-            raise ValueError("credential file must be bounded, regular and inaccessible to group/other")
+        if not stat.S_ISREG(info.st_mode) or info.st_size > 65536:
+            raise ValueError("credential file must be bounded and regular")
+        private = info.st_mode & 0o077 == 0
+        if (not private and sys.platform == "linux" and info.st_uid == 0
+                and os.geteuid() != 0 and info.st_mode & 0o077 == 0o040):
+            # systemd's sole-reader UID ACL exposes its mask as mode group bits.
+            # Accept that exact Linux ACL, not ordinary group-readable secrets.
+            expected_acl = struct.pack("<I", 2) + b"".join(
+                struct.pack("<HHI", *entry) for entry in (
+                    (1, 4, 0xffffffff), (2, 4, os.geteuid()), (4, 0, 0xffffffff),
+                    (16, 4, 0xffffffff), (32, 0, 0xffffffff)))
+            try:
+                private = os.getxattr(descriptor, "system.posix_acl_access") == expected_acl
+            except OSError:
+                private = False
+        if not private:
+            raise ValueError("credential file must be private to its reader")
         value = stream.read()
         if not password:
             value = value.strip()
