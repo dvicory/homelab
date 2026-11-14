@@ -507,7 +507,7 @@ def refresh(args, database, checkpoint, client):
             {"at": now(), "previous": previous_selection, "current": selection})
     database["sourcePolicy"] = policy
     database["selectionPolicy"] = selection
-    attempt = {"at": now(), "status": "discovering", "targets": {}, "selection": selection}
+    attempt = {"at": now(), "status": "discovering", "operation": "discover", "targets": {}, "selection": selection}
     if run_id is not None:
         attempt["requestedRun"] = run_id
     database["refresh"] = attempt
@@ -526,6 +526,7 @@ def refresh(args, database, checkpoint, client):
             plan, receipt, artifacts = security_artifacts.discover_plan(
                 args.repository, args.branch, directory, archive_directory=archives, run_id=run_id)
             attempt["run"] = receipt["run"]["id"]
+            attempt["operation"] = "admit-plan"
             attempt["sourceCompletedAt"] = receipt["run"]["updated_at"]
             completed = datetime.fromisoformat(receipt["run"]["updated_at"].replace("Z", "+00:00"))
             age = (datetime.now(timezone.utc) - completed).total_seconds()
@@ -563,11 +564,12 @@ def refresh(args, database, checkpoint, client):
                         attempt.setdefault("selectionPublishFailures", []).append(target)
             database["expected"] = expected
             checkpoint()
+            attempt["operation"] = "targets"
             for target, item in expected.items():
                 entry = item["source"]
                 if not item["selected"]:
                     continue  # Explicit scope changes retain current/history and active DT data.
-                result = {"at": now(), "status": "failed-unknown"}
+                result = {"at": now(), "status": "failed-unknown", "operation": "admit-declaration"}
                 attempt["targets"][target] = result
                 try:
                     if item["coverage"] == "missing-from-plan-unknown":
@@ -581,6 +583,7 @@ def refresh(args, database, checkpoint, client):
                         checkpoint()
                         continue
                     inventory = Path(temporary) / target
+                    result["operation"] = "acquire"
                     artifact = security_artifacts.acquire_planned(
                         entry, receipt, artifacts, args.repository, inventory, archive_directory=archives)
                     save(directory / (target + "-artifact.json"), artifact)
@@ -590,10 +593,13 @@ def refresh(args, database, checkpoint, client):
                         # Resume only the previously admitted journaled original, once,
                         # before moving to a newer producer inventory.
                         options.inventory = Path(pending["archive"])
+                        result["operation"] = "resume-pending"
                         synchronize(options, database, checkpoint, client, expected_target=target)
                     options.inventory = inventory
+                    result["operation"] = "import"
                     synchronize(options, database, checkpoint, client, expected_target=target)
                     if target in database["targets"]:
+                        result["operation"] = "publish-metadata"
                         acquisition = {"repository": args.repository, "branch": args.branch,
                                        "run": receipt["run"]["id"], "sha": receipt["run"]["head_sha"],
                                        "completedAt": receipt["run"]["updated_at"], "artifact": artifact,
@@ -608,20 +614,24 @@ def refresh(args, database, checkpoint, client):
                         if args.repository != "dvicory/homelab":
                             raise ValueError("host origins require the explicitly trusted Homelab repository")
                         options.flake = "github:dvicory/homelab/" + receipt["run"]["head_sha"]
+                        result["operation"] = "host-origins"
                         annotate_origins(options, database, checkpoint, client)
                     elif target in database["targets"]:
                         database["targets"][target]["origins"] = {
                             "lastAttempt": {"at": now(), "status": "unsupported",
                                             "reason": "only NixOS toplevel roots support inclusion origins"}}
-                    result["status"] = "complete"
+                    result.update(status="complete", operation="complete")
                     item["coverage"] = "complete-inventory"
                 except Exception as error:
                     result["errorType"] = type(error).__name__
+                    if isinstance(error, ApiError):
+                        result["httpStatus"] = error.status
                     item["coverage"] = ("missing-from-plan-unknown" if item["coverage"] == "missing-from-plan-unknown"
                                         else "failed-unknown")
                     if target in database["targets"]:
                         failed_target(database["targets"][target], result, client)
                 checkpoint()
+        attempt["operation"] = "finalize"
         if (attempt.get("selectionPublishFailures") or any(
                 result["status"] not in ("complete", "unsupported-unknown")
                 or database["targets"].get(target, {}).get("statusPublishFailed", False)
@@ -629,6 +639,7 @@ def refresh(args, database, checkpoint, client):
             raise ValueError("refresh has missing or failed targets; last-good inventories retained")
         attempt["status"] = ("complete-with-unsupported" if any(item["selected"] for item in attempt["unsupported"])
                              else "complete")
+        attempt["operation"] = "complete"
         checkpoint()
         print(json.dumps({"status": attempt["status"], "run": attempt["run"], "evidence": str(directory),
                           "targets": len(attempt["targets"]), "excluded": len(attempt["excluded"]),

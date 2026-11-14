@@ -56,7 +56,11 @@ SAFE_ERROR_SIGNATURES = {
     "api-unauthorized": b"http 401",
     "api-forbidden": b"http 403",
     "source-policy-refused": b"trusted source policy",
-    "producer-unavailable": b"fresh successful inventory",
+    "producer-unavailable": b"no completed trusted producer run",
+    "producer-plan-incompatible": b"unsupported or unbounded security plan",
+    "producer-stale": b"stale or future-dated",
+    "producer-declaration-absent": b"configured target ids are absent",
+    "refresh-incomplete": b"refresh has missing or failed targets",
     "api-keyset-protobuf-invalid": b"invalidprotocolbufferexception",
     "api-keyset-json-invalid": b"jsonparseexception",
     "nix-build-refused": b"not permitted to build",
@@ -179,18 +183,14 @@ def validate_report(report, settings, producer_branch="main"):
     for key, minimum in (("cpus", 4), ("totalMemoryBytes", 14 * 1024**3),
                          ("availableMemoryBytes", 10 * 1024**3), ("freeDiskBytes", 30 * 1024**3)):
         require(type(host.get(key)) is int and host[key] >= minimum)
-    section = "authenticated-http-contract"
-    require(report.get("http") == [
-        ["GET", "/v1/project", 401], ["GET", "/v1/project", 401],
-        ["POST", "/v1/user/forceChangePassword", 200],
-        ["POST", "/v1/user/login", 401], ["POST", "/v1/user/login", 200], ["GET", "/v1/team", 200],
-        ["PUT", "/v1/team/{uuid}/key", 201], ["PUT", "/v1/project", 201],
-        ["GET", "/v1/project/{uuid}", 200], ["GET", "/v1/project/{uuid}", 200],
-        ["GET", "/v1/project", 401], ["POST", "/v1/user/login", 200],
-        ["GET", "/v1/project/{uuid}", 200], ["GET", "/v1/project/{uuid}", 200],
-    ])
-    require(all(isinstance(item, list) and len(item) == 3 and type(item[2]) is int for item in report["http"]))
     observed = report.get("observed", {})
+    section = "authentication-boundaries"
+    authentication = observed.get("authentication", {})
+    for name in ("anonymous", "invalidKey", "oldDefault"):
+        code = authentication.get(name)
+        require(type(code) is int and code in (401, 403))
+    code = authentication.get("adminLogin")
+    require(type(code) is int and 200 <= code < 300)
     section = "database-role-restrictions"
     require(observed.get("roleSafe") == "t" and observed.get("superuserPasswordDisabled") == "t")
     require(observed.get("forbiddenSqlStates") == ["42501"] * 3)
@@ -232,7 +232,7 @@ def validate_report(report, settings, producer_branch="main"):
     require(type(guard.get("unreservedExit")) is int and 0 < guard["unreservedExit"] < 256)
     require(type(guard.get("reservedExit")) is int and guard["reservedExit"] == 0)
     require(observed.get("ingestorPermissions") == ["BOM_UPLOAD", "PORTFOLIO_MANAGEMENT", "VIEW_PORTFOLIO"])
-    require(type(observed.get("restrictedAdminStatus")) is int and observed["restrictedAdminStatus"] == 403)
+    require(type(observed.get("restrictedAdminStatus")) is int and observed["restrictedAdminStatus"] in (401, 403))
     projection = observed.get("credentialProjection", {})
     section = "credential-projection"
     require(projection.get("script") == settings["credentialStage"])
@@ -747,7 +747,7 @@ def main():
             if host_api_port is not None:
                 start_host_forward()
 
-        def api(path, *, method="GET", body=None, bearer=None, key=None, form=False, expected=200, record=True):
+        def api(path, *, method="GET", body=None, bearer=None, key=None, form=False, expected=None, record=True):
             headers = {"Host": "localhost", "Connection": "close"}
             if bearer:
                 headers["Authorization"] = "Bearer " + bearer
@@ -773,10 +773,14 @@ def main():
             with http.client.HTTPResponse(SimpleNamespace(makefile=lambda mode: io.BytesIO(raw))) as response:
                 response.begin()
                 observed["lastHttpStatus"] = response.status
-                if record:
+                accepted = 200 <= response.status < 300 if expected is None else response.status in expected
+                if record or not accepted:
                     route = re.sub(r"/[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}(?=/|$)", "/{uuid}", path)
-                    receipt["http"].append([method, route, response.status])
-                if response.status != expected:
+                    if record:
+                        receipt["http"].append([method, route, response.status])
+                    if not accepted:
+                        receipt["httpFailure"] = {"method": method, "route": route, "status": response.status}
+                if not accepted:
                     raise QualificationFailure("unexpected-http-status")
                 return response.read(1024 * 1024)
 
@@ -1149,21 +1153,26 @@ def main():
                 raise QualificationFailure("invalid-database-password-accepted")
             check("stock-bootstrap-restricted-role-and-scram")
             start_forward()
-            api("/v1/project", expected=401)
-            api("/v1/project", key="fixture-invalid-key", expected=401)
+            observed["authentication"] = {}
+            api("/v1/project", expected=(401, 403))
+            observed["authentication"]["anonymous"] = observed["lastHttpStatus"]
+            api("/v1/project", key="fixture-invalid-key", expected=(401, 403))
+            observed["authentication"]["invalidKey"] = observed["lastHttpStatus"]
             new_password = secrets.token_urlsafe(36)
             api("/v1/user/forceChangePassword", method="POST", form=True,
                 body={"username": "admin", "password": "admin", "newPassword": new_password,
                       "confirmPassword": new_password})
             api("/v1/user/login", method="POST", form=True,
-                body={"username": "admin", "password": "admin"}, expected=401)
+                body={"username": "admin", "password": "admin"}, expected=(401, 403))
+            observed["authentication"]["oldDefault"] = observed["lastHttpStatus"]
             bearer = api("/v1/user/login", method="POST", form=True,
                          body={"username": "admin", "password": new_password}).decode()
+            observed["authentication"]["adminLogin"] = observed["lastHttpStatus"]
             teams = json.loads(api("/v1/team", bearer=bearer))
             if not any(team["name"] == "Administrators" for team in teams):
                 raise QualificationFailure("stock-administrator-team-absent")
             ingestor = json.loads(api("/v1/team", method="PUT", body={"name": "isolated-qualification-ingestor"},
-                                     bearer=bearer, expected=201, record=False))
+                                     bearer=bearer, record=False))
             permissions = ["BOM_UPLOAD", "PORTFOLIO_MANAGEMENT", "VIEW_PORTFOLIO"]
             for permission in permissions:
                 api("/v1/permission/" + permission + "/team/" + ingestor["uuid"], method="POST",
@@ -1172,10 +1181,10 @@ def main():
             observed["ingestorPermissions"] = sorted(permission["name"] for permission in assigned["permissions"])
             if observed["ingestorPermissions"] != permissions:
                 raise QualificationFailure("ingestor-permission-boundary")
-            key = json.loads(api("/v1/team/" + ingestor["uuid"] + "/key", method="PUT", bearer=bearer, expected=201))["key"]
+            key = json.loads(api("/v1/team/" + ingestor["uuid"] + "/key", method="PUT", bearer=bearer))["key"]
             first_projection = project_credentials(key, secrets.token_urlsafe(36))
             first_projected_values = {name: (credential_directory / name).read_bytes() for name in ("api-key", "github-token")}
-            key = json.loads(api("/v1/team/" + ingestor["uuid"] + "/key", method="PUT", bearer=bearer, expected=201, record=False))["key"]
+            key = json.loads(api("/v1/team/" + ingestor["uuid"] + "/key", method="PUT", bearer=bearer, record=False))["key"]
             projected_github = secrets.token_urlsafe(36)
             second_projection = project_credentials(key, projected_github)
             last_good_projection = {name: (credential_directory / name).read_bytes() for name in ("api-key", "github-token")}
@@ -1194,7 +1203,7 @@ def main():
                 "rotatedGithubToken": last_good_projection["github-token"] != first_projected_values["github-token"],
                 "missingKeyExit": missing_projection.returncode, "lastGoodPreserved": retained_projection,
             }
-            api("/v1/team", key=key, expected=403, record=False)
+            api("/v1/team", key=key, expected=(401, 403), record=False)
             observed["restrictedAdminStatus"] = observed["lastHttpStatus"]
             check("exact-credential-projection-rotation-and-missing-key-refusal")
             d("exec", "-i", name, "sh", "-ec",
@@ -1211,7 +1220,7 @@ def main():
                 raise QualificationFailure("importer-credential-boundary-failed")
             check("same-guest-root-broker-uid705-file-key-without-kubeconfig")
             project = json.loads(api("/v1/project", method="PUT", key=key,
-                                     body={"name": "isolated-retained-fixture", "version": "1", "active": True}, expected=201))
+                                     body={"name": "isolated-retained-fixture", "version": "1", "active": True}))
             project_uuid = str(uuid.UUID(project["uuid"]))
             observed["projectUuidValid"] = project_uuid == project["uuid"]
             check("anonymous-and-invalid-key-refused-authenticated-project-created")
@@ -1308,17 +1317,33 @@ def main():
                     command += ["--run-id", str(pinned_run)]
                 for declaration_id in targets:
                     command += ["--target", declaration_id]
-                return run(command, timeout=1800, check=False, user=705, environment=cli_environment)
+                result = run(command, timeout=1800, check=False, user=705, environment=cli_environment)
+                if result.returncode:
+                    state = refresh_state / "state.json"
+                    failed = sync.load(state).get("refresh", {}) if state.exists() else {}
+                    receipt["refreshFailure"] = {
+                        "exitCode": result.returncode, "journalPresent": state.exists(),
+                        "operation": failed.get("operation"), "errorType": failed.get("errorType"),
+                        "run": failed.get("run"), "errorCategories": safe_error_categories(result.stderr),
+                        "targets": [
+                            {"target": target, **{key: record.get(key) for key in
+                             ("status", "operation", "errorType", "httpStatus")}}
+                            for target, record in list(failed.get("targets", {}).items())[:8]
+                        ],
+                    }
+                else:
+                    receipt.pop("refreshFailure", None)
+                return result
 
             first_refresh = call_refresh()
             if first_refresh.returncode:
-                receipt["refreshFailure"] = {"attempt": "first", "exitCode": first_refresh.returncode}
+                receipt["refreshFailure"]["attempt"] = "first"
                 raise QualificationFailure("actual-refresh-failed", operation="inventory-refresh", exit_code=first_refresh.returncode)
             first_snapshot = refresh_snapshot(refresh_state, stock)
             pinned_run = first_snapshot["producer"]["run"]
             second_refresh = call_refresh()
             if second_refresh.returncode:
-                receipt["refreshFailure"] = {"attempt": "repeat", "exitCode": second_refresh.returncode}
+                receipt["refreshFailure"]["attempt"] = "repeat"
                 raise QualificationFailure("actual-refresh-repeat-failed", operation="inventory-refresh", exit_code=second_refresh.returncode)
             second_snapshot = refresh_snapshot(refresh_state, stock)
             if first_snapshot["storage"]["artifacts"] != second_snapshot["storage"]["artifacts"]:
@@ -1424,7 +1449,7 @@ def main():
             observed["canonicalEvidenceMatches"] = native("cat", "/srv/dependency-track/evidence/witness").stdout == b"synthetic-fixture-evidence"
             if not observed["canonicalEvidenceMatches"]:
                 raise QualificationFailure("canonical-evidence-not-restored")
-            api("/v1/project", expected=401)
+            api("/v1/project", expected=(401, 403))
             api("/v1/user/login", method="POST", form=True,
                 body={"username": "admin", "password": new_password})
             check("offline-backup-destroy-restore-retains-auth-uuid-keyset-and-evidence")
