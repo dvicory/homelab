@@ -28,6 +28,13 @@ let
     pathPrefix = "/";
     backendTLS = false;
   };
+  dependencyTrack = cluster.settings.kubernetes.services.dependency-track;
+  dependencyTrackSelected =
+    config.flake.nixidyEnvs.${cluster.hostSystem}.prod-home.config.applications ? dependency-track;
+  dependencyTrackReady =
+    dependencyTrack.privateAccess
+    && dependencyTrack.databasePhase == "restore"
+    && cluster.settings.kubernetes.services.identity.phase == "normal";
 in
 {
   den.clusters.prod-home = {
@@ -47,7 +54,11 @@ in
     settings.kubernetes.services.identity.phase = "normal";
     settings.kubernetes.services.seerr.phase = "ready";
     settings.kubernetes.services.homarr.phase = "initial";
-    routes = {
+    routes =
+      assert lib.assertMsg (
+        !dependencyTrack.privateAccess || dependencyTrackSelected
+      ) "Dependency-Track privateAccess requires explicitly selecting its service.";
+      {
       home =
         (route "home" "portal" "homarr" 7575 "native" "public" {
           "app.kubernetes.io/controller" = "main";
@@ -155,7 +166,26 @@ in
           backendTLS = true;
           backendHostname = builtins.head cluster.routes.idm.hostnames;
         };
-    };
+      }
+      // lib.optionalAttrs dependencyTrackReady {
+        dependency-track =
+          (route "dependency-track" "dependency-track" "dependency-track-frontend" 8080 "native" "private" {
+            "app.kubernetes.io/name" = "dependency-track-frontend";
+          })
+          // {
+            displayName = "Dependency-Track";
+            sameNamespaceIngress = false;
+            manageBackendIngress = false;
+          };
+        dependency-track-api =
+          (route "dependency-track-api" "dependency-track" "dependency-track-api" 8080 "native" "private" {
+            "app.kubernetes.io/name" = "dependency-track-api";
+          })
+          // {
+            sameNamespaceIngress = false;
+            manageBackendIngress = false;
+          };
+      };
     # The existing Arr instances intentionally share the host-owned media
     # namespace. Private configuration remains on each instance's own claim.
     settings.kubernetes.services.media.radarr.radarr.sharedWritablePaths = [ "/data" ];

@@ -72,6 +72,11 @@
       ...
     }:
     let
+      fleetConfig = config;
+    in
+    { config, ... }:
+    let
+      nixidyConfig = config;
       namespace = "identity";
       phase = cluster.settings.kubernetes.services.identity.phase;
       activated = phase != "initial";
@@ -84,6 +89,77 @@
       routeUrls =
         route:
         map (hostname: "https://${hostname}${lib.removeSuffix "/" route.pathPrefix}") route.hostnames;
+      dependencyTrackSettings = cluster.settings.kubernetes.services.dependency-track;
+      dependencyTrackRequested = dependencyTrackSettings.privateAccess or false;
+      dependencyTrackSelected = nixidyConfig.applications ? dependency-track;
+      dependencyTrackRoute = cluster.routes.dependency-track;
+      dependencyTrackApiRoute = cluster.routes.dependency-track-api;
+      dependencyTrackObjects = nixidyConfig.applications.dependency-track.objects;
+      dependencyTrackObject =
+        kind: name:
+        lib.findFirst (
+          object: object.kind == kind && object.metadata.name == "dependency-track-${name}"
+        ) null dependencyTrackObjects;
+      dependencyTrackRouteMatches =
+        name: route:
+        let
+          selector = { "app.kubernetes.io/name" = "dependency-track-${name}"; };
+          service = dependencyTrackObject "Service" name;
+          deployment = dependencyTrackObject "Deployment" name;
+        in
+        route.namespace == "dependency-track"
+        && route.service == "dependency-track-${name}"
+        && route.port == 8080
+        && route.auth == "native"
+        && route.exposure == "private"
+        && route.pathPrefix == "/"
+        && !route.sameNamespaceIngress
+        && !route.manageBackendIngress
+        && !route.backendTLS
+        && route.backendPodSelector == selector
+        && service != null
+        && service.spec.selector == selector
+        && lib.any (port: port.port == 8080) service.spec.ports
+        && deployment != null
+        && deployment.spec.template.metadata.labels == selector;
+      dependencyTrackFrontendConfig = builtins.fromJSON (
+        (dependencyTrackObject "ConfigMap" "frontend-config").data."config.json"
+      );
+      dependencyTrackApi = builtins.head (
+        (dependencyTrackObject "Deployment" "api").spec.template.spec.containers
+      );
+      dependencyTrackIssuer = "https://${domain}/oauth2/openid/dependency-track";
+      # Inspect selection only from manifest leaves, never while choosing the
+      # Nixidy application's attribute keys. Settings alone do not select DT.
+      dependencyTrackActive =
+        assert lib.assertMsg (
+          !dependencyTrackRequested || dependencyTrackSelected
+        ) "Dependency-Track private access requires the service to be selected, not only settings";
+        if dependencyTrackRequested && dependencyTrackSettings.databasePhase == "restore" && normal then
+          assert lib.assertMsg (
+            nixidyConfig.applications.dependency-track.namespace == "dependency-track"
+            && dependencyTrackRouteMatches "frontend" dependencyTrackRoute
+            && dependencyTrackRouteMatches "api" dependencyTrackApiRoute
+            && dependencyTrackFrontendConfig.API_BASE_URL == builtins.head (routeUrls dependencyTrackApiRoute)
+            && dependencyTrackFrontendConfig.OIDC_CLIENT_ID == "dependency-track"
+            && dependencyTrackFrontendConfig.OIDC_FLOW == "code"
+            && dependencyTrackFrontendConfig.OIDC_ISSUER == dependencyTrackIssuer
+            && dependencyTrackFrontendConfig.OIDC_SCOPE == "openid profile email groups_name"
+            && lib.all (
+              entry: builtins.elem entry dependencyTrackApi.env
+            ) [
+              { name = "DT_OIDC_ENABLED"; value = "true"; }
+              { name = "DT_OIDC_ISSUER"; value = dependencyTrackIssuer; }
+              { name = "DT_OIDC_CLIENT_ID"; value = "dependency-track"; }
+              { name = "DT_OIDC_USERNAME_CLAIM"; value = "preferred_username"; }
+              { name = "DT_OIDC_USER_PROVISIONING"; value = "true"; }
+              { name = "DT_OIDC_TEAM_SYNCHRONIZATION"; value = "true"; }
+              { name = "DT_OIDC_TEAMS_CLAIM"; value = "groups"; }
+            ]
+          ) "Dependency-Track native registration requires matching selected private routes and OIDC configuration";
+          true
+        else
+          false;
       # Every requested scope is restricted by its client's admin scope map.
       gatewayScopes = [
         "openid"
@@ -169,6 +245,22 @@
         ) "Argo CD's sign-in shares the Kanidm client of its administrator route";
         routeClients
         // grafanaClient
+        // lib.optionalAttrs dependencyTrackActive {
+          dependency-track = {
+            displayName = "Dependency-Track";
+            landing = "${builtins.head (routeUrls dependencyTrackRoute)}/";
+            redirects = map (url: "${url}/static/oidc-callback.html") (routeUrls dependencyTrackRoute);
+            eligibleGroup = adminGroup;
+            scopes = [
+              "openid"
+              "profile"
+              "email"
+              "groups_name"
+            ];
+            public = true;
+            secrets = [ ];
+          };
+        }
         // {
           argocd = routeClients.argocd // {
             # Starts Argo CD's Kanidm sign-in, which returns to Argo CD's root.
@@ -208,12 +300,19 @@
           };
         };
       # The provisioning Job grants each client's scopes to its eligibleGroup,
-      # publishes each Kanidm-generated client secret to every listed Secret,
+      # publishes confidential clients' generated secrets to listed Secrets,
       # and deletes Kanidm clients that this list does not name.
-      oauth2Clients = lib.mapAttrsToList (name: client: {
-        inherit name;
-        inherit (client) eligibleGroup scopes secrets;
-      }) clients;
+      oauth2Clients = lib.mapAttrsToList (
+        name: client:
+        assert lib.assertMsg (
+          !(client.public or false) || client.secrets == [ ]
+        ) "Public Kanidm client ${name} must not have Secret publication targets";
+        {
+          inherit name;
+          inherit (client) eligibleGroup scopes secrets;
+        }
+        // lib.optionalAttrs (client.public or false) { public = true; }
+      ) clients;
       # This Application declares each client Secret without data, so the
       # Job never needs `create`, which Kubernetes cannot limit by name.
       # Argo's server-side apply owns only metadata and type; the Job's
@@ -323,11 +422,28 @@
       );
       provisioning = selected.artifacts.kanidm-provision-image;
       provisioningImage = "${provisioning.repository}@${provisioning.digest}";
-      registry = config.den.users.registry;
+      provisioningSourceMatches =
+        assert lib.assertMsg (
+          builtins.match "[0-9a-f]{40}" (selected.sourceSha or "") != null
+          && builtins.match "sha256-[A-Za-z0-9+/]{43}=" (selected.sourceNarHash or "") != null
+        ) "Private Dependency-Track requires a verified helper receipt with full sourceSha and sourceNarHash";
+        let
+          source = builtins.fetchTree {
+            type = "github";
+            owner = "dvicory";
+            repo = "homelab";
+            rev = selected.sourceSha;
+            narHash = selected.sourceNarHash;
+          };
+          wrapper = "/pkgs/by-name/kanidm-provision-image/package.nix";
+        in
+        builtins.hashFile "sha256" (source.outPath + wrapper)
+        == builtins.hashFile "sha256" (inputs.self + wrapper);
+      registry = fleetConfig.den.users.registry;
       administrators = lib.filterAttrs (
         name: _:
         builtins.elem "admins"
-          (config.fleet.acl.get "env:${cluster.environment}" "resolveUser" name).allGroups
+          (fleetConfig.fleet.acl.get "env:${cluster.environment}" "resolveUser" name).allGroups
       ) registry;
       # First-ever bootstrap is intentionally not a Job: the supported
       # recover-account flow runs in a private interactive session, prints
@@ -363,7 +479,7 @@
         # Scope maps stay empty here; the Job replaces them after this state.
         systems.oauth2 = lib.mapAttrs (_: client: {
           inherit (client) displayName;
-          public = false;
+          public = client.public or false;
           originUrl = client.redirects;
           originLanding = client.landing;
           allowInsecureClientDisablePkce = false;
@@ -813,6 +929,21 @@
                     }
                   ];
                 }
+                # Only DT's API reads discovery and signing keys from Kanidm.
+                ++ lib.optional dependencyTrackActive {
+                  from = [
+                    {
+                      namespaceSelector.matchLabels."kubernetes.io/metadata.name" = dependencyTrackApiRoute.namespace;
+                      podSelector.matchLabels = dependencyTrackApiRoute.backendPodSelector;
+                    }
+                  ];
+                  ports = [
+                    {
+                      protocol = "TCP";
+                      port = 8443;
+                    }
+                  ];
+                }
                 # Homarr's OIDC backchannel follows the same issuer DNS rewrite.
                 ++ lib.optional normal {
                   from = [
@@ -886,7 +1017,11 @@
                     containers = [
                       {
                         name = "provision";
-                        image = provisioningImage;
+                        image =
+                          assert lib.assertMsg (
+                            !dependencyTrackActive || provisioningSourceMatches
+                          ) "Private Dependency-Track requires a verified release of the current public-client provisioning wrapper";
+                          provisioningImage;
                         imagePullPolicy = "IfNotPresent";
                         resources = {
                           requests = {
