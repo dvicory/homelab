@@ -157,58 +157,81 @@ in
         inherit name;
         inherit (client) eligibleGroup scopes secrets;
       }) clients;
+      clientSecrets = lib.concatMap (client: client.secrets) oauth2Clients;
+      secretDestinations = map (secret: [
+        secret.namespace
+        secret.name
+        secret.key
+      ]) clientSecrets;
       # GitOps owns metadata and type; identity-provisioner owns data.
       # Predeclare Secrets: Kubernetes cannot restrict `create` by name.
-      secretPublication = lib.concatMap (secret: [
-        {
-          apiVersion = "v1";
-          kind = "Secret";
-          metadata = {
-            inherit (secret) name namespace;
-          }
-          // lib.optionalAttrs (secret.labels != { }) { inherit (secret) labels; };
-          type = "Opaque";
-        }
-        {
-          apiVersion = "rbac.authorization.k8s.io/v1";
-          kind = "Role";
-          metadata = {
-            name = "kanidm-client-secret-${secret.name}";
-            inherit (secret) namespace;
-          };
-          rules = [
+      secretPublication =
+        assert lib.assertMsg (
+          lib.length (lib.unique secretDestinations) == lib.length secretDestinations
+        ) "OIDC client Secret destinations must have distinct namespace, name, and key";
+        lib.concatMap (
+          secrets:
+          let
+            secret = builtins.head secrets;
+            labels = lib.zipAttrsWith (
+              label: values:
+              assert lib.assertMsg (lib.all (
+                value: value == builtins.head values
+              ) values) "OIDC clients sharing ${secret.namespace}/${secret.name} must agree on label ${label}";
+              builtins.head values
+            ) (map (secret: secret.labels) secrets);
+          in
+          [
             {
-              apiGroups = [ "" ];
-              resources = [ "secrets" ];
-              resourceNames = [ secret.name ];
-              verbs = [
-                "get"
-                "patch"
+              apiVersion = "v1";
+              kind = "Secret";
+              metadata = {
+                inherit (secret) name namespace;
+              }
+              // lib.optionalAttrs (labels != { }) { inherit labels; };
+              type = "Opaque";
+            }
+            {
+              apiVersion = "rbac.authorization.k8s.io/v1";
+              kind = "Role";
+              metadata = {
+                name = "kanidm-client-secret-${secret.name}";
+                inherit (secret) namespace;
+              };
+              rules = [
+                {
+                  apiGroups = [ "" ];
+                  resources = [ "secrets" ];
+                  resourceNames = [ secret.name ];
+                  verbs = [
+                    "get"
+                    "patch"
+                  ];
+                }
               ];
             }
-          ];
-        }
-        {
-          apiVersion = "rbac.authorization.k8s.io/v1";
-          kind = "RoleBinding";
-          metadata = {
-            name = "kanidm-client-secret-${secret.name}";
-            inherit (secret) namespace;
-          };
-          roleRef = {
-            apiGroup = "rbac.authorization.k8s.io";
-            kind = "Role";
-            name = "kanidm-client-secret-${secret.name}";
-          };
-          subjects = [
             {
-              kind = "ServiceAccount";
-              name = "kanidm-provision";
-              inherit namespace;
+              apiVersion = "rbac.authorization.k8s.io/v1";
+              kind = "RoleBinding";
+              metadata = {
+                name = "kanidm-client-secret-${secret.name}";
+                inherit (secret) namespace;
+              };
+              roleRef = {
+                apiGroup = "rbac.authorization.k8s.io";
+                kind = "Role";
+                name = "kanidm-client-secret-${secret.name}";
+              };
+              subjects = [
+                {
+                  kind = "ServiceAccount";
+                  name = "kanidm-provision";
+                  inherit namespace;
+                }
+              ];
             }
-          ];
-        }
-      ]) (lib.concatMap (client: client.secrets) oauth2Clients);
+          ]
+        ) (lib.attrValues (lib.groupBy (secret: "${secret.namespace}/${secret.name}") clientSecrets));
       adminPolicies = lib.mapAttrsToList (
         name: route:
         let
