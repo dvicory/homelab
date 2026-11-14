@@ -786,7 +786,7 @@ in
                   "/var/lib/rancher/k3s"
                   "/srv/secrets"
                   credentialDirectory
-                  policyRuntime
+                  "-${policyRuntime}"
                   brokerRuntime
                 ];
                 LoadCredential = [

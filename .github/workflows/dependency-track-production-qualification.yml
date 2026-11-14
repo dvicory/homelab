@@ -47,7 +47,7 @@ jobs:
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       with:
         persist-credentials: false
-        ref: 84b73f8f6bde56e4e3202059def16d5a52712284
+        ref: a3ac4b569411e5264eb91795e75abb06a275cd47
     - name: Prepare owned native acceptance storage
       if: matrix.requirements.ownedStorage == true
       run: "set -euo pipefail\ntest ! -e /mnt/nix.img\ntest ! -L /mnt/nix.img\ntest ! -e /nix\ntest ! -L /nix\n\
@@ -194,3 +194,97 @@ jobs:
           '
         if-no-files-found: error
     timeout-minutes: 100
+  systemd:
+    name: Actual systemd lifecycle (${{ matrix.case }})
+    runs-on: ubuntu-26.04
+    timeout-minutes: 110
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - case: before
+          source: ff8631d9a55bcde17dbaf4d157c995612815bc2c
+          namespaceFailure: true
+        - case: after
+          source: a3ac4b569411e5264eb91795e75abb06a275cd47
+          namespaceFailure: false
+    env:
+      QUALIFIED_SOURCE: ${{ matrix.source }}
+      EXPECT_NAMESPACE_FAILURE: ${{ matrix.namespaceFailure }}
+    steps:
+    - name: Check out frozen source
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: false
+        ref: ${{ matrix.source }}
+    - name: Enable available KVM
+      run: |
+        test -c /dev/kvm
+        sudo chmod 666 /dev/kvm
+    - name: Install Nix
+      uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702
+      with:
+        github_access_token: ${{ github.token }}
+    - name: Configure shared public caches
+      run: |
+        {
+          printf 'NIX_CONFIG<<EOF\n%s\n' "${NIX_CONFIG:-}"
+          nix eval --raw --file modules/nix/caches.nix --apply '
+            module:
+            let settings = module.flake.modules.generic.nix-common.nix.settings;
+            in "extra-substituters = ${builtins.concatStringsSep " " settings.extra-substituters}\n"
+             + "extra-trusted-public-keys = ${builtins.concatStringsSep " " settings.extra-trusted-public-keys}\n"
+          '
+          printf 'EOF\n'
+        } >> "$GITHUB_ENV"
+    - name: Exercise actual source units in KVM
+      run: |
+        set -euo pipefail
+        attr=checks.x86_64-linux.dependency-track-systemd
+        export TEST_DERIVATION
+        TEST_DERIVATION=$(nix eval --raw ".#${attr}.drvPath")
+        export ACTUAL_SOURCE
+        ACTUAL_SOURCE=$(git rev-parse HEAD)
+        set +e
+        nix build -L --no-link --print-out-paths ".#${attr}" 2>&1 | tee "$RUNNER_TEMP/dependency-track-systemd-build.log"
+        status=${PIPESTATUS[0]}
+        set -e
+        export TEST_EXIT_CODE="$status"
+        python3 - <<'PY'
+        import json
+        import os
+        from pathlib import Path
+        import sys
+
+        root = Path(os.environ["RUNNER_TEMP"])
+        log = (root / "dependency-track-systemd-build.log").read_text()
+        expected_failure = os.environ["EXPECT_NAMESPACE_FAILURE"] == "true"
+        status = int(os.environ["TEST_EXIT_CODE"])
+        proof = {
+            "schema": 1,
+            "source": os.environ["ACTUAL_SOURCE"],
+            "testDerivation": os.environ["TEST_DERIVATION"],
+            "expectedNamespaceFailure": expected_failure,
+            "actualExitCode": status,
+            "namespaceFailureObserved": "status=226" in log,
+            "vmScriptCompleted": "(finished: run the VM test script" in log,
+            "boundary": "Actual source NixOS units and stock K3s/DT/Postgres in an owned VM; no production enrollment or successful inventory import claim",
+        }
+        (root / "dependency-track-systemd-result.json").write_text(json.dumps(proof, indent=2) + "\n")
+        if proof["source"] != os.environ["QUALIFIED_SOURCE"]:
+            sys.exit("source mismatch")
+        if expected_failure:
+            if status == 0 or not proof["namespaceFailureObserved"]:
+                sys.exit("original absent-path namespace failure was not reproduced")
+        elif status != 0 or not proof["vmScriptCompleted"]:
+            sys.exit("complete source unit lifecycle was not exercised successfully")
+        PY
+    - name: Retain bounded unit proof, never VM disks or credentials
+      if: always()
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      with:
+        name: dependency-track-systemd-${{ matrix.case }}-${{ github.run_id }}
+        path: |
+          ${{ runner.temp }}/dependency-track-systemd-result.json
+          ${{ runner.temp }}/dependency-track-systemd-build.log
+        if-no-files-found: error

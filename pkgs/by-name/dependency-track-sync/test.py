@@ -528,7 +528,35 @@ def refresh_regression():
     print("automatic refresh partial/removal/staleness/source-pin/credential boundaries passed")
 
 
+def access_policy_regression():
+    administrator = "11111111-1111-4111-8111-111111111111"
+    other_group = "22222222-2222-4222-8222-222222222222"
+    alternate_team = "33333333-3333-4333-8333-333333333333"
+    # Resolve the full team, not permissions omitted from a group-mapping response.
+    for permission, refused in (
+        ("VIEW_PORTFOLIO", False),
+        ("ACCESS_MANAGEMENT", True),
+        ("ACCESS_MANAGEMENT_CREATE", True),
+        ("ACCESS_MANAGEMENT_UPDATE", True),
+    ):
+        responses = {
+            ("GET", "oidc/group"): [{"uuid": other_group, "name": "unapproved-group"}],
+            ("GET", "oidc/group/" + other_group + "/team"): [{"uuid": alternate_team}],
+            ("GET", "team/" + alternate_team): {
+                "uuid": alternate_team, "permissions": [{"name": permission}]},
+        }
+        client = SimpleNamespace(request=lambda method, path: responses[(method, path)])
+        try:
+            sync.oidc_admin_group(client, "homelab-administrators", administrator)
+        except ValueError:
+            assert refused, "read-only group mapping refused"
+        else:
+            assert not refused, permission + " mapping admitted an administrator escalation path"
+    print("OIDC administrator-escalation mappings refused; read-only mapping preserved")
+
+
 if __name__ == "__main__":
     regression()
     origin_regression()
     refresh_regression()
+    access_policy_regression()
