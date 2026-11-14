@@ -485,13 +485,15 @@ def refresh(args, database, checkpoint, client):
     """Acquire data only, then use the existing resumable single-writer lifecycle."""
     policy = {"repository": args.repository, "branch": args.branch}
     states = sorted(set(getattr(args, "scope", None) or ["desired", "referenced"]))
+    run_id = getattr(args, "run_id", None)
     selection = {"states": states if not args.target else [], "targetIds": sorted(set(args.target))}
     if (not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", args.repository)
             or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_./-]*", args.branch)
             or ".." in args.branch or "//" in args.branch
             or any(not re.fullmatch(r"[a-f0-9]{24}", target) for target in args.target)
             or set(states) - {"desired", "exported", "referenced"}
-            or not 1 <= args.max_age_seconds <= 90 * 86400):
+            or not 1 <= args.max_age_seconds <= 90 * 86400
+            or (run_id is not None and (type(run_id) is not int or run_id <= 0))):
         raise ValueError("invalid explicit producer policy, target selection or freshness bound")
     previous_source = database.get("sourcePolicy", policy)
     if {key: previous_source.get(key) for key in policy} != policy:
@@ -506,6 +508,8 @@ def refresh(args, database, checkpoint, client):
     database["sourcePolicy"] = policy
     database["selectionPolicy"] = selection
     attempt = {"at": now(), "status": "discovering", "targets": {}, "selection": selection}
+    if run_id is not None:
+        attempt["requestedRun"] = run_id
     database["refresh"] = attempt
     checkpoint()
     def selected(entry):
@@ -520,13 +524,13 @@ def refresh(args, database, checkpoint, client):
         checkpoint()
         with github_credentials(args.github_token_file), tempfile.TemporaryDirectory(prefix="dependency-track-refresh-") as temporary:
             plan, receipt, artifacts = security_artifacts.discover_plan(
-                args.repository, args.branch, directory, archive_directory=archives)
+                args.repository, args.branch, directory, archive_directory=archives, run_id=run_id)
             attempt["run"] = receipt["run"]["id"]
             attempt["sourceCompletedAt"] = receipt["run"]["updated_at"]
             completed = datetime.fromisoformat(receipt["run"]["updated_at"].replace("Z", "+00:00"))
             age = (datetime.now(timezone.utc) - completed).total_seconds()
             if not 0 <= age <= args.max_age_seconds:
-                raise ValueError("latest completed producer run is stale or future-dated")
+                raise ValueError("completed producer run is stale or future-dated")
             all_entries = [*plan["entries"], *plan["unsupported"]]
             attempt["excluded"] = [entry for entry in all_entries if not selected(entry)]
             attempt["unsupported"] = [{"source": entry, "selected": selected(entry)} for entry in plan["unsupported"]]
@@ -658,6 +662,7 @@ def main():
     automatic.add_argument("--state-dir", required=True, type=Path)
     automatic.add_argument("--repository", required=True)
     automatic.add_argument("--branch", default="main", help="explicit admin-owned source trust; use separate API/evidence state for canaries")
+    automatic.add_argument("--run-id", type=int, help="pin one verified completed run for recovery or qualification; normal refresh follows latest")
     automatic.add_argument("--github-token-file", required=True, type=Path)
     automatic.add_argument("--target", action="append", default=[], help="explicit 24hex declaration IDs; overrides state selection")
     automatic.add_argument("--scope", action="append", choices=("desired", "referenced", "exported"),

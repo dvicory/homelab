@@ -314,6 +314,22 @@ def check_trusted_restore(directory, row):
                              ("plannedSourceNarHash", "sha256-" + "B" * 43 + "=")):
             rejects(audit.security_artifacts.acquire_planned, dict(row, **{field: value}), receipt,
                     artifacts, repository, acquired / ("reject-" + field))
+    pinned = Path("pinned")
+    pinned.mkdir()
+    with patch.object(audit.security_artifacts, "api", side_effect=[
+            completed, {"artifacts": [plan_artifact, inventory_artifact]}]), \
+            patch.object(audit.security_artifacts.subprocess, "Popen", side_effect=transfer):
+        _, pinned_receipt, pinned_artifacts = audit.security_artifacts.discover_plan(
+            repository, branch, pinned, run_id=2)
+        audit.security_artifacts.acquire_planned(
+            row, pinned_receipt, pinned_artifacts, repository, pinned / "inventory")
+        audit.security_artifacts.verify(pinned / "inventory", row["inventoryKey"], producer, row)
+    for mismatch in (dict(completed, id=4), dict(completed, event="pull_request"),
+                     dict(completed, head_branch="other"), dict(completed, status="in_progress")):
+        with patch.object(audit.security_artifacts, "api", return_value=mismatch):
+            rejects(audit.security_artifacts.discover_plan, repository, branch, Path("refused-pinned"), None, 2)
+    for invalid in (0, -1, True, "2"):
+        rejects(audit.security_artifacts.discover_plan, repository, branch, Path("refused-pinned"), None, invalid)
     for mismatch in (dict(completed, event="pull_request"), dict(completed, head_branch="other"),
                      dict(completed, head_repository={"full_name": "fork/repository"})):
         rejects(audit.security_artifacts.trusted_run, mismatch, repository, branch)
