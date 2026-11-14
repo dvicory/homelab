@@ -25,6 +25,7 @@ import stat
 import sys
 import subprocess
 import tempfile
+import tarfile
 from datetime import datetime, timezone
 import time
 from types import SimpleNamespace
@@ -53,6 +54,7 @@ MALFORMED_KEYSET = b"fixture-malformed-nonempty-keyset\n"
 STORAGE_CATEGORIES = ("archive", "acquisitions", "origins", "artifacts")
 SAFE_ERROR_SIGNATURES = {
     "permission-denied": b"permission denied",
+    "permission-error": b"permissionerror",
     "nix-daemon-denied": b"not allowed to connect to the nix daemon",
     "api-unauthorized": b"http 401",
     "api-forbidden": b"http 403",
@@ -100,6 +102,36 @@ class QualificationFailure(ValueError):
 def safe_error_categories(data):
     lowered = data.lower()
     return [category for category, signature in SAFE_ERROR_SIGNATURES.items() if signature in lowered]
+
+
+def retained_tree(root):
+    result = {}
+    for path in [root, *sorted(root.rglob("*"))]:
+        info = path.lstat()
+        if not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)):
+            raise QualificationFailure("retained-evidence-is-not-regular")
+        digest = None
+        if stat.S_ISREG(info.st_mode):
+            with path.open("rb") as stream:
+                digest = hashlib.file_digest(stream, "sha256").hexdigest()
+        result[str(path.relative_to(root))] = [
+            info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode), digest]
+    return result
+
+
+def extract_retained_tree(archive, root):
+    if os.geteuid() != 0 or root.is_symlink() or not root.is_dir() or any(root.iterdir()):
+        raise QualificationFailure("retained-extraction-requires-root-and-empty-directory")
+    with tarfile.open(archive, "r:") as source:
+        members = source.getmembers()
+        paths = [Path(member.name) for member in members]
+        if (len(members) > 8192 or len(set(paths)) != len(paths)
+                or sum(member.size for member in members) > 256 * 1024 * 1024
+                or any(path.is_absolute() or ".." in path.parts for path in paths)
+                or any(not (member.isdir() or member.isreg()) or member.mode & 0o7022
+                       for member in members)):
+            raise QualificationFailure("unsafe-retained-evidence-archive")
+        source.extractall(root, members=members, numeric_owner=True, filter="tar")
 
 
 def safe_failure(error, phase):
@@ -1522,18 +1554,27 @@ def main():
                     command += ["--run-id", str(pinned_run)]
                 for declaration_id in targets:
                     command += ["--target", declaration_id]
+                state = refresh_state / "state.json"
+                previous_attempt = sync.load(state).get("refresh", {}).get("at") if state.exists() else None
                 result = run(command, timeout=1800, check=False, user=705, environment=cli_environment)
                 if result.returncode:
                     state = refresh_state / "state.json"
                     failed = sync.load(state).get("refresh", {}) if state.exists() else {}
+                    updated = failed.get("at") != previous_attempt
+                    current = failed if updated else {}
+                    classified = re.fullmatch(
+                        rb"dependency-track-sync failed: (PermissionError|BlockingIOError|FileNotFoundError|OSError|TypeError|KeyError|AttributeError)\n?",
+                        result.stderr)
                     receipt["refreshFailure"] = {
                         "exitCode": result.returncode, "journalPresent": state.exists(),
-                        "operation": failed.get("operation"), "errorType": failed.get("errorType"),
-                        "run": failed.get("run"), "errorCategories": safe_error_categories(result.stderr),
+                        "journalUpdated": updated,
+                        "operation": current.get("operation"), "errorType": (
+                            classified[1].decode() if classified else current.get("errorType")),
+                        "run": current.get("run"), "errorCategories": safe_error_categories(result.stderr),
                         "targets": [
                             {"target": target, **{key: record.get(key) for key in
                              ("status", "operation", "errorType", "httpStatus")}}
-                            for target, record in list(failed.get("targets", {}).items())[:8]
+                            for target, record in list(current.get("targets", {}).items())[:8]
                         ],
                     }
                 else:
@@ -1621,6 +1662,7 @@ def main():
             stop_forward()
             deployment("api", 0)
             deployment("postgres", 0)
+            retained_metadata = retained_tree(refresh_state)
             native("mkdir", "-p", "/srv/dependency-track/evidence/sync-state")
             d("cp", "-a", str(refresh_state) + "/.", name + ":/srv/dependency-track/evidence/sync-state", timeout=600)
             native("chown", "705:705", "/srv/dependency-track/evidence/sync-state")
@@ -1637,8 +1679,21 @@ def main():
             d("cp", str(backup_file), name + ":/run/fixture-dt-backup/state.tar", timeout=600)
             archive_restore = native("sh", "-ec", "tar -C /srv -xpf /run/fixture-dt-backup/state.tar; rm /run/fixture-dt-backup/state.tar")
             refresh_state.mkdir(mode=0o700)
-            os.chown(refresh_state, 705, 705)
-            d("cp", "-a", name + ":/srv/dependency-track/evidence/sync-state/.", str(refresh_state), timeout=600)
+            evidence_archive = work / "restored-evidence.tar"
+            with evidence_archive.open("xb") as output:
+                os.fchmod(output.fileno(), 0o600)
+                exported = subprocess.run(
+                    [*docker, "exec", name, "tar", "-C", "/srv/dependency-track/evidence/sync-state", "-cpf", "-", "."],
+                    stdout=output, stderr=subprocess.DEVNULL, env=env, timeout=600)
+            if exported.returncode:
+                raise QualificationFailure("retained-evidence-export-failed", operation="docker-exec",
+                                           exit_code=exported.returncode)
+            # Docker's container-to-host cp -a drops numeric ownership.
+            extract_retained_tree(evidence_archive, refresh_state)
+            evidence_archive.unlink()
+            observed["retainedEvidenceMetadataMatches"] = retained_tree(refresh_state) == retained_metadata
+            if not observed["retainedEvidenceMetadataMatches"]:
+                raise QualificationFailure("retained-evidence-owner-mode-or-bytes-changed")
             observed["backupDestroyedAndRestored"] = destroyed.returncode == 0 and archive_restore.returncode == 0
             k("-n", "dependency-track", "delete", "secret/dependency-track-postgres")
             apply(secret)
