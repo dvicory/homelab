@@ -1680,11 +1680,11 @@ def main():
             archive_restore = native("sh", "-ec", "tar -C /srv -xpf /run/fixture-dt-backup/state.tar; rm /run/fixture-dt-backup/state.tar")
             refresh_state.mkdir(mode=0o700)
             evidence_archive = work / "restored-evidence.tar"
-            with evidence_archive.open("xb") as output:
-                os.fchmod(output.fileno(), 0o600)
+            with evidence_archive.open("xb") as archive_output:
+                os.fchmod(archive_output.fileno(), 0o600)
                 exported = subprocess.run(
                     [*docker, "exec", name, "tar", "-C", "/srv/dependency-track/evidence/sync-state", "-cpf", "-", "."],
-                    stdout=output, stderr=subprocess.DEVNULL, env=env, timeout=600)
+                    stdout=archive_output, stderr=subprocess.DEVNULL, env=env, timeout=600)
             if exported.returncode:
                 raise QualificationFailure("retained-evidence-export-failed", operation="docker-exec",
                                            exit_code=exported.returncode)
