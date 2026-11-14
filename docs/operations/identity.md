@@ -24,52 +24,74 @@ ReferenceGrant. Each independent public edge needs its own
 canonical identity name. Application wildcard certificates are not a
 substitute. Cert-manager remains the only writer of cluster TLS Secrets.
 
-## Administrator applications in Kanidm
+## Configure application sign-in
 
-Each administrator route has its own Kanidm OAuth2 client, named after the
-route. Kanidm lists the clients a person may use as applications on its
-home page, so members of `homelab-admin` see one entry per administrator
-application, under the route's `displayName`. Each entry opens its
-application. People outside `homelab-admin` see none of them.
+Set each route's `auth` policy in `home.nix`:
 
-The Gateway's sign-in for a route uses that route's client and the Secret
-`gateway/oidc-<route>`. Argo CD's own sign-in shares the `argocd` client,
-so Argo CD appears once; its entry starts Argo CD's Kanidm sign-in. The
-`kanidm-provision` Job also publishes that client's secret to
-`argocd/argocd-kanidm-oidc`.
+- `app-managed` leaves sign-in and access control to the application; it does
+  not require the application to use OIDC.
+- `admin-gateway` requires Kanidm administrator sign-in at the Gateway.
+  Any application login and access checks still apply.
 
-Grafana likewise shares its route's `grafana` client. Its entry starts Grafana's
-native sign-in, and provisioning publishes the same secret to
-`monitoring/grafana-oidc`. Both native callbacks coexist with the Gateway callback;
-neither application's entrance sign-in alone grants application access.
+For an application's own Kanidm login, configure `native-oidc` beside the
+service, including callbacks, scopes and Secret references. Callback and
+login-start paths must start with `/`. Selecting a service does not publish
+its route; route declarations and publication phases control access.
 
-The declaration owns every Kanidm OAuth2 client. On each run the Job
-deletes clients it does not declare, including any created by hand.
-Declare a new client in Nix instead.
+Administrator routes use one Kanidm client per route, available only to
+`homelab-admin`. Eligible users see each application's `displayName` on
+Kanidm's home page. The Gateway uses `gateway/oidc-<route>`.
+Argo CD and Grafana share their route clients with their native logins:
+provisioning also writes `argocd/argocd-kanidm-oidc` and
+`monitoring/grafana-oidc`, respectively.
 
-The selected helper accepts an explicit `eligibleGroup` per client and owns
-both normal and supplemental scope maps. Administrator applications select
-`homelab-admin`; Homarr selects `homarr-users`, whose nested members are
-`homelab-admin` and `jellyfin-users`. Provisioning owns that aggregate, not
-household membership or person credentials. Homarr grants board permissions
-separately; portal eligibility does not confer administration.
+Argo CD and Grafana require **both** Gateway and application sign-in.
+Both request the same permissions, so approval is reused until those
+permissions change. Argo CD may still show its own login button; its
+Kanidm tile starts the application's sign-in directly.
 
-Before entity reconciliation or Secret publication, the helper revokes all
-existing client scope maps, including undeclared clients. Administrator
-membership is restored only after successful reconciliation. A failed run
-can leave access revoked until it succeeds; revocation requires a reachable
-Kanidm API and is sequential, not an atomic cross-client transaction.
+### Client and Secret safety
 
-Select registry upgrades through the
-[verified helper release workflow](jellyfin.md#deliver-helper-images), using
-the unmodified receipt at `assets/helper-release/verified.json`.
-The `identity-provision-runtime` check exercises that selected image,
-then imports the actual current-source producer archive into its disposable
-K3s VM and proves synthetic per-client eligibility with native sign-ins.
-It does not publish an image or change production selection.
+Provisioning owns every Kanidm OAuth2 client and deletes undeclared
+clients, including manually created ones. Declare new clients in Nix.
 
-See [Homarr operations](homarr.md) for private onboarding, board ACLs,
-group-sync limitations, and portal recovery.
+Different clients must not write the same key in the same namespace and
+Secret. **With the currently selected helper, give different clients
+separate Secrets**, even when they would use different keys. Sharing a
+Secret requires the fix to pass the merged-main release workflow and a
+separately reviewed change selecting that helper image through the
+[verified helper release workflow](jellyfin.md#deliver-helper-images).
+Use the unmodified receipt at `assets/helper-release/verified.json`;
+editing helper source does not change the deployed image.
+
+Administrator clients must use `homelab-admin` as their `eligibleGroup`.
+Homarr uses `homarr-users`, which includes `homelab-admin` and
+`jellyfin-users`. Provisioning manages that aggregate, not household
+membership or person credentials. Homarr board permissions are separate:
+portal eligibility does not confer administration. See
+[Homarr operations](homarr.md) for private onboarding and recovery.
+
+Before reconciling clients or publishing Secrets, provisioning revokes
+all existing client scope maps, including undeclared clients. It restores
+declared access only after successful reconciliation. A failed run can
+leave access revoked: inspect the `kanidm-provision` Job logs, repair the
+reported problem and rerun provisioning. Revocation requires a reachable
+Kanidm API and proceeds client by client; do not assume a failure revoked
+every client.
+
+### Verify application upgrades
+
+After upgrading Argo CD or Grafana:
+
+1. Confirm `kanidm-provision` completed and check both the Gateway and
+   application sign-ins with an administrator.
+2. Inspect the application's authorization request in the browser. Confirm
+   its callback and requested scopes still match the declaration; do not
+   copy tokens, authorization codes or cookies into logs or reports.
+3. Switch between the Gateway and application sign-ins. With unchanged
+   permissions, approval should not repeat. Changed permissions require
+   fresh approval.
+4. Confirm a non-administrator cannot gain application access.
 
 ## Bootstrap
 

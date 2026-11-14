@@ -10,6 +10,8 @@ let
   cluster = config.den.clusters.prod-home // {
     routes = config.flake.clusterRoutes.prod-home.routes;
   };
+  oidcClients =
+    config.flake.nixidyEnvs.${pkgs.stdenv.hostPlatform.system}.prod-home.config.oidcClients;
   instance = "compute-1";
   gateway =
     (import ../../../den/aspects/kubernetes/services/gateway.nix { })
@@ -28,7 +30,7 @@ let
         namespace = "origin";
         service = "origin";
         port = 8080;
-        auth = "native";
+        auth = "app-managed";
         exposure = "public";
         backendPodSelector.app = "origin";
         hostnames = [ "origin.test" ];
@@ -104,6 +106,9 @@ let
     identity.k8s-manifests {
       cluster = inventory;
       routes = inventory.routes;
+      config.oidcClients = lib.filterAttrs (
+        _: app: builtins.hasAttr app.routeKey inventory.routes
+      ) oidcClients;
       computeResources = config.flake.clusterResources.prod-home // {
         inherit instance;
       };

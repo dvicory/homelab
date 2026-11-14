@@ -107,8 +107,10 @@ in
         | --- | --- | --- | --- | --- | --- |
         ${lib.concatStringsSep "\n" routeRows}
 
-        `admin` requires Gateway administrator sign-in; `native` uses the
-        application's own sign-in.
+        `admin-gateway` requires Kanidm administrator sign-in at the Gateway;
+        any application login and access checks still apply. `app-managed`
+        leaves sign-in and access control to the application, which need not
+        use OIDC. See [identity operations](operations/identity.md#configure-application-sign-in).
 
         Public edges publish only `public` routes. The `idm` canonical hostname
         remains the identity issuer across direct and secondary-edge access;

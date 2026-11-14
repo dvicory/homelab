@@ -39,35 +39,35 @@ in
     settings.kubernetes.services.seerr.phase = "ready";
     settings.kubernetes.services.homarr.phase = "initial";
     routes = {
-      home = route "home" "native" "public" // {
+      home = route "home" "app-managed" "public" // {
         sameNamespaceIngress = false;
         # Homarr owns admission even while first-run onboarding is private.
         manageBackendIngress = false;
       };
-      argocd = route "argocd" "admin" "public";
-      grafana = route "grafana" "admin" "public" // {
+      argocd = route "argocd" "admin-gateway" "public";
+      grafana = route "grafana" "admin-gateway" "public" // {
         # Nothing in the monitoring namespace connects to Grafana.
         sameNamespaceIngress = false;
       };
       # These apps have no login of their own. Media owns in-cluster admission;
       # their Gateway policies admit only the Gateway proxy.
-      radarr = route "radarr" "admin" "public" // {
+      radarr = route "radarr" "admin-gateway" "public" // {
         sameNamespaceIngress = false;
       };
-      sonarr = route "sonarr" "admin" "public" // {
+      sonarr = route "sonarr" "admin-gateway" "public" // {
         sameNamespaceIngress = false;
       };
-      prowlarr = route "prowlarr" "admin" "public" // {
+      prowlarr = route "prowlarr" "admin-gateway" "public" // {
         sameNamespaceIngress = false;
       };
-      sabnzbd = route "sabnzbd" "admin" "public" // {
+      sabnzbd = route "sabnzbd" "admin-gateway" "public" // {
         sameNamespaceIngress = false;
       };
-      requests = route "requests" "native" "public";
-      jellyfin = route "jellyfin" "native" "private";
+      requests = route "requests" "app-managed" "public";
+      jellyfin = route "jellyfin" "app-managed" "private";
       idm = {
         hostnames = [ "id.bzfx.net" ];
-        auth = "native";
+        auth = "app-managed";
         exposure = "public";
         # Kanidm owns port-specific HTTPS and LDAPS admission.
         manageBackendIngress = false;

@@ -36,19 +36,21 @@ independently syncing child Applications.
 
 | Service | Exposure | Canonical URL | Secondary URL | Backend | Auth |
 | --- | --- | --- | --- | --- | --- |
-| `argocd` | `public` | `https://argocd.plus2.danielvicory.dev` | `https://argocd.backup.plus2.danielvicory.dev` | `argocd/argocd-server:80` | `admin` |
-| `grafana` | `public` | `https://grafana.plus2.danielvicory.dev` | `https://grafana.backup.plus2.danielvicory.dev` | `monitoring/grafana:80` | `admin` |
-| `home` | `public` | `https://home.plus2.danielvicory.dev` | `https://home.backup.plus2.danielvicory.dev` | `portal/homarr:7575` | `native` |
-| `idm` | `public` | `https://id.bzfx.net` | `not declared` | `identity/kanidm:443` | `native` |
-| `jellyfin` | `private` | `https://jellyfin.plus2.danielvicory.dev` | `https://jellyfin.backup.plus2.danielvicory.dev` | `jellyfin/jellyfin:8096` | `native` |
-| `prowlarr` | `public` | `https://prowlarr.plus2.danielvicory.dev` | `https://prowlarr.backup.plus2.danielvicory.dev` | `media/prowlarr:9696` | `admin` |
-| `radarr` | `public` | `https://radarr.plus2.danielvicory.dev` | `https://radarr.backup.plus2.danielvicory.dev` | `media/radarr:7878` | `admin` |
-| `requests` | `public` | `https://requests.plus2.danielvicory.dev` | `https://requests.backup.plus2.danielvicory.dev` | `media/seerr:5055` | `native` |
-| `sabnzbd` | `public` | `https://sabnzbd.plus2.danielvicory.dev` | `https://sabnzbd.backup.plus2.danielvicory.dev` | `media/sabnzbd:8080` | `admin` |
-| `sonarr` | `public` | `https://sonarr.plus2.danielvicory.dev` | `https://sonarr.backup.plus2.danielvicory.dev` | `media/sonarr:8989` | `admin` |
+| `argocd` | `public` | `https://argocd.plus2.danielvicory.dev` | `https://argocd.backup.plus2.danielvicory.dev` | `argocd/argocd-server:80` | `admin-gateway` |
+| `grafana` | `public` | `https://grafana.plus2.danielvicory.dev` | `https://grafana.backup.plus2.danielvicory.dev` | `monitoring/grafana:80` | `admin-gateway` |
+| `home` | `public` | `https://home.plus2.danielvicory.dev` | `https://home.backup.plus2.danielvicory.dev` | `portal/homarr:7575` | `app-managed` |
+| `idm` | `public` | `https://id.bzfx.net` | `not declared` | `identity/kanidm:443` | `app-managed` |
+| `jellyfin` | `private` | `https://jellyfin.plus2.danielvicory.dev` | `https://jellyfin.backup.plus2.danielvicory.dev` | `jellyfin/jellyfin:8096` | `app-managed` |
+| `prowlarr` | `public` | `https://prowlarr.plus2.danielvicory.dev` | `https://prowlarr.backup.plus2.danielvicory.dev` | `media/prowlarr:9696` | `admin-gateway` |
+| `radarr` | `public` | `https://radarr.plus2.danielvicory.dev` | `https://radarr.backup.plus2.danielvicory.dev` | `media/radarr:7878` | `admin-gateway` |
+| `requests` | `public` | `https://requests.plus2.danielvicory.dev` | `https://requests.backup.plus2.danielvicory.dev` | `media/seerr:5055` | `app-managed` |
+| `sabnzbd` | `public` | `https://sabnzbd.plus2.danielvicory.dev` | `https://sabnzbd.backup.plus2.danielvicory.dev` | `media/sabnzbd:8080` | `admin-gateway` |
+| `sonarr` | `public` | `https://sonarr.plus2.danielvicory.dev` | `https://sonarr.backup.plus2.danielvicory.dev` | `media/sonarr:8989` | `admin-gateway` |
 
-`admin` requires Gateway administrator sign-in; `native` uses the
-application's own sign-in.
+`admin-gateway` requires Kanidm administrator sign-in at the Gateway;
+any application login and access checks still apply. `app-managed`
+leaves sign-in and access control to the application, which need not
+use OIDC. See [identity operations](operations/identity.md#configure-application-sign-in).
 
 Public edges publish only `public` routes. The `idm` canonical hostname
 remains the identity issuer across direct and secondary-edge access;

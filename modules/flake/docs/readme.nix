@@ -63,8 +63,8 @@ in
             in
             "| `${route.namespace}/${route.service}` | ${endpoint} | `${route.exposure}` | ${
               {
-                admin = "Gateway admin";
-                native = "Application";
+                admin-gateway = "Gateway admin";
+                app-managed = "Application";
               }
               .${route.auth} or route.auth
             } | ${if emitted then "yes" else "no"} |"
@@ -77,9 +77,13 @@ in
           - **Persistent state:** `${compute.stateRoot}` on ${hostLink cluster.hostName}, mounted at `${compute.stateGuestPath}` in the guest. [Paths and owners](docs/operations.md#retained-state).
           - **GitOps:** [generated manifests](generated/manifests/${name}/), tracked from `${cluster.branch}` by Argo CD. [Deployment runbook](docs/operations.md#deploy-configuration).
 
-          | Backend | Canonical hostname | Exposure | Sign-in | In manifests |
+          | Backend | Canonical hostname | Exposure | Route auth | In manifests |
           | --- | --- | --- | --- | --- |
           ${lib.concatStringsSep "\n" routeRows}
+
+          **Route auth:** Gateway admin requires Kanidm administrator sign-in
+          in addition to any application checks. Application leaves sign-in
+          and access control to the app; it does not imply OIDC.
         '';
     in
     {
@@ -100,7 +104,7 @@ in
 
         ${lib.concatStringsSep "\n" (lib.mapAttrsToList clusterSection clusters)}
         Routes reflect generated manifests, not live health.
-        [Route details and publication gates](docs/operations.md#declared-routes) explain aliases and onboarding.
+        [Route details and publication gates](docs/operations.md#declared-routes) cover secondary hostnames and onboarding.
 
         ## Operate and recover
 

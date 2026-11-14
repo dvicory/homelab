@@ -58,7 +58,7 @@ data:
     name = Kanidm
     role_attribute_path = contains(groups[*], 'homelab-admin') && 'Admin' || ''
     role_attribute_strict = true
-    scopes = openid profile email groups_name
+    scopes = openid profile email homelab_admin groups_name
     token_url = https://id.bzfx.net/oauth2/token
     use_pkce = true
     use_refresh_token = true

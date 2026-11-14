@@ -21,7 +21,7 @@ NixOS homelab and nix-darwin workstation configuration, composed with
 - **Persistent state:** `/var/lib/homelab/compute-1/state` on [`hvn-hyp1`](modules/den/hosts/hvn-hyp1/default.nix), mounted at `/srv/state` in the guest. [Paths and owners](docs/operations.md#retained-state).
 - **GitOps:** [generated manifests](generated/manifests/prod-home/), tracked from `main` by Argo CD. [Deployment runbook](docs/operations.md#deploy-configuration).
 
-| Backend | Canonical hostname | Exposure | Sign-in | In manifests |
+| Backend | Canonical hostname | Exposure | Route auth | In manifests |
 | --- | --- | --- | --- | --- |
 | `argocd/argocd-server` | [`argocd.plus2.danielvicory.dev`](https://argocd.plus2.danielvicory.dev/) | `public` | Gateway admin | yes |
 | `monitoring/grafana` | [`grafana.plus2.danielvicory.dev`](https://grafana.plus2.danielvicory.dev/) | `public` | Gateway admin | yes |
@@ -34,8 +34,12 @@ NixOS homelab and nix-darwin workstation configuration, composed with
 | `media/sabnzbd` | [`sabnzbd.plus2.danielvicory.dev`](https://sabnzbd.plus2.danielvicory.dev/) | `public` | Gateway admin | yes |
 | `media/sonarr` | [`sonarr.plus2.danielvicory.dev`](https://sonarr.plus2.danielvicory.dev/) | `public` | Gateway admin | yes |
 
+**Route auth:** Gateway admin requires Kanidm administrator sign-in
+in addition to any application checks. Application leaves sign-in
+and access control to the app; it does not imply OIDC.
+
 Routes reflect generated manifests, not live health.
-[Route details and publication gates](docs/operations.md#declared-routes) explain aliases and onboarding.
+[Route details and publication gates](docs/operations.md#declared-routes) cover secondary hostnames and onboarding.
 
 ## Operate and recover
 

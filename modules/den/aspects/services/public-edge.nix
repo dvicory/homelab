@@ -169,7 +169,7 @@ let
           routes = lib.filterAttrs (
             name: route:
             route.exposure == "public"
-            && (identityNormal || (route.auth != "admin" && name != "idm"))
+            && (identityNormal || (route.auth != "admin-gateway" && name != "idm"))
             && (name != "requests" || cluster.settings.kubernetes.services.seerr.phase == "ready")
             && (
               name != "home" || (identityNormal && cluster.settings.kubernetes.services.homarr.phase == "ready")

@@ -280,9 +280,11 @@
           )) true
         );
       withAuth = auth: route: route // { inherit auth; };
-      nativeRouteRejected =
+      appManagedRouteRejected =
         lib.all
-          (name: !(mediaWithRoutes { ${name} = withAuth "native" fixtureCluster.routes.${name}; }).success)
+          (
+            name: !(mediaWithRoutes { ${name} = withAuth "app-managed" fixtureCluster.routes.${name}; }).success
+          )
           [
             "sonarr"
             "prowlarr"
@@ -293,8 +295,8 @@
         (mediaWithRoutes {
           radarr-remux-extra = withAuth auth (fixtureCluster.routes.sonarr // { service = "radarr-remux"; });
         }).success;
-      extraNativeRouteRejected = !(extraRoute "native");
-      extraAdminRouteAccepted = extraRoute "admin";
+      extraAppManagedRouteRejected = !(extraRoute "app-managed");
+      extraAdminGatewayRouteAccepted = extraRoute "admin-gateway";
       # The Gateway policy of such a route must not also admit the whole
       # media namespace.
       namespaceWideRouteRejected =
@@ -448,9 +450,9 @@
           inherit configurationPhases;
           positive = mediaBase.success;
           inherit
-            nativeRouteRejected
-            extraNativeRouteRejected
-            extraAdminRouteAccepted
+            appManagedRouteRejected
+            extraAppManagedRouteRejected
+            extraAdminGatewayRouteAccepted
             namespaceWideRouteRejected
             ingressFixtures
             ;
@@ -595,9 +597,9 @@
             assert fixture["nestedRootRejected"]
             assert fixture["oneSidedSharingRejected"]
             assert fixture["explicitRootSharingAccepted"]
-            assert fixture["nativeRouteRejected"]
-            assert fixture["extraNativeRouteRejected"]
-            assert fixture["extraAdminRouteAccepted"]
+            assert fixture["appManagedRouteRejected"]
+            assert fixture["extraAppManagedRouteRejected"]
+            assert fixture["extraAdminGatewayRouteAccepted"]
 
             # Browser sign-in to Arr, Prowlarr and SABnzbd is the Gateway's
             # Kanidm sign-in only: each app sits behind an admin route and

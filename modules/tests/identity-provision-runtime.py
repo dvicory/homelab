@@ -144,7 +144,7 @@ def create_client(name, landing):
     return True
 
 
-def oidc_groups(person, client, requests):
+def oidc_groups(person, requests):
     # Enrol password and TOTP so the person meets homelab-admin's MFA minimum.
     intent = get(f"/v1/person/{person}/_credential/_update_intent")["token"]
     session, _ = json.loads(call("POST", "/v1/credential/_exchange_intent", intent, ADMIN)[1])
@@ -168,7 +168,7 @@ def oidc_groups(person, client, requests):
     credentials = saved_credentials()
     credentials[person] = {"password": password, "otp": otp}
     save_credentials(credentials)
-    return [authorise(user, client, **request) for request in requests]
+    return [authorise(user, **request) for request in requests]
 
 
 def authorise(user, client, redirect, scopes, allowed=True, published=None):
@@ -189,7 +189,8 @@ def authorise(user, client, redirect, scopes, allowed=True, published=None):
     if not allowed:
         return {"denied": True}
     answer = json.loads(payload)
-    if isinstance(answer, dict) and "ConsentRequested" in answer:
+    consent_required = isinstance(answer, dict) and "ConsentRequested" in answer
+    if consent_required:
         token = answer["ConsentRequested"]["consent_token"]
         reply, _ = call("POST", "/oauth2/authorise/permit", token, user, expect=(200, 302))
     location = reply["Location"]
@@ -224,7 +225,8 @@ def authorise(user, client, redirect, scopes, allowed=True, published=None):
     assert claims["nonce"] == request["nonce"], "ID token nonce mismatch"
     assert claims["iss"] == BASE + "/oauth2/openid/" + client, "ID token issuer mismatch"
     assert claims["aud"] in (client, [client]), "ID token audience mismatch"
-    return {key: claims.get(key) for key in ("iss", "aud", "groups", "sub")}
+    return {"consent_required": consent_required,
+            **{key: claims.get(key) for key in ("iss", "aud", "groups", "sub")}}
 
 
 CREDENTIALS = "/root/private-identity-credentials.json"

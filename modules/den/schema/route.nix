@@ -37,9 +37,10 @@ in
     };
     auth = mkOption {
       type = types.enum [
-        "native"
-        "admin"
+        "app-managed"
+        "admin-gateway"
       ];
+      description = "app-managed leaves sign-in to the application; admin-gateway also requires central administrator sign-in at the Gateway.";
     };
     exposure = mkOption {
       type = types.enum [
