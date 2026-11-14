@@ -305,6 +305,11 @@ scenarios:
     and .object.metadata.name == "kanidm").object.spec.template.spec.volumes[] |
     select(.name == $volume).configMap.optional) = true
   fail: [identity-populations]
+# An omitted name is valid Gateway API and authorizes every Backend in this namespace.
+- name: oidc-reference-grant-all-backends
+  base: gateway.networking.k8s.io/v1beta1/ReferenceGrant/identity/gateway-oidc-backend
+  mutate: del(.spec.to[0].name)
+  fail: [oidc-reference-grant]
 - name: oidc-system-pki-replaced
   base: gateway.networking.k8s.io/v1/BackendTLSPolicy/identity/kanidm-oidc-tls
   mutate: .spec.validation.wellKnownCACertificates = "Private"
