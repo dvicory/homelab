@@ -1604,7 +1604,7 @@ def main():
             apply({"apiVersion": "v1", "kind": "Secret",
                    "metadata": {"namespace": "dependency-track", "name": "dependency-track-sync"},
                    "stringData": {"api-key": api_key, "github-token": github_value}})
-            if not owned_host_paths:
+            if credential_directory not in owned_host_paths:
                 for path in (credential_directory, staged_directory):
                     path.mkdir(mode=0o700)
                     owned_host_paths.append(path)
