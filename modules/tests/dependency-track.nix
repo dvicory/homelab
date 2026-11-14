@@ -45,6 +45,44 @@
         selected.config.flake.nixosConfigurations.compute-1.config.systemd.services.dependency-track-sync-credentials.serviceConfig.ExecStart;
       brokerPortGuard =
         selected.config.flake.nixosConfigurations.compute-1.config.systemd.services.dependency-track-sync-api-tunnel.serviceConfig.ExecStartPre;
+      failureNotifier =
+        selected.config.flake.nixosConfigurations.compute-1.config.systemd.services.dependency-track-sync-failure.serviceConfig.ExecStart;
+      monitoring =
+        (import ../den/aspects/kubernetes/services/monitoring/alerting.nix {
+          inherit config inputs lib;
+        }).den.aspects.kubernetes.services.monitoring.alerting.k8s-manifests
+          {
+            cluster = config.den.clusters.prod-home;
+            computeResources = config.flake.clusterResources.prod-home;
+            charts = { };
+          };
+      alertmanagerValues = monitoring.applications.monitoring.helm.releases.alertmanager.values;
+      alertmanagerContainer = alertmanagerValues.controllers.main.containers.alertmanager;
+      alertmanagerConfig = builtins.fromJSON (
+        (lib.findSingle
+          (object: object.kind == "ConfigMap" && object.metadata.name == "alertmanager-config")
+          (throw "Missing source Alertmanager configuration")
+          (throw "Ambiguous source Alertmanager configuration")
+          monitoring.applications.monitoring.objects
+        ).data."alertmanager.yaml"
+      );
+      failureEventRoute =
+        lib.findSingle (route: builtins.elem "alertname=\"DependencyTrackInventoryRefreshFailed\"" (route.matchers or [ ]))
+          (throw "Missing source inventory failure event route")
+          (throw "Ambiguous source inventory failure event route")
+          alertmanagerConfig.route.routes;
+      alertmanager = {
+        image = "${alertmanagerContainer.image.repository}:${alertmanagerContainer.image.tag}";
+        resources = alertmanagerContainer.resources;
+        eventRoute = failureEventRoute;
+        # Keep the source event route, but no provider configuration or credentials.
+        config = {
+          route = alertmanagerConfig.route // {
+            routes = [ failureEventRoute ];
+          };
+          receivers = map (receiver: { inherit (receiver) name; }) alertmanagerConfig.receivers;
+        };
+      };
       service =
         (import ../den/aspects/kubernetes/services/dependency-track.nix {
           inherit config inputs lib;
@@ -127,6 +165,9 @@
           sync = lib.getExe syncPackage;
           credentialStage = toString credentialStage;
           brokerPortGuard = toString brokerPortGuard;
+          failureNotifier = toString failureNotifier;
+          failureHost = "compute-1";
+          inherit alertmanager;
           cat = lib.getExe' pkgs.coreutils "cat";
           id = lib.getExe' pkgs.coreutils "id";
           nonLoginShell = lib.getExe' pkgs.coreutils "false";

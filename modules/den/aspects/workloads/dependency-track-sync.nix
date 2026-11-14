@@ -165,6 +165,73 @@
             sys.exit(1)
           ''}
         '';
+        notifyFailure = pkgs.writeShellScript "dependency-track-sync-failure" ''
+          set -euo pipefail
+          umask 077
+          test "$EUID" -eq 0
+          runtime="''${RUNTIME_DIRECTORY:?}"
+          export HOME="$runtime"
+          export XDG_CACHE_HOME="$runtime/cache"
+          socket="$runtime/proxy.sock"
+          ${pkgs.coreutils}/bin/mkdir -p "$runtime/cache"
+          read -r event_id < /proc/sys/kernel/random/uuid
+
+          # create --raw leaves Content-Type unset; stock Alertmanager requires JSON.
+          # The native UNIX listener is owner-only and never opens a TCP port.
+          ${lib.getExe' config.services.k3s.package.k3sBundle "kubectl"} \
+            --cache-dir="$runtime/cache" --request-timeout=30s proxy \
+            --unix-socket="$socket" \
+            --accept-hosts='^localhost$' \
+            --accept-paths='^/api/v1/namespaces/monitoring/services/http:alertmanager:9093/proxy/api/v2/alerts$' \
+            --reject-methods='^(GET|HEAD|PUT|PATCH|DELETE|CONNECT|OPTIONS|TRACE)$' \
+            >/dev/null 2>&1 &
+          proxy_pid=$!
+          cleanup() {
+            kill "$proxy_pid" 2>/dev/null || true
+            wait "$proxy_pid" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          trap 'exit 1' HUP INT TERM
+          for attempt in {1..50}; do
+            kill -0 "$proxy_pid" 2>/dev/null || break
+            test ! -S "$socket" || break
+            ${pkgs.coreutils}/bin/sleep 0.1
+          done
+          if ! kill -0 "$proxy_pid" 2>/dev/null || test ! -S "$socket"; then
+            echo "Dependency-Track failure notification transport unavailable" >&2
+            exit 1
+          fi
+
+          if ! status=$(
+            {
+              ${pkgs.jq}/bin/jq -cn \
+                --arg host ${lib.escapeShellArg host.name} \
+                --arg event_id "$event_id" \
+                '[{
+                  labels: {
+                    alertname: "DependencyTrackInventoryRefreshFailed",
+                    source: "systemd",
+                    namespace: "dependency-track",
+                    severity: "warning",
+                    host: $host,
+                    event_id: $event_id
+                  },
+                  annotations: {
+                    summary: ("Automatic inventory refresh failed on " + $host + ". Last-good inventories remain; latest coverage is unknown. Inspect dependency-track-sync.service and its retained journal. Notification expiry is not recovery.")
+                  }
+                }]' \
+                | ${pkgs.curl}/bin/curl --disable --silent --fail \
+                  --unix-socket "$socket" --noproxy '*' \
+                  --connect-timeout 3 --max-time 30 \
+                  --request POST --header 'Content-Type: application/json' \
+                  --data-binary @- --output /dev/null --write-out '%{http_code}' \
+                  'http://localhost/api/v1/namespaces/monitoring/services/http:alertmanager:9093/proxy/api/v2/alerts'
+            } 2>/dev/null
+          ) || test "$status" != 200; then
+            echo "Dependency-Track failure notification request failed" >&2
+            exit 1
+          fi
+        '';
       in
       {
         nix.settings.allowed-users = [ name ];
@@ -268,10 +335,36 @@
                 PrivateTmp = true;
               };
             };
+            dependency-track-sync-failure = {
+              description = "Report automatic inventory refresh failure through private monitoring";
+              after = [ "k3s.service" ];
+              environment.KUBECONFIG = "/etc/rancher/k3s/k3s.yaml";
+              serviceConfig = {
+                Type = "oneshot";
+                User = "root";
+                Group = "root";
+                UMask = "0077";
+                RuntimeDirectory = "dependency-track-sync-failure";
+                RuntimeDirectoryMode = "0700";
+                ExecStart = notifyFailure;
+                TimeoutStartSec = "45s";
+                CapabilityBoundingSet = "";
+                NoNewPrivileges = true;
+                ProtectHome = true;
+                ProtectSystem = "strict";
+                PrivateTmp = true;
+                RestrictAddressFamilies = [
+                  "AF_UNIX"
+                  "AF_INET"
+                  "AF_INET6"
+                ];
+              };
+            };
           }
           // {
             ${name} = {
               description = "Acquire trusted sealed inventories and refresh private Dependency-Track with host provenance";
+              onFailure = lib.optionals computeGuest [ "dependency-track-sync-failure.service" ];
               wants = [ "network-online.target" ];
               requires = lib.optionals computeGuest [
                 "dependency-track-sync-credentials.service"
