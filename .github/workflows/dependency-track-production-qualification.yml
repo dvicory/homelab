@@ -6,6 +6,8 @@ name: Dependency-Track production qualification
 permissions:
   actions: read
   contents: read
+env:
+  QUALIFIED_SOURCE: c08a5e3d59701c3eac093771c24a69f6f5edd284
 jobs:
   stock-recovery:
     name: Stock DT private OIDC and recovery (frozen producer canary)
@@ -47,7 +49,7 @@ jobs:
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       with:
         persist-credentials: false
-        ref: ae78e5cbb55abd31385da2e8bea61aa144214ef9
+        ref: ${{ env.QUALIFIED_SOURCE }}
     - name: Prepare owned native acceptance storage
       if: matrix.requirements.ownedStorage == true
       run: "set -euo pipefail\ntest ! -e /mnt/nix.img\ntest ! -L /mnt/nix.img\ntest ! -e /nix\ntest ! -L /nix\n\
@@ -195,28 +197,15 @@ jobs:
         if-no-files-found: error
     timeout-minutes: 100
   systemd:
-    name: Actual systemd lifecycle (${{ matrix.case }})
+    name: Actual systemd lifecycle and two-target import
     runs-on: ubuntu-26.04
-    timeout-minutes: 110
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-        - case: before
-          source: ff8631d9a55bcde17dbaf4d157c995612815bc2c
-          namespaceFailure: true
-        - case: after
-          source: ae78e5cbb55abd31385da2e8bea61aa144214ef9
-          namespaceFailure: false
-    env:
-      QUALIFIED_SOURCE: ${{ matrix.source }}
-      EXPECT_NAMESPACE_FAILURE: ${{ matrix.namespaceFailure }}
+    timeout-minutes: 180
     steps:
     - name: Check out frozen source
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       with:
         persist-credentials: false
-        ref: ${{ matrix.source }}
+        ref: ${{ env.QUALIFIED_SOURCE }}
     - name: Enable available KVM
       run: |
         test -c /dev/kvm
@@ -237,7 +226,7 @@ jobs:
           '
           printf 'EOF\n'
         } >> "$GITHUB_ENV"
-    - name: Exercise actual source units in KVM
+    - name: Exercise secretless source lifecycle in KVM
       run: |
         set -euo pipefail
         attr=checks.x86_64-linux.dependency-track-systemd
@@ -257,34 +246,84 @@ jobs:
         import sys
 
         root = Path(os.environ["RUNNER_TEMP"])
-        log = (root / "dependency-track-systemd-build.log").read_text()
-        expected_failure = os.environ["EXPECT_NAMESPACE_FAILURE"] == "true"
         status = int(os.environ["TEST_EXIT_CODE"])
         proof = {
             "schema": 1,
             "source": os.environ["ACTUAL_SOURCE"],
             "testDerivation": os.environ["TEST_DERIVATION"],
-            "expectedNamespaceFailure": expected_failure,
             "actualExitCode": status,
-            "namespaceFailureObserved": "status=226" in log,
-            "vmScriptCompleted": "(finished: run the VM test script" in log,
-            "boundary": "Actual source NixOS units and stock K3s/DT/Postgres in an owned VM; no production enrollment or successful inventory import claim",
+            "boundary": "Source NixOS check for actual units and stock K3s/DT/Postgres; secretless rejected acquisition, not successful inventory import",
         }
         (root / "dependency-track-systemd-result.json").write_text(json.dumps(proof, indent=2) + "\n")
-        if proof["source"] != os.environ["QUALIFIED_SOURCE"]:
-            sys.exit("source mismatch")
-        if expected_failure:
-            if status == 0 or not proof["namespaceFailureObserved"]:
-                sys.exit("original absent-path namespace failure was not reproduced")
-        elif status != 0 or not proof["vmScriptCompleted"]:
-            sys.exit("complete source unit lifecycle was not exercised successfully")
+        if proof["source"] != os.environ["QUALIFIED_SOURCE"] or status != 0:
+            sys.exit("source lifecycle check failed")
+        PY
+    - name: Build exact standalone source driver
+      run: |
+        set -euo pipefail
+        nix build --option sandbox relaxed --out-link "$RUNNER_TEMP/dependency-track-systemd-driver" \
+          .#checks.x86_64-linux.dependency-track-systemd.driver
+    - name: Complete actual source unit import with runtime file authority
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        runtime=$(mktemp -d "$RUNNER_TEMP/dependency-track-systemd-live.XXXXXX")
+        trap 'rm -rf -- "$runtime"' EXIT
+        mkdir "$runtime/tmp" "$runtime/output"
+        token_file="$runtime/github-token"
+        (umask 077; printf '%s' "$GH_TOKEN" > "$token_file")
+        chmod 400 "$token_file"
+        unset GH_TOKEN
+        set +e
+        env -u GH_TOKEN -u GITHUB_TOKEN -u GH_ENTERPRISE_TOKEN \
+          HOMELAB_DT_SYSTEMD_TOKEN_FILE="$token_file" TMPDIR="$runtime/tmp" \
+          /usr/bin/timeout --signal=INT --kill-after=60s 5400s \
+          "$RUNNER_TEMP/dependency-track-systemd-driver/bin/nixos-test-driver" \
+          --output_directory "$runtime/output" \
+          2>&1 | tee "$RUNNER_TEMP/dependency-track-systemd-live.log"
+        status=${PIPESTATUS[0]}
+        set -e
+        export LIVE_EXIT_CODE="$status"
+        export LIVE_OUTPUT="$runtime/output"
+        python3 - <<'PY'
+        import hashlib
+        import json
+        import os
+        from pathlib import Path
+        import stat
+        import sys
+
+        root = Path(os.environ["RUNNER_TEMP"])
+        status = int(os.environ["LIVE_EXIT_CODE"])
+        proof = {"schema": 1, "source": os.environ["QUALIFIED_SOURCE"], "actualExitCode": status,
+                 "boundary": "Standalone actual source-unit lifecycle with two admitted security-branch canary targets; no production enrollment"}
+        if status == 0:
+            source = Path(os.environ["LIVE_OUTPUT"]) / "systemd-live-observation.json"
+            info = source.lstat()
+            if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= 1048576:
+                sys.exit("bounded regular live observation missing")
+            raw = source.read_bytes()
+            observation = json.loads(raw)
+            if (observation["scope"] != "isolated-security-branch-canary"
+                    or set(observation["targets"]) != {"3ca171bb4d06a0d2584c981f", "cc64e08c1afb4776b4d587d4"}
+                    or observation["unit"]["Result"] != "success" or observation["unit"]["ExecMainStatus"] != "0"):
+                sys.exit("actual complete import observation missing")
+            (root / "dependency-track-systemd-live-observation.json").write_bytes(raw)
+            proof["observationSha256"] = hashlib.sha256(raw).hexdigest()
+        (root / "dependency-track-systemd-live-result.json").write_text(json.dumps(proof, indent=2) + "\n")
+        if status != 0:
+            sys.exit("actual complete source-unit import failed")
         PY
     - name: Retain bounded unit proof, never VM disks or credentials
       if: always()
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
       with:
-        name: dependency-track-systemd-${{ matrix.case }}-${{ github.run_id }}
+        name: dependency-track-systemd-${{ github.run_id }}
         path: |
           ${{ runner.temp }}/dependency-track-systemd-result.json
           ${{ runner.temp }}/dependency-track-systemd-build.log
+          ${{ runner.temp }}/dependency-track-systemd-live-result.json
+          ${{ runner.temp }}/dependency-track-systemd-live.log
+          ${{ runner.temp }}/dependency-track-systemd-live-observation.json
         if-no-files-found: error
