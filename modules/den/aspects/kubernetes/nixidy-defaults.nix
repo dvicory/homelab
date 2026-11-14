@@ -37,6 +37,7 @@
                     "media"
                     "monitoring"
                     "portal"
+                    "dependency-track"
                   ];
               clusterResourceWhitelist = [
                 {

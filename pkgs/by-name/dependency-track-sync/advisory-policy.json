@@ -1,0 +1,23 @@
+{
+  "github": {
+    "apiUrl": "https://api.github.com/graphql",
+    "enabled": false,
+    "aliasSyncEnabled": false
+  },
+  "jvn": {
+    "enabled": false,
+    "startYear": 1998,
+    "feedBaseUrl": "https://jvndb.jvn.jp/ja/feed"
+  },
+  "nvd": {
+    "enabled": true,
+    "cveFeedsUrl": "https://nvd.nist.gov/feeds"
+  },
+  "osv": {
+    "dataUrl": "https://storage.googleapis.com/osv-vulnerabilities",
+    "enabled": true,
+    "ecosystems": ["Go"],
+    "aliasSyncEnabled": true,
+    "incrementalMirroringEnabled": true
+  }
+}
