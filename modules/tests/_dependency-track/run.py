@@ -158,7 +158,14 @@ def safe_failure(error, phase):
         if isinstance(error, kind):
             reason = category
             break
-    return {"phase": phase, "operation": "fixture-observation", "reason": reason}
+    result = {"phase": phase, "operation": "fixture-observation", "reason": reason,
+              "exceptionType": type(error).__name__}
+    trace = error.__traceback__
+    while trace is not None:
+        if trace.tb_frame.f_code.co_filename == __file__:
+            result["origin"] = {"line": trace.tb_lineno, "function": trace.tb_frame.f_code.co_name}
+        trace = trace.tb_next
+    return result
 
 
 def image_refs(value):
@@ -1320,7 +1327,7 @@ def main():
                 page.goto(ui + "/login")
                 page.evaluate("() => { localStorage.clear(); sessionStorage.clear(); }")
                 page.reload()
-                page.get_by_role("button", name="Kanidm", exact=True).click()
+                page.get_by_role("button", name="Kanidm").click()
                 deadline = time.monotonic() + 60
                 while "authorization" not in captured:
                     if time.monotonic() >= deadline:

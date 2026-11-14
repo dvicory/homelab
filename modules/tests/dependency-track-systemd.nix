@@ -874,8 +874,13 @@
             def gate(admitted):
                 machine.wait_until_succeeds(f"{fixture} gate {'true' if admitted else 'false'}", timeout=180)
 
+            def reset_failed(*units):
+                for unit in units:
+                    if machine.succeed(f"systemctl show -p ActiveState --value {unit}").strip() == "failed":
+                        machine.succeed(f"systemctl reset-failed {unit}")
+
             def run_failed():
-                machine.succeed(f"systemctl reset-failed {importer} {policy} {credentials} {notifier}")
+                reset_failed(importer, policy, credentials, notifier)
                 machine.fail(f"systemctl start --wait {importer}")
                 machine.wait_until_succeeds(f"test $(systemctl show -p ActiveState --value {notifier}) = inactive", timeout=90)
                 assert machine.succeed(f"systemctl show -p Result --value {notifier}").strip() == "success"
@@ -911,7 +916,8 @@
                 with subtest("source root bootstrap admits only the current Pod without an ingestor key"):
                     machine.fail(f"{k} -n dependency-track get secret dependency-track-sync")
                     gate(False)
-                    machine.succeed(f"systemctl reset-failed {policy}; systemctl start --wait {policy}")
+                    reset_failed(policy)
+                    machine.succeed(f"systemctl start --wait {policy}")
                     gate(True)
                     f("auth")
                     machine.succeed("test ! -e /run/dependency-track-access-policy/admin-password")
@@ -942,12 +948,13 @@
                     f("auth")
                     machine.succeed(f"test ! -e {evidence}/state.json; test ! -e {evidence}/unit-probe.json")
                     stage("missing-admin")
-                    machine.succeed(f"systemctl reset-failed {policy}")
+                    reset_failed(policy)
                     machine.fail(f"systemctl start --wait {policy}")
                     gate(False)
                     f("auth")
                     stage("valid")
-                    machine.succeed(f"systemctl reset-failed {policy}; systemctl start --wait {policy}")
+                    reset_failed(policy)
+                    machine.succeed(f"systemctl start --wait {policy}")
                     gate(True)
                     f("auth")
 
@@ -983,7 +990,8 @@
                 with subtest("stop clears real unit credentials and processes; timers invoke fresh source lifecycle"):
                     stage("valid")
                     machine.succeed(f"touch {evidence}/unit-probe-hold; chown 705:705 {evidence}/unit-probe-hold; rm {evidence}/unit-probe.json")
-                    machine.succeed(f"systemctl reset-failed {importer} {credentials}; systemctl start --no-block {importer}")
+                    reset_failed(importer, credentials)
+                    machine.succeed(f"systemctl start --no-block {importer}")
                     machine.wait_until_succeeds(f"test -s {evidence}/unit-probe.json", timeout=180)
                     pid = json.loads(machine.succeed(f"cat {evidence}/unit-probe.json"))["pid"]
                     # Root observation joins the held probe's actual mount namespace;
@@ -1002,17 +1010,17 @@
                     # capturing the timer's event baseline, so it cannot pass stale.
                     machine.wait_until_succeeds(f"test $(systemctl show -p ActiveState --value {notifier}) = inactive", timeout=90)
                     assert machine.succeed(f"systemctl show -p Result --value {notifier}").strip() == "success"
-                    machine.succeed(f"systemctl reset-failed {importer} {policy}")
+                    reset_failed(importer, policy)
                     policy_invocation = machine.succeed(f"systemctl show -p InvocationID --value {policy}").strip()
                     # Observe this timer alone: the importer's root pre-start
                     # must not masquerade as a policy-timer invocation.
                     machine.succeed("systemctl start dependency-track-access-policy.timer")
                     machine.wait_until_succeeds(
                         f'test "$(systemctl show -p InvocationID --value {policy})" != {shlex.quote(policy_invocation)}', timeout=180)
-                    machine.succeed("systemctl stop dependency-track-access-policy.timer")
                     machine.wait_until_succeeds(f"test $(systemctl show -p ActiveState --value {policy}) = inactive", timeout=180)
                     assert machine.succeed(f"systemctl show -p Result --value {policy}").strip() == "success"
                     assert uuid.UUID(machine.succeed(f"systemctl show -p InvocationID --value {policy}").strip()).hex != policy_invocation
+                    machine.succeed("systemctl stop dependency-track-access-policy.timer")
                     before = events()
                     importer_invocation = machine.succeed(f"systemctl show -p InvocationID --value {importer}").strip()
                     machine.succeed(f"rm {evidence}/unit-probe.json; systemctl start dependency-track-sync.timer")
@@ -1035,7 +1043,7 @@
                         machine.fail("runuser -u dependency-track-sync -- test -r /run/dt-unit-fixture/github-token")
                         f("enroll")
                         stage("live")
-                        machine.succeed(f"systemctl reset-failed {importer} {policy} {credentials} {notifier}")
+                        reset_failed(importer, policy, credentials, notifier)
                         machine.succeed(f"systemctl start --wait {importer}", timeout=2 * 60 * 60 + 180)
                         gate(True)
                         f("projection")
