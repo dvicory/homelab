@@ -587,9 +587,9 @@ let
       };
     };
 
-  # Native condition alerts send resolutions; new-error events do not imply
-  # physical recovery when their observation window ends. Credentials remain
-  # file paths, and all critical delivery bypasses Pushover quiet hours.
+  # Native condition alerts send resolutions; event expiry does not imply
+  # recovery. Credentials remain file paths, and all critical delivery
+  # bypasses Pushover quiet hours.
   alertmanagerFor =
     grafanaUrl:
     let
@@ -673,6 +673,24 @@ let
                 (matcher "severity" "warning")
               ];
               receiver = "warning-events";
+            }
+            # An inventory refresh failure is an event, not vulnerability state.
+            # Each failure is grouped separately; expiry never signals recovery.
+            {
+              matchers = [
+                (matcher "source" "systemd")
+                (matcher "alertname" "DependencyTrackInventoryRefreshFailed")
+                (matcher "severity" "warning")
+              ];
+              receiver = "warning-events";
+              group_by = [
+                "alertname"
+                "event_id"
+              ];
+              group_wait = "0s";
+              group_interval = "2m";
+              repeat_interval = "24h";
+              continue = false;
             }
             {
               matchers = [ (matcher "severity" "critical") ];

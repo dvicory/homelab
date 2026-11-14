@@ -2,8 +2,8 @@
 
 Admission: free public GitHub ubuntu-26.04, >=4 CPUs/16GiB nominal RAM,
 >=10GiB currently available RAM, >=30GiB free disk, privileged local Docker.
-No KVM. Images come from the rendered service and production policy enforcer,
-plus the Nix source-selected K3s release. No host paths are mounted.
+No KVM. Images come from the rendered service, production policy enforcer and
+monitoring Alertmanager, plus the source-selected K3s release. No host paths are mounted.
 Only the fixed JSON receipt escapes the private temporary directory.
 """
 import argparse
@@ -36,6 +36,7 @@ import dependency_track_sync as sync
 
 REQUIRED_CHECKS = [
     "stock-bootstrap-restricted-role-and-scram",
+    "exact-root-failure-notifier-uid705-refusal-and-independent-null-receiver-events",
     "exact-credential-projection-rotation-and-missing-key-refusal",
     "same-guest-root-broker-uid705-file-key-without-kubeconfig",
     "anonymous-and-invalid-key-refused-authenticated-project-created",
@@ -145,10 +146,18 @@ def source_inputs(settings):
         digest.update(raw)
         objects.extend(yaml.safe_load_all(raw))
     for raw in (Path(settings["credentialStage"]).read_bytes(), Path(settings["brokerPortGuard"]).read_bytes(),
-                json.dumps([settings["sync"], settings["qualificationTargets"]], sort_keys=True).encode()):
+                Path(settings["failureNotifier"]).read_bytes(),
+                json.dumps([settings["sync"], settings["qualificationTargets"], settings["failureHost"],
+                            settings["alertmanager"]], sort_keys=True).encode()):
         digest.update(len(raw).to_bytes(8, "big"))
         digest.update(raw)
-    return digest.hexdigest(), set(image_refs(objects))
+    return digest.hexdigest(), set(image_refs(objects)) | set(image_refs({"image": settings["alertmanager"]["image"]}))
+
+
+def failure_labels(settings, event_id):
+    return {"alertname": "DependencyTrackInventoryRefreshFailed", "source": "systemd",
+            "namespace": "dependency-track", "severity": "warning",
+            "host": settings["failureHost"], "event_id": event_id}
 
 
 def validate_report(report, settings, producer_branch="main"):
@@ -244,6 +253,34 @@ def validate_report(report, settings, producer_branch="main"):
         require(native.get("valuesMatched") is True and native.get("modes") == [0o400, 0o400])
         require(native.get("owners") == [0, 0] and type(native.get("uid705ReadExit")) is int and native["uid705ReadExit"] != 0)
         require(all(type(value) is int for value in native["modes"] + native["owners"]))
+    section = "root-failure-notification"
+    notification = observed.get("failureNotification", {})
+    require(type(notification.get("uid705Exit")) is int and 0 < notification["uid705Exit"] < 256)
+    require(notification.get("uid705CreatedNoEvents") is True)
+    require(notification.get("rootExits") == [0, 0]
+            and all(type(code) is int for code in notification["rootExits"]))
+    require(notification.get("privateRuntime") is True and notification.get("annotationsSafe") is True)
+    require(notification.get("proxyProcessesRemoved") is True and notification.get("runtimeRemoved") is True)
+    require(notification.get("resources") == settings["alertmanager"]["resources"])
+    events = notification.get("events", [])
+    groups = notification.get("groups", [])
+    require(isinstance(events, list) and len(events) == 2 and isinstance(groups, list) and len(groups) == 2)
+    event_ids = []
+    for labels in events:
+        require(isinstance(labels, dict))
+        event_id = labels.get("event_id", "")
+        require(isinstance(event_id, str) and bool(re.fullmatch(
+            r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}", event_id)))
+        require(labels == failure_labels(settings, event_id))
+        event_ids.append(event_id)
+    require(len(set(event_ids)) == 2)
+    for group in groups:
+        require(isinstance(group, dict) and set(group) == {"labels", "receiver", "eventIds"})
+        require(group["receiver"] == settings["alertmanager"]["eventRoute"]["receiver"])
+        require(isinstance(group["eventIds"], list) and len(group["eventIds"]) == 1)
+        require(group["labels"] == {"alertname": "DependencyTrackInventoryRefreshFailed",
+                                    "event_id": group["eventIds"][0]})
+    require(sorted(group["eventIds"][0] for group in groups) == sorted(event_ids))
     refresh = report.get("refresh", {})
     section = "producer-refresh-policy"
     require(refresh.get("executable") == settings["sync"])
@@ -364,7 +401,8 @@ def validate_report(report, settings, producer_branch="main"):
                 and set(operation["errorCategories"]) <= set(SAFE_ERROR_SIGNATURES))
     require(report.get("cleanup") is True)
     cleanup = report.get("cleanupWitness", {})
-    require(set(cleanup) == {"containerRemoved", "networkRemoved", "volumesRemoved", "credentialsRemoved", "identityRemoved"})
+    require(set(cleanup) == {"containerRemoved", "networkRemoved", "volumesRemoved", "credentialsRemoved",
+                             "identityRemoved", "failureProxyRemoved", "alertmanagerRemoved"})
     require(all(value is True for value in cleanup.values()))
 
 
@@ -441,6 +479,7 @@ def main():
                                "Local PV capacities are declarations, not filesystem quotas; tiny fixture does not prove production disk sizing"]}
     receipt["limitations"].append("Exact projection/getter/rotation and705 transport only; envelope reconciler and systemd lifecycle are not executed")
     receipt["limitations"].append("Storage counts are logical regular-file bytes per retained path, not physical allocation or a capacity proof")
+    receipt["limitations"].append("Exact root notifier with null receivers only; no systemd sandbox/lifecycle or provider delivery proof")
     receipt.update(sourceDigest=source_inputs(settings)[0], http=[], observed={"forbiddenSqlStates": [], "refusedExits": {}},
                    cleanupWitness={"containerRemoved": False, "networkRemoved": False, "volumesRemoved": False, "credentialsRemoved": False},
                    host={"architecture": platform.machine().lower(), "ubuntu": release["VERSION_ID"].strip('"'),
@@ -465,6 +504,9 @@ def main():
     account_user_owned = False
     account_group_owned = False
     ingestor_temporary = None
+    notifier_groups = set()
+    alertmanager_created = False
+    notification_canary = uuid.uuid4().hex
     host_port_boundary = int(Path("/proc/sys/net/ipv4/ip_unprivileged_port_start").read_text())
     success = False
     with tempfile.TemporaryDirectory(prefix="homelab-dt-") as directory:
@@ -482,6 +524,7 @@ def main():
                 operation = {
                     settings["credentialStage"]: "credential-projection",
                     settings["brokerPortGuard"]: "reserved-port-guard",
+                    settings["failureNotifier"]: "root-failure-notification",
                     settings["sync"]: "inventory-refresh",
                     settings["kubectl"]: "kubernetes-command",
                     settings["unshare"]: "isolated-network-namespace",
@@ -628,6 +671,7 @@ def main():
                     return
                 source_objects = json.loads(Path(settings["bootstrap"]).read_text())["items"]
                 source_objects += [yaml.safe_load(path.read_text()) for path in sorted(Path(settings["networkPolicy"]).glob("*.yaml"))]
+                source_objects += alertmanager_objects()
                 allowed_containers = {"coredns", "client"}
                 allowed_workloads = {"kube-dns"}
                 for resource in source_objects:
@@ -790,6 +834,148 @@ def main():
             if len(pods["items"]) != 1:
                 raise QualificationFailure("unexpected-pod-population")
             return pods["items"][0]["status"]["podIP"]
+
+        def alertmanager_objects():
+            labels = {"app.kubernetes.io/name": "fixture-alertmanager"}
+            return [
+                {"apiVersion": "v1", "kind": "Namespace", "metadata": {"name": "monitoring"}},
+                {"apiVersion": "v1", "kind": "ConfigMap",
+                 "metadata": {"name": "fixture-alertmanager", "namespace": "monitoring"},
+                 "data": {"alertmanager.yaml": json.dumps(settings["alertmanager"]["config"])}},
+                {"apiVersion": "v1", "kind": "Service",
+                 "metadata": {"name": "alertmanager", "namespace": "monitoring"},
+                 "spec": {"selector": labels, "ports": [{"name": "http", "port": 9093, "targetPort": 9093}]}},
+                {"apiVersion": "apps/v1", "kind": "Deployment",
+                 "metadata": {"name": "fixture-alertmanager", "namespace": "monitoring"},
+                 "spec": {"replicas": 1, "selector": {"matchLabels": labels},
+                          "template": {"metadata": {"labels": labels}, "spec": {
+                              "automountServiceAccountToken": False, "enableServiceLinks": False,
+                              "securityContext": {"runAsNonRoot": True, "runAsUser": 65534, "runAsGroup": 65534,
+                                                  "fsGroup": 65534, "seccompProfile": {"type": "RuntimeDefault"}},
+                              "containers": [{
+                                  "name": "alertmanager", "image": settings["alertmanager"]["image"],
+                                  "imagePullPolicy": "Never",
+                                  "args": ["--config.file=/etc/alertmanager/alertmanager.yaml",
+                                           "--storage.path=/alertmanager", "--web.listen-address=:9093",
+                                           "--cluster.listen-address="],
+                                  "securityContext": {"allowPrivilegeEscalation": False,
+                                                      "readOnlyRootFilesystem": True, "capabilities": {"drop": ["ALL"]}},
+                                  "resources": settings["alertmanager"]["resources"],
+                                  "ports": [{"name": "http", "containerPort": 9093}],
+                                  "readinessProbe": {"httpGet": {"path": "/-/ready", "port": 9093},
+                                                     "periodSeconds": 2},
+                                  "volumeMounts": [{"name": "config", "mountPath": "/etc/alertmanager", "readOnly": True},
+                                                   {"name": "data", "mountPath": "/alertmanager"}],
+                              }],
+                              "volumes": [{"name": "config", "configMap": {"name": "fixture-alertmanager"}},
+                                          {"name": "data", "emptyDir": {"sizeLimit": "16Mi"}}],
+                          }}}}
+            ]
+
+        def notifier_group_alive(group):
+            try:
+                os.killpg(group, 0)
+                return True
+            except ProcessLookupError:
+                return False
+
+        def root_notification(runtime):
+            process = subprocess.Popen([settings["failureNotifier"]], stdin=subprocess.DEVNULL,
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                       env={**env, "RUNTIME_DIRECTORY": str(runtime),
+                                            "HOMELAB_NOTIFICATION_PRIVATE_CANARY": notification_canary},
+                                       start_new_session=True)
+            notifier_groups.add(process.pid)
+            try:
+                code = process.wait(timeout=45)
+            finally:
+                if process.poll() is None:
+                    os.killpg(process.pid, signal.SIGKILL)
+                    process.wait(timeout=10)
+                if not notifier_group_alive(process.pid):
+                    notifier_groups.discard(process.pid)
+            if process.pid in notifier_groups:
+                raise QualificationFailure("failure-notification-proxy-survived")
+            return code
+
+        def qualify_failure_notification():
+            nonlocal alertmanager_created
+            alertmanager_created = True
+            apply({"apiVersion": "v1", "kind": "List", "items": alertmanager_objects()})
+            k("-n", "monitoring", "rollout", "status", "deployment/fixture-alertmanager",
+              "--timeout=180s", timeout=200)
+            proxy = "/api/v1/namespaces/monitoring/services/http:alertmanager:9093/proxy"
+
+            def query(path):
+                return json.loads(k("get", "--raw=" + proxy + path).stdout)
+
+            pods = json.loads(k("-n", "monitoring", "get", "pods", "-l",
+                                "app.kubernetes.io/name=fixture-alertmanager", "-o", "json").stdout)["items"]
+            if len(pods) != 1:
+                raise QualificationFailure("failure-notification-pod-population")
+            resources = pods[0]["spec"]["containers"][0]["resources"]
+            if query("/api/v2/alerts") != []:
+                raise QualificationFailure("failure-notification-fixture-not-empty")
+            root_exits = []
+            with tempfile.TemporaryDirectory(prefix="failure-notifier-", dir=work) as runtime_directory:
+                runtime = Path(runtime_directory)
+                runtime.chmod(0o700)
+                private_runtime = runtime.stat().st_uid == 0 and stat.S_IMODE(runtime.stat().st_mode) == 0o700
+                refused = run([settings["failureNotifier"]], user=705, check=False,
+                              environment={**env, "RUNTIME_DIRECTORY": str(runtime)})
+                no_events = query("/api/v2/alerts") == []
+                if refused.returncode == 0 or not no_events or not private_runtime:
+                    raise QualificationFailure("failure-notification-uid705-boundary")
+                for index in range(2):
+                    event_runtime = runtime / str(index)
+                    event_runtime.mkdir(mode=0o700)
+                    (event_runtime / "private-context").write_text(notification_canary)
+                    root_exits.append(root_notification(event_runtime))
+                    if root_exits[-1] != 0:
+                        raise QualificationFailure("failure-notification-root-send-failed")
+                wait(lambda: len(query("/api/v2/alerts/groups")) == 2, seconds=30,
+                     reason="failure-notification-group-convergence-timeout")
+                alerts = query("/api/v2/alerts")
+                groups = query("/api/v2/alerts/groups")
+                if not isinstance(alerts, list) or len(alerts) != 2 or not isinstance(groups, list) or len(groups) != 2:
+                    raise QualificationFailure("failure-notification-independent-events-missing")
+                events = []
+                if notification_canary in json.dumps(alerts):
+                    raise QualificationFailure("failure-notification-private-context-leaked")
+                for alert in alerts:
+                    labels = alert["labels"]
+                    event_id = labels.get("event_id", "")
+                    annotations = alert.get("annotations")
+                    if (not isinstance(event_id, str) or not re.fullmatch(
+                            r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}", event_id)
+                            or labels != failure_labels(settings, event_id)
+                            or not isinstance(annotations, dict) or set(annotations) != {"summary"}
+                            or not isinstance(annotations["summary"], str) or len(annotations["summary"]) > 1024):
+                        raise QualificationFailure("failure-notification-unsafe-event")
+                    events.append(labels)
+                grouped = []
+                for group in groups:
+                    labels = group["labels"]
+                    member_ids = [alert["labels"].get("event_id") for alert in group["alerts"]]
+                    if (len(member_ids) != 1 or member_ids[0] not in [event["event_id"] for event in events]
+                            or labels != {"alertname": "DependencyTrackInventoryRefreshFailed", "event_id": member_ids[0]}
+                            or group["receiver"] != {"name": settings["alertmanager"]["eventRoute"]["receiver"]}
+                            or group["alerts"][0]["labels"] != failure_labels(settings, member_ids[0])):
+                        raise QualificationFailure("failure-notification-event-group-mismatch")
+                    grouped.append({"labels": labels, "receiver": group["receiver"]["name"], "eventIds": member_ids})
+            observed["failureNotification"] = {
+                "uid705Exit": refused.returncode, "uid705CreatedNoEvents": no_events,
+                "rootExits": root_exits, "privateRuntime": private_runtime, "annotationsSafe": True,
+                "events": events, "groups": grouped, "resources": resources,
+                "proxyProcessesRemoved": all(not notifier_group_alive(group) for group in notifier_groups),
+                "runtimeRemoved": not runtime.exists(),
+            }
+            k("delete", "namespace", "monitoring", "--wait=true", "--timeout=120s", timeout=140)
+            remaining = json.loads(k("get", "namespaces", "-o", "json").stdout)["items"]
+            receipt["cleanupWitness"]["alertmanagerRemoved"] = all(item["metadata"]["name"] != "monitoring" for item in remaining)
+            if not receipt["cleanupWitness"]["alertmanagerRemoved"]:
+                raise QualificationFailure("failure-notification-resources-survived")
+            check("exact-root-failure-notifier-uid705-refusal-and-independent-null-receiver-events")
 
         def project_credentials(api_key, github_value):
             apply({"apiVersion": "v1", "kind": "Secret",
@@ -1152,6 +1338,9 @@ def main():
             if bad_password.returncode == 0 or b"password authentication failed" not in bad_password.stderr:
                 raise QualificationFailure("invalid-database-password-accepted")
             check("stock-bootstrap-restricted-role-and-scram")
+            phase = "root-failure-notification"
+            qualify_failure_notification()
+            phase = "stock-bootstrap"
             start_forward()
             observed["authentication"] = {}
             api("/v1/project", expected=(401, 403))
@@ -1573,6 +1762,16 @@ def main():
             capture_failure_diagnostics()
         finally:
             cleanup = True
+            for group in notifier_groups:
+                if notifier_group_alive(group):
+                    try:
+                        os.killpg(group, signal.SIGKILL)
+                        wait(lambda: not notifier_group_alive(group), seconds=10,
+                             reason="failure-notification-proxy-cleanup-timeout")
+                    except Exception:
+                        cleanup = False
+            receipt["cleanupWitness"]["failureProxyRemoved"] = all(
+                not notifier_group_alive(group) for group in notifier_groups)
             for path in reversed(owned_host_paths):
                 try:
                     shutil.rmtree(path)
@@ -1607,6 +1806,12 @@ def main():
                         cleanup = cleanup and volumes_removed
                 except Exception:
                     cleanup = False
+            # Removing the owned K3s node and its volumes also removes every
+            # namespace/ephemeral volume if a failure interrupted explicit deletion.
+            receipt["cleanupWitness"]["alertmanagerRemoved"] = (
+                receipt["cleanupWitness"].get("alertmanagerRemoved", not alertmanager_created)
+                or (receipt["cleanupWitness"]["containerRemoved"] and receipt["cleanupWitness"]["volumesRemoved"])
+            )
             identity_removed = True
             if account_user_owned:
                 try:

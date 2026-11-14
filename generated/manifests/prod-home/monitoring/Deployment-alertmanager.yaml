@@ -23,7 +23,7 @@ spec:
   template:
     metadata:
       annotations:
-        homelab.danielvicory/config-sha256: 9ddf16f34a8136d530ae448323af63d8fa4182afae44204756b4bb544652167b
+        homelab.danielvicory/config-sha256: 472bc2db5236752b1288232df8cb21ab4e88f7011f777b89568481b51a73da2d
       labels:
         app.kubernetes.io/controller: main
         app.kubernetes.io/instance: alertmanager

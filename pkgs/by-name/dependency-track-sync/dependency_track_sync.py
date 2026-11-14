@@ -495,6 +495,9 @@ def refresh(args, database, checkpoint, client):
             or not 1 <= args.max_age_seconds <= 90 * 86400
             or (run_id is not None and (type(run_id) is not int or run_id <= 0))):
         raise ValueError("invalid explicit producer policy, target selection or freshness bound")
+    # Stock project properties are limited to 1024 characters; exact policies stay in the journal.
+    selection_reference = {"states": selection["states"], "explicitTargetCount": len(selection["targetIds"]),
+                           "sha256": identity(selection)}
     previous_source = database.get("sourcePolicy", policy)
     if {key: previous_source.get(key) for key in policy} != policy:
         raise ValueError("state belongs to another source trust policy; use separate API/evidence state for canaries")
@@ -558,7 +561,7 @@ def refresh(args, database, checkpoint, client):
                         client.project(project_name(record["source"]), "collection", collection=True,
                                        cached=record["collection"], identity=project_identity(record["source"]))
                         client.properties(record["collection"], {"selection_status": "unselected-retained",
-                                          "selection_policy": selection, "deployment": "unobserved"})
+                                          "selection_policy": selection_reference, "deployment": "unobserved"})
                     except Exception:
                         record["selection"]["statusPublishFailed"] = True
                         attempt.setdefault("selectionPublishFailures", []).append(target)
@@ -607,8 +610,9 @@ def refresh(args, database, checkpoint, client):
                         database["targets"][target]["acquisition"] = acquisition
                         database["targets"][target]["selection"] = {"at": now(), "selected": True}
                         client.properties(database["targets"][target]["collection"], {
-                            "source_run": acquisition, "selection_status": "selected",
-                            "selection_policy": selection})
+                            "source_run": {**{key: acquisition[key] for key in ("repository", "run", "sha", "completedAt")},
+                                           "sourcePolicySha256": identity(policy)},
+                            "selection_status": "selected", "selection_policy": selection_reference})
                         checkpoint()
                     if entry["kind"] == "nix" and homelab_origins.supported(entry):
                         if args.repository != "dvicory/homelab":
