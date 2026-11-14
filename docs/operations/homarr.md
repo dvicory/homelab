@@ -79,6 +79,10 @@ option is Caddy on the operator's workstation:
 2. Use this temporary Caddyfile outside the repository:
 
    ```caddyfile
+   {
+     skip_install_trust
+   }
+
    https://home.plus2.danielvicory.dev {
      bind 127.0.0.1
      tls internal
@@ -86,9 +90,10 @@ option is Caddy on the operator's workstation:
    }
    ```
 
-   Run Caddy with local permission to bind TCP 443. Trust its temporary local CA
-   in the test browser only. This is not a cluster service or a production TLS
-   key export. The bind must remain loopback-only.
+   Run Caddy with local permission to bind TCP 443. `skip_install_trust` prevents
+   automatic host trust-store installation; import its temporary local CA in the
+   test browser only. This is not a cluster service or a production TLS key
+   export. The bind must remain loopback-only.
 3. Open that exact HTTPS hostname and sign in through Kanidm. The already
    registered callback is `/api/auth/callback/oidc`. Remove the proxy, local
    hostname override and temporary CA trust after verification.
@@ -213,9 +218,32 @@ matching configuration/image, and independently recoverable Kanidm identity.
 
 ### Full portable capture
 
-1. Hold automated sync for both the root `apps` Application and `homarr`, using
-   the same procedure as [identity recovery](identity.md#if-kanidm-sign-in-to-argo-cd-fails).
-   Record the prior sync policies so they can be restored exactly.
+1. Hold automated sync for the root `apps` Application and child `homarr`.
+   In Bash on the operator workstation, save both exact prior sync policies
+   outside the repository before changing either Application:
+
+   ```bash
+   SYNC_POLICY_DIR=$(mktemp -d) && (
+     set -euo pipefail
+     umask 077
+     for app in apps homarr; do
+       kubectl -n argocd get application "$app" -o json |
+         jq '{spec: (.spec | with_entries(select(.key == "syncPolicy")))}' \
+           > "$SYNC_POLICY_DIR/$app.json"
+     done
+     for app in apps homarr; do
+       if jq -e '(.spec.syncPolicy // {}) | has("automated")' \
+         "$SYNC_POLICY_DIR/$app.json" >/dev/null; then
+         kubectl -n argocd patch application "$app" --type=json \
+           -p '[{"op":"remove","path":"/spec/syncPolicy/automated"}]'
+       fi
+     done
+   )
+   ```
+
+   Keep `SYNC_POLICY_DIR` and both files until sync is restored. An absent
+   `automated` field is already held; do not remove a nonexistent path.
+   Stop on any capture/patch error; do not scale down until both holds succeed.
 2. Scale `statefulset/homarr` to zero and wait until `homarr-0` is deleted. Do not
    copy a live SQLite database, omit WAL files, or allow Argo to restart writers.
 
@@ -234,7 +262,7 @@ matching configuration/image, and independently recoverable Kanidm identity.
    ```sh
    set -o pipefail
    incus --project compute exec compute-1 -- \
-     tar -C /srv/state/homarr -czf - . |
+     tar --numeric-owner -C /srv/state/homarr -czf - . |
      age -r "$BACKUP_RECIPIENT" -o homarr-appdata.tgz.age
    ```
 
@@ -256,27 +284,95 @@ matching configuration/image, and independently recoverable Kanidm identity.
    kubectl -n portal rollout status statefulset/homarr --timeout=5m
    ```
 
+   Restore the saved policies, Homarr first and root last. This replaces an
+   existing policy exactly (including `automated.enabled`, prune, self-heal and
+   other fields); if the policy was absent, it remains absent. Do not hardcode
+   automated sync on:
+
+   ```bash
+   (
+     set -euo pipefail
+     : "${SYNC_POLICY_DIR:?Use the directory saved before holding sync}"
+     for app in homarr apps; do
+       test -s "$SYNC_POLICY_DIR/$app.json"
+     done
+     for app in homarr apps; do
+       if jq -e '.spec | has("syncPolicy")' "$SYNC_POLICY_DIR/$app.json" >/dev/null; then
+         policy=$(jq -c '[{op:"add", path:"/spec/syncPolicy", value:.spec.syncPolicy}]' \
+           "$SYNC_POLICY_DIR/$app.json")
+         kubectl -n argocd patch application "$app" --type=json -p "$policy"
+       else
+         kubectl -n argocd patch application "$app" --type=merge \
+           -p '{"spec":{"syncPolicy":null}}'
+       fi
+     done
+   )
+   ```
+
 ### Restore without old compute or Kubernetes state
+
+For a rehearsal, `KUBECONFIG` must select the isolated recovery cluster before
+any commands below or the sync-policy procedure above. Do not hold or scale
+production Applications for a rehearsal. The production capture remains a
+separate, explicitly scheduled operation.
 
 1. Keep Homarr at `initial`. Reconstruct storage, compute, Secrets and identity
    using [Compute-loss recovery](../operations.md#compute-loss-recovery) and
    [Identity operations](identity.md). Do not restore the old Kubernetes
-   datastore or object UIDs. Hold Homarr/root sync and keep its replica at zero
-   until the files are restored. Never initialize over a surviving state directory.
-2. Restore into a deliberately empty `/srv/state/homarr`; preserve the complete
-   contents and numeric guest ownership. For a replacement using a different host
-   ID map, extract through the new guest, not directly into the host-mapped path:
+   datastore or object UIDs. Hold `apps`/`homarr` sync using the saved-policy
+   procedure above and keep Homarr's replica at zero until the files are restored.
+   Never initialize over a surviving state directory.
+2. **Rehearsal is the default:** provision a separate, operator-only Incus
+   project and guest both named `homarr-rehearsal`, with independent storage and
+   no production mounts or ingress. Create an empty `/srv/state/homarr` there.
+   The literal target below is not the production `compute/compute-1` guest.
+   Extract through the guest so a different host ID map does not change numeric
+   guest ownership. In Bash on the host:
 
-   ```sh
-   set -o pipefail
-   age -d -i "$BACKUP_IDENTITY" homarr-appdata.tgz.age |
-     incus --project compute exec compute-1 -- \
-       tar -C /srv/state/homarr -xzpf -
+   ```bash
+   (
+     set -euo pipefail
+     age -d -i "$BACKUP_IDENTITY" homarr-appdata.tgz.age |
+       incus --project homarr-rehearsal exec homarr-rehearsal -- sh -eu -c '
+         target=/srv/state/homarr
+         test -d "$target"
+         test "$(realpath "$target")" = "$target"
+         contents=$(find "$target" -mindepth 1 -maxdepth 1 -print -quit)
+         test -z "$contents"
+         exec tar --numeric-owner -C "$target" -xzpf -
+       '
+   )
    ```
 
+   **Authorized production recovery only:** after the old writer is stopped,
+   sync is held, ingress is closed and replacement storage is deliberately
+   empty, use this separate production command instead. Never use it for a
+   rehearsal. Explicitly set `AUTHORIZE_PRODUCTION_RESTORE=compute/compute-1`
+   only for the approved recovery; the guard rejects an unset or different value.
+   Unset it again after the recovery command.
+
+   ```bash
+   (
+     set -euo pipefail
+     test "${AUTHORIZE_PRODUCTION_RESTORE:-}" = compute/compute-1
+     age -d -i "$BACKUP_IDENTITY" homarr-appdata.tgz.age |
+       incus --project compute exec compute-1 -- sh -eu -c '
+         target=/srv/state/homarr
+         test -d "$target"
+         test "$(realpath "$target")" = "$target"
+         contents=$(find "$target" -mindepth 1 -maxdepth 1 -print -quit)
+         test -z "$contents"
+         exec tar --numeric-owner -C "$target" -xzpf -
+       '
+   )
+   ```
+
+   Both commands refuse a missing, symlink-resolved or nonempty destination.
+   Any pipeline failure blocks restart; preserve the capture and investigate.
+
 3. Invalidate historical sessions **offline before starting the restored copy**.
-   With SQLite tooling, open the stopped guest's
-   `/srv/state/homarr/db/db.sqlite` and execute:
+   With SQLite tooling, open the **selected stopped recovery guest's**
+   `/srv/state/homarr/db/db.sqlite` (not the live guest during a rehearsal) and execute:
 
    ```sql
    DELETE FROM "session";
@@ -288,15 +384,17 @@ matching configuration/image, and independently recoverable Kanidm identity.
    unwanted keys separately before releasing ingress.
 4. Supply the **same encryption key** and start the **same pinned Homarr release**
    that made the capture. Reconstruct the static PV/PVC from declarations, pointing
-   at the restored retained path. Do not substitute a newly provisioned dynamic
-   volume. Restore outside the live installation for a rehearsal.
+   at the selected restored retained path. Do not substitute a newly provisioned
+   dynamic volume. A rehearsal's cluster, PV/PVC, mounts and private access path
+   must remain isolated from the live installation.
 5. Verify `/api/health/live` and repeat the full [access matrix](#verify-access)
    with fresh OIDC logins. Confirm both boards' titles, shortcuts, ACLs and
    desktop/mobile homes. A restored cookie must no longer authenticate; a new
    onboarding wizard, missing content, decryption errors or unexpected access
    means recovery has not passed. Keep ingress closed and retain the original
    capture while investigating.
-6. Restore previous sync settings. Return to `ready` only after acceptance.
+6. Restore previous sync settings with the saved-policy procedure above.
+   Return to `ready` only after acceptance; never publish a rehearsal.
    Upgrade forward only after a fresh capture and rehearsal. Automatic migrations
    do **not** establish downgrade compatibility; rollback means restoring the
    matching pre-upgrade data, configuration and key, not merely an older image.
