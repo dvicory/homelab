@@ -256,9 +256,13 @@ def validate_report(report, settings, producer_branch="main"):
     malformed = observed.get("malformedKeyset", {})
     require(malformed.get("nonemptyGuardExit") == 0 and type(malformed.get("nonemptyGuardExit")) is int)
     require(malformed.get("initGuardExit") == 0 and type(malformed.get("initGuardExit")) is int)
-    require(malformed.get("applicationStarted") is True)
-    require(type(malformed.get("applicationExit")) is int and 0 < malformed["applicationExit"] < 126)
-    require(malformed.get("applicationReason") == "Error")
+    require(malformed.get("applicationRunning") is True and malformed.get("podReady") is False)
+    require(malformed.get("cryptoInitializationRejected") is True)
+    require(malformed.get("startupProbeFailureObserved") is True)
+    for field in ("managementStartedExit", "managementReadyExit"):
+        require(type(malformed.get(field)) is int and malformed[field] == 0)
+    for field in ("apiVersionExit", "startupProbeExit", "readinessProbeExit"):
+        require(type(malformed.get(field)) is int and 0 < malformed[field] < 126)
     require(malformed.get("corruptBytesUnchanged") is True and malformed.get("originalRestored") is True)
     require(malformed.get("authenticatedProjectRecovered") is True)
     section = "network-separation"
@@ -269,7 +273,7 @@ def validate_report(report, settings, producer_branch="main"):
     require(type(observed["network"]["databaseExit"]) is int)
     section = "restore-container-refusals"
     refused = observed.get("refusedExits", {})
-    require(set(refused) == {"require-restored-api-keyset", "require-restricted-database-role", "api", "postgres"})
+    require(set(refused) == {"require-restored-api-keyset", "require-restricted-database-role", "postgres"})
     require(all(type(code) is int and 0 < code < 256 for code in refused.values()))
     section = "reserved-port-boundary"
     require(observed.get("hostPortBoundaryUnchanged") is True)
@@ -1768,7 +1772,7 @@ def main():
                 raise QualificationFailure("malformed-keyset-fixture-was-empty")
             apply(json.loads(Path(settings["restore"]).read_text()))
 
-            def malformed_application_refused():
+            def malformed_admission_refused():
                 malformed["corruptBytesUnchanged"] = native("cat", key_path).stdout == MALFORMED_KEYSET
                 if not malformed["corruptBytesUnchanged"]:
                     raise QualificationFailure("malformed-keyset-rewritten")
@@ -1779,20 +1783,51 @@ def main():
                     guard = next((item.get("state", {}).get("terminated", {})
                                   for item in status.get("initContainerStatuses", [])
                                   if item.get("name") == "require-restored-api-keyset"), {})
-                    for item in status.get("containerStatuses", []):
-                        if item.get("name") != "api":
-                            continue
-                        terminated = item.get("state", {}).get("terminated") or item.get("lastState", {}).get("terminated") or {}
-                        code = terminated.get("exitCode")
-                        if (guard.get("exitCode") == 0 and type(code) is int and 0 < code < 126
-                                and terminated.get("reason") == "Error" and terminated.get("startedAt")):
-                            malformed.update(applicationExit=code, applicationReason="Error",
-                                             initGuardExit=guard["exitCode"], applicationStarted=bool(terminated["startedAt"]))
-                            observed["refusedExits"]["api"] = code
-                            return True
+                    application = next((item for item in status.get("containerStatuses", [])
+                                        if item.get("name") == "api"), {})
+                    if guard.get("exitCode") != 0 or not application.get("state", {}).get("running"):
+                        continue
+                    pod_name = pod["metadata"]["name"]
+                    command = ("-n", "dependency-track", "exec", pod_name, "-c", "api", "--")
+                    logs = k("-n", "dependency-track", "logs", pod_name, "-c", "api",
+                             "--tail=100", "--limit-bytes=32768", check=False)
+                    malformed["cryptoInitializationRejected"] = (
+                        logs.returncode == 0
+                        and "api-keyset-crypto-invalid" in safe_error_categories(logs.stdout)
+                    )
+                    if not malformed["cryptoInitializationRejected"]:
+                        continue
+                    malformed.update(initGuardExit=guard["exitCode"], applicationRunning=True,
+                                     podReady=any(condition.get("type") == "Ready" and condition.get("status") == "True"
+                                                  for condition in status.get("conditions", [])))
+                    for field, port, path in (
+                        ("managementStartedExit", 9000, "/health/started"),
+                        ("managementReadyExit", 9000, "/health/ready"),
+                        ("apiVersionExit", 8080, "/api/version"),
+                    ):
+                        malformed[field] = k(*command, "wget", "-q", "-Y", "off", "-T", "2",
+                                             "-O", "/dev/null", f"http://127.0.0.1:{port}{path}", check=False).returncode
+                    # Execute the exact rendered production probes, not a substitute.
+                    container = next(item for item in pod["spec"]["containers"] if item["name"] == "api")
+                    for probe in ("startupProbe", "readinessProbe"):
+                        malformed[probe + "Exit"] = k(*command, *container[probe]["exec"]["command"],
+                                                       check=False).returncode
+                    events = json.loads(k("-n", "dependency-track", "get", "events", "--field-selector",
+                                          "involvedObject.uid=" + pod["metadata"]["uid"] + ",reason=Unhealthy",
+                                          "-o", "json").stdout)
+                    malformed["startupProbeFailureObserved"] = any(
+                        event.get("message", "").startswith("Startup probe failed:") for event in events["items"]
+                    )
+                    return (
+                        malformed["podReady"] is False
+                        and malformed["startupProbeFailureObserved"]
+                        and malformed["managementStartedExit"] == malformed["managementReadyExit"] == 0
+                        and all(0 < malformed[field] < 126
+                                for field in ("apiVersionExit", "startupProbeExit", "readinessProbeExit"))
+                    )
                 return False
 
-            wait(malformed_application_refused, 180, reason="malformed-keyset-application-did-not-refuse")
+            wait(malformed_admission_refused, 180, reason="malformed-keyset-admission-did-not-refuse")
             deployment("api", 0)
             malformed["corruptBytesUnchanged"] = native("cat", key_path).stdout == MALFORMED_KEYSET
             if not malformed["corruptBytesUnchanged"]:
