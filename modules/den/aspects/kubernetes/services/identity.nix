@@ -4,6 +4,9 @@
   lib,
   ...
 }:
+let
+  flakeConfig = config;
+in
 {
   den.aspects.kubernetes.services.identity.settings.phase = lib.mkOption {
     type = lib.types.enum [
@@ -51,7 +54,7 @@
     { cluster, ... }:
     let
       compute =
-        config.den.hosts.${cluster.hostSystem}.${cluster.hostName}.settings.virtualization.compute;
+        flakeConfig.den.hosts.${cluster.hostSystem}.${cluster.hostName}.settings.virtualization.compute;
       activated = cluster.settings.kubernetes.services.identity.phase != "initial";
       idmAdminAge =
         inputs.self
@@ -79,6 +82,7 @@
   den.aspects.kubernetes.services.identity.k8s-manifests =
     {
       cluster,
+      config,
       computeResources,
       lib,
       routes,
@@ -93,133 +97,59 @@
       domain = builtins.head routes.idm.hostnames;
       inherit (cluster.settings.kubernetes.services.identity) adminGroup householdGroup directory;
       jellyfinRoute = routes.jellyfin;
-      adminRoutes = lib.filterAttrs (_: route: route.auth == "admin") routes;
+      adminRoutes = lib.filterAttrs (_: route: route.auth == "admin-gateway") routes;
       routeUrls =
         route:
         map (hostname: "https://${hostname}${lib.removeSuffix "/" route.pathPrefix}") route.hostnames;
-      # Every requested scope is restricted by its client's admin scope map.
-      gatewayScopes = [
-        "openid"
-        "profile"
-        "email"
-        "homelab_admin"
-      ];
       gatewaySecret = name: {
         namespace = "gateway";
         name = "oidc-${name}";
         key = "client-secret";
         labels = { };
       };
-      # One Kanidm client per administrator route, named after the route.
-      # Kanidm lists each client a person may use as an application, so the
-      # display name and landing make it that application's entry.
-      routeClients = lib.mapAttrs (
-        name: route:
-        # The route name becomes a Kanidm client name and part of Kubernetes
-        # object names, so it must satisfy both: a DNS label starting with a letter.
-        assert lib.assertMsg (
-          builtins.match "[a-z]([a-z0-9-]{0,61}[a-z0-9])?" name != null
-        ) "Administrator route name ${name} must be a lowercase DNS label starting with a letter";
-        assert lib.assertMsg (
-          route.displayName != null
-        ) "Administrator route ${name} needs a displayName for its Kanidm application entry";
-        {
-          inherit (route) displayName;
-          landing = "${builtins.head (routeUrls route)}/";
-          redirects = map (url: "${url}/oauth2/callback") (routeUrls route);
-          eligibleGroup = adminGroup;
-          scopes = gatewayScopes;
-          secrets = [ (gatewaySecret name) ];
-        }
-      ) adminRoutes;
-      # Argo CD signs users in itself; its aspect owns those settings. It
-      # shares its route's client, so Kanidm lists Argo CD once.
-      argocdOidc = cluster.settings.kubernetes.services.argocd.oidc;
-      argocdRoute = routes.argocd;
-      argocdUrls = routeUrls argocdRoute;
-      # Argo CD's callback path is fixed at /auth/callback, so Argo CD must
-      # be served at the hostname root.
-      argocdCallbacks =
-        assert lib.assertMsg (
-          argocdRoute.pathPrefix == "/"
-        ) "Argo CD must be served at the hostname root for its /auth/callback path";
-        map (url: "${url}/auth/callback") argocdUrls;
-      # Grafana signs users in itself as well; the monitoring aspect owns
-      # those settings. It shares its route's client the same way, so Kanidm
-      # lists Grafana once.
-      hasGrafana = adminRoutes ? grafana;
-      grafanaOidc = cluster.settings.kubernetes.services.monitoring.grafana.oidc;
-      grafanaRoute = routes.grafana;
-      grafanaUrls = routeUrls grafanaRoute;
-      # Grafana's generic OAuth callback path is fixed at /login/generic_oauth.
-      grafanaCallbacks =
-        assert lib.assertMsg (
-          grafanaRoute.pathPrefix == "/"
-        ) "Grafana must be served at the hostname root for its /login/generic_oauth path";
-        map (url: "${url}/login/generic_oauth") grafanaUrls;
-      grafanaClient = lib.optionalAttrs hasGrafana {
-        grafana = routeClients.grafana // {
-          # Starts Grafana's Kanidm sign-in.
-          landing = "${builtins.head grafanaUrls}/login/generic_oauth";
-          redirects = routeClients.grafana.redirects ++ grafanaCallbacks;
-          scopes = lib.unique (gatewayScopes ++ grafanaOidc.scopes);
-          # Grafana reads the secret from a file mounted from its namespace.
-          secrets = routeClients.grafana.secrets ++ [
-            {
-              inherit (grafanaRoute) namespace;
-              name = grafanaOidc.secretName;
-              key = grafanaOidc.secretKey;
-              labels = { };
-            }
-          ];
-        };
-      };
-      homarrRoute = routes.home;
-      homarrUrls = routeUrls homarrRoute;
+      appsByRoute = lib.listToAttrs (
+        lib.mapAttrsToList (_: app: lib.nameValuePair app.routeKey app) config.oidcClients
+      );
       clients =
         assert lib.assertMsg (
-          adminRoutes ? argocd
-        ) "Argo CD's sign-in shares the Kanidm client of its administrator route";
-        routeClients
-        // grafanaClient
-        // {
-          argocd = routeClients.argocd // {
-            # Starts Argo CD's Kanidm sign-in, which returns to Argo CD's root.
-            landing = "${builtins.head argocdUrls}/auth/login";
-            redirects = routeClients.argocd.redirects ++ argocdCallbacks;
-            scopes = lib.unique (gatewayScopes ++ argocdOidc.scopes);
-            # Argo CD reads `$<name>:<key>` only from its own namespace and
-            # only from a Secret labeled `app.kubernetes.io/part-of: argocd`.
-            secrets = routeClients.argocd.secrets ++ [
-              {
-                inherit (argocdRoute) namespace;
-                name = argocdOidc.secretName;
-                key = argocdOidc.secretKey;
-                labels."app.kubernetes.io/part-of" = "argocd";
-              }
-            ];
-          };
-          homarr = {
-            displayName = "Homarr";
-            landing = "${builtins.head homarrUrls}/";
-            redirects = map (url: "${url}/api/auth/callback/oidc") homarrUrls;
-            eligibleGroup = "homarr-users";
-            scopes = [
-              "openid"
-              "profile"
-              "email"
-              "groups_name"
-            ];
-            secrets = [
-              {
-                namespace = homarrRoute.namespace;
-                name = "homarr-oidc";
-                key = "clientSecret";
-                labels = { };
-              }
-            ];
-          };
-        };
+          lib.length (lib.unique (map (app: app.clientID) (lib.attrValues config.oidcClients)))
+          == lib.length (lib.attrValues config.oidcClients)
+        ) "OIDC applications must have distinct client IDs";
+        assert lib.assertMsg (
+          builtins.length (builtins.attrNames appsByRoute)
+          == builtins.length (builtins.attrNames config.oidcClients)
+        ) "Each route must have at most one OIDC application";
+        lib.mapAttrs' (
+          _: app:
+          let
+            route = routes.${app.routeKey};
+            urls = routeUrls route;
+            admin = route.auth == "admin-gateway";
+            native = app.callbackPath != null;
+            displayName = if app.displayName == null then route.displayName else app.displayName;
+          in
+          assert lib.assertMsg (displayName != null) "OIDC application ${app.clientID} needs a display name";
+          assert lib.assertMsg (
+            !admin || app.eligibleGroup == adminGroup
+          ) "Administrator OIDC application ${app.clientID} must use ${adminGroup}";
+          assert lib.assertMsg (
+            native == (app.secret != null)
+          ) "Native OIDC application ${app.clientID} needs both a callback and a client Secret";
+          assert lib.assertMsg (
+            !native || route.pathPrefix == "/"
+          ) "Native OIDC application ${app.clientID} must be served at the hostname root";
+          lib.nameValuePair app.clientID {
+            inherit displayName;
+            landing = "${builtins.head urls}${app.landingPath}";
+            redirects =
+              lib.optionals admin (map (url: "${url}/oauth2/callback") urls)
+              ++ lib.optionals native (map (url: "${url}${app.callbackPath}") urls);
+            inherit (app) eligibleGroup scopes;
+            secrets =
+              lib.optional admin (gatewaySecret app.routeKey)
+              ++ lib.optional native (app.secret // { inherit (route) namespace; });
+          }
+        ) config.oidcClients;
       # The provisioning Job grants each client's scopes to its eligibleGroup,
       # publishes each Kanidm-generated client secret to every listed Secret,
       # and deletes Kanidm clients that this list does not name.
@@ -227,11 +157,8 @@
         inherit name;
         inherit (client) eligibleGroup scopes secrets;
       }) clients;
-      # This Application declares each client Secret without data, so the
-      # Job never needs `create`, which Kubernetes cannot limit by name.
-      # Argo's server-side apply owns only metadata and type; the Job's
-      # server-side apply (field manager identity-provisioner) owns `data`.
-      # Fields owned by another manager produce no Argo drift.
+      # GitOps owns metadata and type; identity-provisioner owns data.
+      # Predeclare Secrets: Kubernetes cannot restrict `create` by name.
       secretPublication = lib.concatMap (secret: [
         {
           apiVersion = "v1";
@@ -282,52 +209,60 @@
           ];
         }
       ]) (lib.concatMap (client: client.secrets) oauth2Clients);
-      adminPolicies = lib.mapAttrsToList (name: route: {
-        apiVersion = "gateway.envoyproxy.io/v1alpha1";
-        kind = "SecurityPolicy";
-        metadata = {
-          name = "${name}-admin";
-          namespace = "gateway";
-        };
-        spec = {
-          targetRefs = [
-            {
-              group = "gateway.networking.k8s.io";
-              kind = "HTTPRoute";
-              inherit name;
-            }
-          ];
-          oidc = {
-            provider = {
-              issuer = "https://${domain}/oauth2/openid/${name}";
-              authorizationEndpoint = "https://${domain}/ui/oauth2";
-              tokenEndpoint = "https://${domain}/oauth2/token";
-              backendRefs = [
-                {
-                  group = "gateway.envoyproxy.io";
-                  kind = "Backend";
-                  name = "kanidm-oidc";
-                  inherit namespace;
-                  port = 443;
-                  # Envoy Gateway's CRD default; Argo owns this list whole.
-                  weight = 1;
-                }
-              ];
-            };
-            clientID = name;
-            clientSecret.name = (gatewaySecret name).name;
-            scopes = gatewayScopes;
-            redirectURL = "https://%REQ(:authority)%${lib.removeSuffix "/" route.pathPrefix}/oauth2/callback";
-            logoutPath = "${lib.removeSuffix "/" route.pathPrefix}/logout";
-            # Kanidm access tokens last 15 minutes. Renewing with the refresh
-            # token keeps open pages and background streams working. Envoy
-            # stores it encrypted and HMAC-signed in a session cookie.
-            refreshToken = true;
-            forwardAccessToken = false;
-            passThroughAuthHeader = false;
+      adminPolicies = lib.mapAttrsToList (
+        name: route:
+        let
+          clientID = appsByRoute.${name}.clientID;
+        in
+        {
+          apiVersion = "gateway.envoyproxy.io/v1alpha1";
+          kind = "SecurityPolicy";
+          metadata = {
+            name = "${name}-admin";
+            namespace = "gateway";
           };
-        };
-      }) adminRoutes;
+          spec = {
+            targetRefs = [
+              {
+                group = "gateway.networking.k8s.io";
+                kind = "HTTPRoute";
+                inherit name;
+              }
+            ];
+            oidc = {
+              provider = {
+                issuer = "https://${domain}/oauth2/openid/${clientID}";
+                authorizationEndpoint = "https://${domain}/ui/oauth2";
+                tokenEndpoint = "https://${domain}/oauth2/token";
+                backendRefs = [
+                  {
+                    group = "gateway.envoyproxy.io";
+                    kind = "Backend";
+                    name = "kanidm-oidc";
+                    inherit namespace;
+                    port = 443;
+                    # Envoy Gateway's CRD default; Argo owns this list whole.
+                    weight = 1;
+                  }
+                ];
+              };
+              inherit clientID;
+              clientSecret.name = (gatewaySecret name).name;
+              # Kanidm remembers one exact consent scope set per client.
+              # The entrance and native app must request the same set.
+              scopes = clients.${clientID}.scopes;
+              redirectURL = "https://%REQ(:authority)%${lib.removeSuffix "/" route.pathPrefix}/oauth2/callback";
+              logoutPath = "${lib.removeSuffix "/" route.pathPrefix}/logout";
+              # Kanidm access tokens last 15 minutes. Renewing with the refresh
+              # token keeps open pages and background streams working. Envoy
+              # stores it encrypted and HMAC-signed in a session cookie.
+              refreshToken = true;
+              forwardAccessToken = false;
+              passThroughAuthHeader = false;
+            };
+          };
+        }
+      ) adminRoutes;
       # The image runs on the selected compute node, not on the renderer.
       linuxSystem =
         inputs.self.nixosConfigurations.${computeResources.instance}.pkgs.stdenv.hostPlatform.system;
@@ -336,11 +271,11 @@
       );
       provisioning = selected.artifacts.kanidm-provision-image;
       provisioningImage = "${provisioning.repository}@${provisioning.digest}";
-      registry = config.den.users.registry;
+      registry = flakeConfig.den.users.registry;
       administrators = lib.filterAttrs (
         name: _:
         builtins.elem "admins"
-          (config.fleet.acl.get "env:${cluster.environment}" "resolveUser" name).allGroups
+          (flakeConfig.fleet.acl.get "env:${cluster.environment}" "resolveUser" name).allGroups
       ) registry;
       # First-ever bootstrap is intentionally not a Job: the supported
       # recover-account flow runs in a private interactive session, prints
@@ -794,53 +729,30 @@
                     ];
                   }
                 ]
-                # argocd-server fetches discovery and keys and redeems codes.
-                # Cluster DNS rewrites the issuer hostname to the Service, so
-                # this path never uses the host's public address.
-                ++ lib.optional normal {
-                  from = [
+                # Native OIDC apps fetch discovery, redeem codes and read user
+                # information through the identity Service's DNS rewrite.
+                ++ lib.optionals normal (
+                  map (
+                    app:
+                    let
+                      route = routes.${app.routeKey};
+                    in
                     {
-                      namespaceSelector.matchLabels."kubernetes.io/metadata.name" = argocdRoute.namespace;
-                      podSelector.matchLabels = argocdRoute.backendPodSelector;
+                      from = [
+                        {
+                          namespaceSelector.matchLabels."kubernetes.io/metadata.name" = route.namespace;
+                          podSelector.matchLabels = route.backendPodSelector;
+                        }
+                      ];
+                      ports = [
+                        {
+                          protocol = "TCP";
+                          port = 8443;
+                        }
+                      ];
                     }
-                  ];
-                  ports = [
-                    {
-                      protocol = "TCP";
-                      port = 8443;
-                    }
-                  ];
-                }
-                # Grafana redeems codes and reads user information the same way.
-                ++ lib.optional (normal && hasGrafana) {
-                  from = [
-                    {
-                      namespaceSelector.matchLabels."kubernetes.io/metadata.name" = grafanaRoute.namespace;
-                      podSelector.matchLabels = grafanaRoute.backendPodSelector;
-                    }
-                  ];
-                  ports = [
-                    {
-                      protocol = "TCP";
-                      port = 8443;
-                    }
-                  ];
-                }
-                # Homarr's OIDC backchannel follows the same issuer DNS rewrite.
-                ++ lib.optional normal {
-                  from = [
-                    {
-                      namespaceSelector.matchLabels."kubernetes.io/metadata.name" = homarrRoute.namespace;
-                      podSelector.matchLabels = homarrRoute.backendPodSelector;
-                    }
-                  ];
-                  ports = [
-                    {
-                      protocol = "TCP";
-                      port = 8443;
-                    }
-                  ];
-                };
+                  ) (lib.filter (app: app.callbackPath != null) (lib.attrValues config.oidcClients))
+                );
               };
             }
             {

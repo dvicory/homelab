@@ -34,14 +34,14 @@ spec:
           expression: variables.cluster.routes
         - name: active
           expression: >-
-            variables.inventory.filter(n, (variables.inventory[n].auth != 'admin' || variables.phase ==
+            variables.inventory.filter(n, (variables.inventory[n].auth != 'admin-gateway' || variables.phase ==
             'normal') && (n != 'requests' || variables.cluster.settings.kubernetes.services.seerr.phase
             == 'ready') && (n != 'home' || (variables.phase == 'normal' &&
             variables.cluster.settings.kubernetes.services.homarr.phase == 'ready')))
         - name: managed
           expression: variables.active.filter(n, variables.inventory[n].manageBackendIngress)
         - name: admins
-          expression: variables.inventory.filter(n, variables.inventory[n].auth == 'admin')
+          expression: variables.inventory.filter(n, variables.inventory[n].auth == 'admin-gateway')
         - name: routes
           expression: variables.objects.filter(o, o.kind == 'HTTPRoute')
         - name: tls
@@ -209,11 +209,6 @@ spec:
       cel:
         variables: *id001
         expressions:
-        - expression: >-
-            variables.cluster.settings.kubernetes.services.seerr.phase in ['initial', 'ready'] && variables.inventory.requests.auth
-            == 'native' && variables.inventory.requests.exposure == 'public'
-          message: Requests publication must follow Seerr initial/ready facts independently of identity
-            phase.
         - expression: >-
             variables.routes.filter(o, o.metadata.name == 'requests').size() == (variables.cluster.settings.kubernetes.services.seerr.phase
             == 'ready' ? 1 : 0)
@@ -1051,7 +1046,7 @@ spec:
           expression: variables.cluster.routes
         - name: active
           expression: >-
-            variables.inventory.filter(n, (variables.inventory[n].auth != 'admin' || variables.phase ==
+            variables.inventory.filter(n, (variables.inventory[n].auth != 'admin-gateway' || variables.phase ==
             'normal') && (n != 'requests' || variables.cluster.settings.kubernetes.services.seerr.phase
             == 'ready') && (n != 'home' || (variables.phase == 'normal' &&
             variables.cluster.settings.kubernetes.services.homarr.phase == 'ready')))

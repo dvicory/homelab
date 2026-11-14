@@ -103,7 +103,7 @@ in
           name: route:
           let
             hostname = builtins.head route.hostnames;
-            admin = route.auth == "admin";
+            admin = route.auth == "admin-gateway";
             path =
               if admin then
                 "/"

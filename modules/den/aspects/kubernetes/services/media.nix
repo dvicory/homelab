@@ -120,7 +120,7 @@ in
             _: route:
             route.namespace == "media"
             && lib.elem route.service loginlessServices
-            && (route.auth != "admin" || route.sameNamespaceIngress)
+            && (route.auth != "admin-gateway" || route.sameNamespaceIngress)
           ) routes
         );
         ingressPolicy = app: {
@@ -290,7 +290,7 @@ in
       assert lib.assertMsg sharedDataDeclared
         "Every media instance must declare its shared writable /data path.";
       assert lib.assertMsg (openLoginlessRoutes == [ ])
-        "Routes to media apps without their own login must use auth = \"admin\" and sameNamespaceIngress = false: ${lib.concatStringsSep ", " openLoginlessRoutes}";
+        "Routes to media apps without their own login must use auth = \"admin-gateway\" and sameNamespaceIngress = false: ${lib.concatStringsSep ", " openLoginlessRoutes}";
       assert lib.assertMsg (
         lib.unique allClaims == allClaims
       ) "Media retained storage claims must be unique.";

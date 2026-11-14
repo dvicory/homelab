@@ -29,14 +29,14 @@
       };
       publishedRoutes = lib.filterAttrs (
         name: route:
-        route.auth != "admin"
+        route.auth != "admin-gateway"
         && (name != "requests" || cluster.settings.kubernetes.services.seerr.phase == "ready")
         && (
           name != "home" || (identityNormal && cluster.settings.kubernetes.services.homarr.phase == "ready")
         )
       ) routes;
       adminPublishedRoutes =
-        if identityNormal then lib.filterAttrs (_: route: route.auth == "admin") routes else { };
+        if identityNormal then lib.filterAttrs (_: route: route.auth == "admin-gateway") routes else { };
       retained = {
         "argocd.argoproj.io/sync-options" = "Prune=false,Delete=false";
       };

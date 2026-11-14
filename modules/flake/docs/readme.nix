@@ -61,13 +61,7 @@ in
                 else
                   "`${builtins.head route.hostnames}`";
             in
-            "| `${route.namespace}/${route.service}` | ${endpoint} | `${route.exposure}` | ${
-              {
-                admin = "Gateway admin";
-                native = "Application";
-              }
-              .${route.auth} or route.auth
-            } | ${if emitted then "yes" else "no"} |"
+            "| `${route.namespace}/${route.service}` | ${endpoint} | `${route.exposure}` | ${if route.auth == "admin-gateway" then "Admin required" else "None"} | ${if emitted then "yes" else "no"} |"
           ) config.flake.clusterRoutes.${name}.routes;
         in
         ''
@@ -77,7 +71,7 @@ in
           - **Persistent state:** `${compute.stateRoot}` on ${hostLink cluster.hostName}, mounted at `${compute.stateGuestPath}` in the guest. [Paths and owners](docs/operations.md#retained-state).
           - **GitOps:** [generated manifests](generated/manifests/${name}/), tracked from `${cluster.branch}` by Argo CD. [Deployment runbook](docs/operations.md#deploy-configuration).
 
-          | Backend | Canonical hostname | Exposure | Sign-in | In manifests |
+          | Backend | Canonical hostname | Exposure | Gateway sign-in | In manifests |
           | --- | --- | --- | --- | --- |
           ${lib.concatStringsSep "\n" routeRows}
         '';
@@ -100,7 +94,7 @@ in
 
         ${lib.concatStringsSep "\n" (lib.mapAttrsToList clusterSection clusters)}
         Routes reflect generated manifests, not live health.
-        [Route details and publication gates](docs/operations.md#declared-routes) explain aliases and onboarding.
+        See the [route inventory](docs/operations.md#declared-routes) for secondary hostnames and publication gates.
 
         ## Operate and recover
 
