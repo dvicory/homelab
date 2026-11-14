@@ -1317,6 +1317,8 @@ def main():
                                         urllib.parse.parse_qs(request.post_data).items()}
 
             def observe_response(response):
+                if response.request.is_navigation_request() and response.frame.parent_frame is None:
+                    captured["documentStatus"] = response.status
                 if urllib.parse.urlsplit(response.url).path == "/api/v1/user/oidc/login":
                     captured["loginStatus"] = response.status
                     if response.status == 200:
@@ -1433,6 +1435,39 @@ def main():
                             proof["removedGroupReloginStatus"] = 403
                             idm_api("PUT", "/v1/group/" + settings["oidcGroup"] + "/_attr/member",
                                     ["fixture-administrator"], bearer=idm_admin)
+                        except Exception:
+                            # Only fixed origin/path labels and state booleans; never
+                            # publish URLs, query values, page text or browser errors.
+                            diagnostic = {"documentStatus": captured.get("documentStatus")}
+                            observed["nativeOidcFailure"] = diagnostic
+                            try:
+                                diagnostic["page"] = page.evaluate("""() => {
+                                  const origins = ['https://idm.dt-fixture.invalid',
+                                    'https://dt.dt-fixture.invalid', 'https://api.dt-fixture.invalid'];
+                                  const paths = ['/ui/login', '/ui/login/begin', '/ui/login/passkey',
+                                    '/ui/oauth2', '/ui/oauth2/resume', '/ui/oauth2/consent',
+                                    '/login', '/static/oidc-callback.html', '/', '/dashboard'];
+                                  const origin = origins.includes(location.origin) ? location.origin : 'other';
+                                  if (origin === 'other') return {origin};
+                                  return {
+                                    origin, path: paths.includes(location.pathname) ? location.pathname : 'other',
+                                    ready: ['loading', 'interactive', 'complete'].includes(document.readyState)
+                                      ? document.readyState : 'other',
+                                    username: document.querySelector('#username') !== null,
+                                    login: document.querySelector("form[action='/ui/login/begin']") !== null,
+                                    passkey: document.querySelector("form[action='/ui/login/passkey']") !== null,
+                                    consent: document.querySelector("form[action='/ui/oauth2/consent']") !== null,
+                                    appHeader: document.querySelector('.app-header') !== null,
+                                    modal: document.querySelector('.modal.show') !== null,
+                                    identityError: origin === origins[0] && Array.from(document.querySelectorAll('h2'))
+                                      .some(node => node.textContent === 'Error'),
+                                    identityDenied: origin === origins[0] && Array.from(document.querySelectorAll('h2'))
+                                      .some(node => node.textContent === 'Access Denied')
+                                  };
+                                }""")
+                            except Exception as error:
+                                diagnostic["collectionError"] = safe_failure(error, "native-browser-diagnostic")
+                            raise
                         finally:
                             context.close()
                 finally:
