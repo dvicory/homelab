@@ -1,0 +1,196 @@
+name: Dependency-Track production qualification
+'on':
+  push:
+    branches:
+    - security/dependency-track-production-qualification
+permissions:
+  actions: read
+  contents: read
+jobs:
+  stock-recovery:
+    name: Stock DT recovery (explicit frozen producer canary)
+    runs-on: ${{ matrix.system == 'x86_64-linux' && 'ubuntu-26.04' || matrix.system == 'aarch64-linux' && 'ubuntu-26.04-arm'
+      || 'macos-15' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - arguments:
+          - --docker-context
+          - default
+          - --admit-disposable-github-runner
+          - --report
+          - dependency-track-result.json
+          - --producer-branch
+          - security/software-vulnerability-management
+          - --github-token-file
+          - ../dependency-track-github-token
+          cleanupPrefix: homelab-dt-
+          name: qualify-dependency-track
+          package: packages.x86_64-linux.qualify-dependency-track
+          reportCheckArguments:
+          - --check-report
+          - dependency-track-result.json
+          - --producer-branch
+          - security/software-vulnerability-management
+          reportFile: dependency-track-result.json
+          requirements:
+            docker: true
+            ownedStorage: true
+            root: true
+          timeoutSeconds: 3600
+          system: x86_64-linux
+    env:
+      APPLICATION: ${{ toJSON(matrix) }}
+    steps:
+    - name: Check out repository
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: false
+        ref: 91987c21cb73269edc5e40a2d53e9de9022c0772
+    - name: Prepare owned native acceptance storage
+      if: matrix.requirements.ownedStorage == true
+      run: "set -euo pipefail\ntest ! -e /mnt/nix.img\ntest ! -L /mnt/nix.img\ntest ! -e /nix\ntest ! -L /nix\n\
+        for target in /nix /var/lib/docker /var/lib/containerd; do\n  test ! -L \"$target\"\n  if mountpoint -q\
+        \ \"$target\"; then\n    printf 'refusing existing storage mount: %s\\n' \"$target\" >&2\n    exit 1\n \
+        \ fi\ndone\nfree_space=$(df -m --output=avail /mnt | tail -n 1)\ndisk_size=$((free_space - 1024))\ntest\
+        \ \"$disk_size\" -gt 1024\nsudo fallocate -l \"${disk_size}M\" /mnt/nix.img\nloop_dev=$(sudo losetup --find\
+        \ --show /mnt/nix.img)\nprintf '%s\\n' \"$loop_dev\" > \"$RUNNER_TEMP/native-storage-loop\"\nsudo mkfs.btrfs\
+        \ -L nix --nodiscard \"$loop_dev\"\nsudo blkid --probe -s UUID -o value \"$loop_dev\" | tee \"$RUNNER_TEMP/native-storage-uuid\"\
+        \ntest -s \"$RUNNER_TEMP/native-storage-uuid\"\nsudo mkdir /nix\nsudo mount \"$loop_dev\" /nix -o noatime,nobarrier,nodiscard,compress=zstd:1,space_cache=v2,commit=120\n\
+        sudo mkdir -p /nix/build\nsudo chattr +C /nix/build\nsudo mkdir -p /nix/build/native-acceptance/{docker,containerd,tmp}\n\
+        sudo chmod 1777 /nix/build/native-acceptance/tmp\nsudo systemctl stop docker.service docker.socket containerd.service\n\
+        sudo mkdir -p /var/lib/docker /var/lib/containerd\nsudo mount --bind /nix/build/native-acceptance/docker\
+        \ /var/lib/docker\nsudo mount --bind /nix/build/native-acceptance/containerd /var/lib/containerd\nsudo systemctl\
+        \ start containerd.service docker.service\n"
+    - name: Install Nix
+      uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702
+      with:
+        github_access_token: ${{ github.token }}
+    - name: Configure shared public caches
+      env:
+        CACHIX_CACHE: ${{ vars.CACHIX_CACHE }}
+      run: "case \"${CACHIX_CACHE:-}\" in\n  \"\"|dvicory-homelab) ;;\n  *) printf '%s\\n' 'Unsupported CACHIX_CACHE;\
+        \ expected dvicory-homelab or empty.' >&2; exit 1 ;;\nesac\n{\n  printf 'NIX_CONFIG<<EOF\\n%s\\n' \"${NIX_CONFIG:-}\"\
+        \n  nix eval --raw --file modules/nix/caches.nix --apply '\n    module:\n    let settings = module.flake.modules.generic.nix-common.nix.settings;\n\
+        \    in \"extra-substituters = ${builtins.concatStringsSep \" \" settings.extra-substituters}\\n\"\n   \
+        \   + \"extra-trusted-public-keys = ${builtins.concatStringsSep \" \" settings.extra-trusted-public-keys}\\\
+        n\"\n  '\n  printf 'EOF\\n'\n} >> \"$GITHUB_ENV\"\n"
+    - name: Select owned fixture scratch after Nix installation
+      if: matrix.requirements.ownedStorage == true
+      run: '# Installation and cache setup must not use scratch owned beneath /nix.
+
+        printf ''TMPDIR=/nix/build/native-acceptance/tmp\n'' >> "$GITHUB_ENV"
+
+        printf ''NIX_CONFIG<<EOF\n%s\nbuild-dir = /nix/build\nEOF\n'' "$NIX_CONFIG" >> "$GITHUB_ENV"
+
+        '
+    - name: Configure declared canonical loopback host
+      if: matrix.loopbackHost != ''
+      run: 'set -euo pipefail
+
+        host=$(jq -er .loopbackHost <<< "$APPLICATION")
+
+        printf ''127.0.0.1 %s\n'' "$host" | sudo tee -a /etc/hosts
+
+        '
+    - name: Record native runner and declared inputs
+      run: "set -euo pipefail\nmkdir -p \"$RUNNER_TEMP/native-evidence\"\nprintf '%s\\n' \"$APPLICATION\" > \"$RUNNER_TEMP/native-evidence/application.json\"\
+        \n{\n  printf 'runner_image=%s\\nrunner_image_version=%s\\n' \"${ImageOS:-unknown}\" \"${ImageVersion:-unknown}\"\
+        \n  uname -a\n  nix --version\n  git rev-parse HEAD HEAD:generated/manifests/prod-home\n  sha256sum flake.lock\n\
+        \  if [ \"$(jq -r .requirements.ownedStorage <<< \"$APPLICATION\")\" = true ]; then\n    df -h / /nix\n\
+        \    for target in /nix /var/lib/docker /var/lib/containerd; do\n      sudo findmnt -rn -M \"$target\" -o\
+        \ TARGET,SOURCE,FSTYPE,FSROOT,UUID\n    done\n  fi\n  if [ \"$(jq -r .requirements.docker <<< \"$APPLICATION\"\
+        )\" = true ]; then\n    test -S /var/run/docker.sock\n    endpoint=$(env -u DOCKER_HOST -u DOCKER_CONTEXT\
+        \ docker context inspect default --format '{{ .Endpoints.docker.Host }}')\n    test \"$endpoint\" = unix:///var/run/docker.sock\n\
+        \    docker --host unix:///var/run/docker.sock version\n    docker --host unix:///var/run/docker.sock info\n\
+        \    server=$(docker --host unix:///var/run/docker.sock info --format '{{.OSType}}/{{.Architecture}}')\n\
+        \    system=$(jq -r .system <<< \"$APPLICATION\")\n    case \"$system/$server\" in\n      x86_64-linux/linux/x86_64|x86_64-linux/linux/amd64|aarch64-linux/linux/aarch64|aarch64-linux/linux/arm64)\
+        \ ;;\n      *) echo 'Native declared Linux Docker platform required' >&2; exit 1 ;;\n    esac\n    # This\
+        \ disposable runner owns the kernel used by its Docker nodes.\n    sudo modprobe br_netfilter\n    test\
+        \ -d /sys/module/br_netfilter\n  fi\n} 2>&1 | tee \"$RUNNER_TEMP/native-evidence/inputs.log\"\n"
+    - name: Build declared application package
+      run: "set -euo pipefail\nsystem=$(jq -er .system <<< \"$APPLICATION\")\nname=$(jq -r '.name | @json' <<< \"\
+        $APPLICATION\")\nnix eval --json \".#hostedCiArtifacts.$system.nativeApplications.$name\" > \"$RUNNER_TEMP/artifact.json\"\
+        \njq -n --argjson application \"$APPLICATION\" --slurpfile artifact \"$RUNNER_TEMP/artifact.json\" \\\n\
+        \  '{role: \"native\", system: $application.system, group: $application.name, check: \"\", artifact: $artifact[0]}'\
+        \ \\\n  > \"$RUNNER_TEMP/ci-artifact.json\"\ndrv=$(jq -er .drvPath \"$RUNNER_TEMP/artifact.json\")\n/usr/bin/time\
+        \ -p nix build \"$drv^*\" --out-link \"$RUNNER_TEMP/native-app\" --json \\\n  > \"$RUNNER_TEMP/native-evidence/build.json\"\
+        \n"
+    - name: Run complete declared native acceptance
+      env:
+        GH_TOKEN: ${{ matrix.name == 'qualify-dependency-track' && github.token || '' }}
+      run: "set -euo pipefail\ndeadline=$(jq -er .timeoutSeconds <<< \"$APPLICATION\")\nprogram=$(jq -er .program\
+        \ \"$RUNNER_TEMP/artifact.json\")\njq -j '.arguments[] | . + \"\\u0000\"' <<< \"$APPLICATION\" > \"$RUNNER_TEMP/native-arguments\"\
+        \nmapfile -d '' -t arguments < \"$RUNNER_TEMP/native-arguments\"\nprintf '%s\\n' \"$program\" > \"$RUNNER_TEMP/native-evidence/program\"\
+        \n# Relative declared report paths live only in this job's owned evidence.\nif jq -e 'has(\"reportFile\"\
+        )' <<< \"$APPLICATION\" > /dev/null; then\n  report=$(jq -er .reportFile <<< \"$APPLICATION\")\n  [[ \"\
+        $report\" =~ ^[a-zA-Z0-9_-]+[.]json$ ]]\n  cd \"$RUNNER_TEMP/native-evidence\"\n  test ! -e \"$report\"\n\
+        fi\nif [ \"$(jq -r .name <<< \"$APPLICATION\")\" = qualify-dependency-track ]; then\n  token_file=\"$RUNNER_TEMP/dependency-track-github-token\"\
+        \n  test ! -e \"$token_file\"\n  trap 'rm -f -- \"$token_file\"' EXIT\n  (umask 077; printf '%s' \"$GH_TOKEN\"\
+        \ > \"$token_file\")\nfi\nrunner=()\nif [ \"$(jq -r .requirements.root <<< \"$APPLICATION\")\" = true ];\
+        \ then\n  runner=(sudo env \"TMPDIR=${TMPDIR:-$RUNNER_TEMP}\" \"NIX_CONFIG=${NIX_CONFIG:-}\"\n    \"GITHUB_ACTIONS=${GITHUB_ACTIONS:-}\"\
+        \ \"RUNNER_ENVIRONMENT=${RUNNER_ENVIRONMENT:-}\"\n    \"RUNNER_OS=${RUNNER_OS:-}\" \"RUNNER_ARCH=${RUNNER_ARCH:-}\"\
+        )\nfi\n\"${runner[@]}\" /usr/bin/time -p timeout --signal=INT \"${deadline}s\" \"$program\" \"${arguments[@]}\"\
+        \ \\\n  2>&1 | tee \"$RUNNER_TEMP/native-evidence/acceptance.log\"\nif jq -e 'has(\"reportFile\")' <<< \"\
+        $APPLICATION\" > /dev/null; then\n  test -f \"$report\"\n  jq -j '.reportCheckArguments[] | . + \"\\u0000\"\
+        ' <<< \"$APPLICATION\" > \"$RUNNER_TEMP/report-arguments\"\n  mapfile -d '' -t report_arguments < \"$RUNNER_TEMP/report-arguments\"\
+        \n  \"$program\" \"${report_arguments[@]}\"\n  sha256sum \"$report\" | cut -d ' ' -f 1 > \"$RUNNER_TEMP/native-report-sha256\"\
+        \nfi\n"
+    - name: Record independent owned cleanup
+      if: always()
+      run: "set -euo pipefail\nmkdir -p \"$RUNNER_TEMP/native-evidence\"\n{\n  if [ \"$(jq -r .requirements.docker\
+        \ <<< \"$APPLICATION\")\" = true ]; then\n    docker --host unix:///var/run/docker.sock image ls --digests\
+        \ --no-trunc\n    prefix=$(jq -er .cleanupPrefix <<< \"$APPLICATION\")\n    for kind in container network\
+        \ volume; do\n      if [ \"$kind\" = container ]; then\n        remaining=$(docker --host unix:///var/run/docker.sock\
+        \ container ls --all \\\n          --filter \"name=$prefix\" --format '{{.Names}}')\n      else\n      \
+        \  remaining=$(docker --host unix:///var/run/docker.sock \"$kind\" ls \\\n          --filter \"name=$prefix\"\
+        \ --format '{{.Name}}')\n      fi\n      printf 'remaining_owned_%s=%s\\n' \"$kind\" \"$remaining\"\n  \
+        \    test -z \"$remaining\"\n    done\n  fi\n  if [ \"$(jq -r .requirements.ownedStorage <<< \"$APPLICATION\"\
+        )\" = true ]; then\n    # This capability owns an exclusive disposable daemon, not a name subset.\n    test\
+        \ -z \"$(docker --host unix:///var/run/docker.sock container ls --all --quiet)\"\n    test -z \"$(docker\
+        \ --host unix:///var/run/docker.sock network ls --filter type=custom --quiet)\"\n    test -z \"$(docker\
+        \ --host unix:///var/run/docker.sock volume ls --quiet)\"\n    test -z \"$(sudo find \"$TMPDIR\" -mindepth\
+        \ 1 -maxdepth 1 -print -quit)\"\n    printf 'remaining_fixture_resources=false\\n'\n  fi\n} 2>&1 | tee \"\
+        $RUNNER_TEMP/native-evidence/cleanup.log\"\n"
+    - name: Clean owned native acceptance storage
+      if: always() && matrix.requirements.ownedStorage == true
+      run: "set -euxo pipefail\nif test -s \"$RUNNER_TEMP/native-storage-uuid\"; then\n  uuid=$(cat \"$RUNNER_TEMP/native-storage-uuid\"\
+        )\n  loop_dev=$(cat \"$RUNNER_TEMP/native-storage-loop\")\n  test ! -L /mnt/nix.img\n  test \"$(sudo losetup\
+        \ --noheadings --output BACK-FILE \"$loop_dev\")\" = /mnt/nix.img\n  test \"$(sudo blkid --probe -s UUID\
+        \ -o value \"$loop_dev\")\" = \"$uuid\"\n  # UUID probing needs root; validate kernel mount sources separately.\n\
+        \  # Validate every owned mount before stopping daemons or deleting data.\n  for target in /nix /var/lib/docker\
+        \ /var/lib/containerd; do\n    if mountpoint -q \"$target\"; then\n      test \"$(findmnt -rn --nofsroot\
+        \ -M \"$target\" -o SOURCE)\" = \"$loop_dev\"\n      case \"$target\" in\n        /nix) root=/ ;;\n    \
+        \    *) root=\"/build/native-acceptance/${target##*/}\" ;;\n      esac\n      test \"$(findmnt -rn -M \"\
+        $target\" -o FSROOT)\" = \"$root\"\n    fi\n  done\n  sudo systemctl stop docker.service docker.socket containerd.service\n\
+        \  for name in docker containerd; do\n    if mountpoint -q \"/var/lib/$name\"; then\n      sudo umount \"\
+        /var/lib/$name\"\n    fi\n  done\n  if mountpoint -q /nix; then\n    sudo rm -rf /nix/build/native-acceptance\n\
+        \    sudo test ! -e /nix/build/native-acceptance\n  fi\n  # The tool store must survive Cachix/Nix post-actions.\
+        \ The exclusive\n  # disposable runner owns final /nix mount, loop and image teardown.\nfi\nprintf 'TMPDIR=%s\\\
+        n' \"$RUNNER_TEMP\" >> \"$GITHUB_ENV\"\n"
+    - name: Upload native execution diagnostics
+      if: always()
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      with:
+        name: native-${{ matrix.system }}-${{ matrix.name }}-${{ github.run_id }}
+        path: ${{ runner.temp }}/native-evidence
+        if-no-files-found: error
+    - name: Record successful native execution and checked report
+      run: "set -euo pipefail\ndigest=\"\"\nif jq -e 'has(\"reportFile\")' <<< \"$APPLICATION\" > /dev/null; then\n\
+        \  digest=$(cat \"$RUNNER_TEMP/native-report-sha256\")\nfi\nprogram=$(cat \"$RUNNER_TEMP/native-evidence/program\"\
+        )\njq -n --argjson application \"$APPLICATION\" --arg digest \"$digest\" --arg program \"$program\" \\\n\
+        \  --slurpfile build \"$RUNNER_TEMP/native-evidence/build.json\" \\\n  '{role: \"native\", system: $application.system,\
+        \ group: $application.name, check: \"\",\n    build: $build[0], checks: [], application: $application, program:\
+        \ $program, reportSha256: $digest}' \\\n  > \"$RUNNER_TEMP/ci-receipt.json\"\n"
+    - name: Upload successful native receipt
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      with:
+        name: ci-receipt-native-${{ matrix.system }}-${{ matrix.name }}-${{ github.run_id }}
+        path: '${{ runner.temp }}/ci-receipt.json
+
+          ${{ runner.temp }}/ci-artifact.json
+
+          '
+        if-no-files-found: error
+    timeout-minutes: 100
