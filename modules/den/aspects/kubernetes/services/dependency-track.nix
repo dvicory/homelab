@@ -513,19 +513,23 @@ in
               ];
               volumeMounts = [ (mount "/data") ];
               startupProbe = {
-                httpGet = {
-                  path = "/health/started";
-                  port = 9000;
-                };
+                # Management health precedes servlet initialization in stock 5.2.1;
+                # require the real API too, so KEK initialization failure is not Ready.
+                exec.command = [
+                  "/bin/sh"
+                  "-ec"
+                  "wget -q -Y off -T 2 -O /dev/null http://127.0.0.1:9000/health/started && wget -q -Y off -T 2 -O /dev/null http://127.0.0.1:8080/api/version"
+                ];
                 failureThreshold = 60;
                 periodSeconds = 10;
                 timeoutSeconds = 5;
               };
               readinessProbe = {
-                httpGet = {
-                  path = "/health/ready";
-                  port = 9000;
-                };
+                exec.command = [
+                  "/bin/sh"
+                  "-ec"
+                  "wget -q -Y off -T 2 -O /dev/null http://127.0.0.1:9000/health/ready && wget -q -Y off -T 2 -O /dev/null http://127.0.0.1:8080/api/version"
+                ];
                 timeoutSeconds = 5;
               };
             } [ (volume "api") ])
