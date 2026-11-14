@@ -104,6 +104,7 @@ let
     "compute-network-policy-runtime"
     "compute-guest-upgrade"
     "identity-provision-runtime"
+    "dependency-track-systemd"
     "incus-mount-isolation"
     "root-esp-mirror"
     "prod-home-replacement"
