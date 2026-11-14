@@ -47,7 +47,7 @@ jobs:
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       with:
         persist-credentials: false
-        ref: a3ac4b569411e5264eb91795e75abb06a275cd47
+        ref: ae78e5cbb55abd31385da2e8bea61aa144214ef9
     - name: Prepare owned native acceptance storage
       if: matrix.requirements.ownedStorage == true
       run: "set -euo pipefail\ntest ! -e /mnt/nix.img\ntest ! -L /mnt/nix.img\ntest ! -e /nix\ntest ! -L /nix\n\
@@ -206,7 +206,7 @@ jobs:
           source: ff8631d9a55bcde17dbaf4d157c995612815bc2c
           namespaceFailure: true
         - case: after
-          source: a3ac4b569411e5264eb91795e75abb06a275cd47
+          source: ae78e5cbb55abd31385da2e8bea61aa144214ef9
           namespaceFailure: false
     env:
       QUALIFIED_SOURCE: ${{ matrix.source }}

@@ -101,6 +101,7 @@ let
         inherit instance;
       };
       inherit lib;
+      config.applications = { };
     };
   identityDataPath = "/var/lib/native-gateway/kanidm";
   identityRetained = (renderIdentity "initial").applications.identity-retained.resources;
