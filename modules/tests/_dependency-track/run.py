@@ -22,6 +22,7 @@ import selectors
 import shutil
 import signal
 import stat
+import sys
 import subprocess
 import tempfile
 from datetime import datetime, timezone
@@ -260,6 +261,7 @@ def validate_report(report, settings, producer_branch="main"):
     require(all(type(value) is int for value in refresh["repeatStorageGrowthBytes"].values()))
     require(snapshots[0]["storage"]["artifacts"] == snapshots[1]["storage"]["artifacts"])
     first = snapshots[0]
+    require(type(refresh.get("pinnedRun")) is int and refresh["pinnedRun"] == first.get("producer", {}).get("run"))
     for snapshot in snapshots:
         require(bool(re.fullmatch(r"[0-9a-f]{64}", snapshot.get("stableIdentity", ""))))
         require(snapshot.get("stableIdentity") == first.get("stableIdentity"))
@@ -535,6 +537,11 @@ def main():
             kw.setdefault("operation", "docker-" + verb)
             return run([*docker, *command], **kw)
 
+        def resource_absent(kind, identity):
+            listing = d(kind, "ls", *(["--all"] if kind == "container" else []),
+                        "--format", "{{.Names}}" if kind == "container" else "{{.Name}}", check=False)
+            return listing.returncode == 0 and identity.encode() not in listing.stdout.splitlines()
+
         def k(*command, **kw):
             verb = next((part for part in command if part in {
                 "apply", "get", "wait", "scale", "rollout", "exec", "patch", "delete", "logs", "version",
@@ -754,8 +761,14 @@ def main():
                        "\r\n".join(k + ": " + v for k, v in headers.items()) + "\r\n\r\n").encode() + payload
             # Disposable importer identity can reach the same-guest broker,
             # without a host port, kubeconfig mount or network-policy exemption.
-            raw = d("exec", "--user", "705:705", "-i", name, "sh", "-ec",
-                    "nc -w 15 127.0.0.1 1022", data=request).stdout
+            raw = run([
+                settings["nsenter"], "--target", str(node["State"]["Pid"]), "--net", "--",
+                sys.executable, "-I", "-c",
+                "import os,socket,sys; os.setgroups([]); os.setgid(705); os.setuid(705)\n"
+                "with socket.create_connection(('127.0.0.1',1022),timeout=15) as connection:\n"
+                " connection.sendall(sys.stdin.buffer.read())\n"
+                " while block := connection.recv(65536): sys.stdout.buffer.write(block)\n",
+            ], data=request, operation="uid705-same-guest-http").stdout
             with http.client.HTTPResponse(SimpleNamespace(makefile=lambda mode: io.BytesIO(raw))) as response:
                 response.begin()
                 observed["lastHttpStatus"] = response.status
@@ -1283,8 +1296,11 @@ def main():
             if observed["cliUid"] != 705 or observed["cliGroups"] != [705] or observed["cliKubeconfigReadExit"] == 0:
                 raise QualificationFailure("actual-ingestor-identity-or-kubeconfig-isolation")
 
+            pinned_run = None
             def call_refresh(branch=args.producer_branch, targets=target_ids, age=604800):
                 command = [*command_base, "--branch", branch, "--max-age-seconds", str(age)]
+                if pinned_run is not None:
+                    command += ["--run-id", str(pinned_run)]
                 for declaration_id in targets:
                     command += ["--target", declaration_id]
                 return run(command, timeout=1800, check=False, user=705, environment=cli_environment)
@@ -1294,6 +1310,7 @@ def main():
                 receipt["refreshFailure"] = {"attempt": "first", "exitCode": first_refresh.returncode}
                 raise QualificationFailure("actual-refresh-failed", operation="inventory-refresh", exit_code=first_refresh.returncode)
             first_snapshot = refresh_snapshot(refresh_state, stock)
+            pinned_run = first_snapshot["producer"]["run"]
             second_refresh = call_refresh()
             if second_refresh.returncode:
                 receipt["refreshFailure"] = {"attempt": "repeat", "exitCode": second_refresh.returncode}
@@ -1333,6 +1350,7 @@ def main():
             receipt["refresh"] = {
                 "executable": settings["sync"], "repository": settings["repository"],
                 "branch": args.producer_branch, "mainProducerQualified": args.producer_branch == "main",
+                "pinnedRun": pinned_run,
                 "deployment": "unobserved", "boundary": "isolated stock API consuming exactly two admitted public declarations",
                 "firstExitCode": first_refresh.returncode, "repeatExitCode": second_refresh.returncode,
                 "recoveryExitCode": recovered_refresh.returncode, "first": first_snapshot, "repeat": second_snapshot,
@@ -1540,8 +1558,7 @@ def main():
                 try:
                     inspected = d(kind, "inspect", identity, check=False)
                     if inspected.returncode:
-                        if b"no such" not in inspected.stderr.lower():
-                            cleanup = False
+                        cleanup = resource_absent(kind, identity) and cleanup
                         continue
                     owned = json.loads(inspected.stdout)[0]
                     volumes = [mount["Name"] for mount in owned.get("Mounts", []) if mount.get("Type") == "volume"] if kind == "container" else []
@@ -1551,15 +1568,11 @@ def main():
                         continue
                     options = ["--force", "--volumes"] if kind == "container" else []
                     removed = d(kind, "rm", *options, identity, check=False, timeout=120).returncode == 0
-                    absent = d(kind, "inspect", identity, check=False)
-                    removed = removed and absent.returncode != 0 and b"no such" in absent.stderr.lower()
+                    removed = removed and resource_absent(kind, identity)
                     receipt["cleanupWitness"][kind + "Removed"] = removed
                     cleanup = removed and cleanup
                     if kind == "container":
-                        volumes_removed = True
-                        for volume in volumes:
-                            remaining = d("volume", "inspect", volume, check=False)
-                            volumes_removed = volumes_removed and remaining.returncode != 0 and b"no such" in remaining.stderr.lower()
+                        volumes_removed = all(resource_absent("volume", volume) for volume in volumes)
                         receipt["cleanupWitness"]["volumesRemoved"] = volumes_removed
                         cleanup = cleanup and volumes_removed
                 except Exception:
