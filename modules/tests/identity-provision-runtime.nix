@@ -56,7 +56,7 @@ let
   );
   # Synthetic native application input only: no application aspect or route.
   fixtureObjects =
-    group: scopes:
+    group: scopes: publicClient:
     map (
       object:
       if object.kind == "ConfigMap" && object.metadata.name == "kanidm-provision" then
@@ -73,16 +73,31 @@ let
                   members = [ ];
                   overwriteMembers = false;
                 };
-                systems.oauth2.fixture-native = {
-                  displayName = "Synthetic native application";
-                  public = false;
-                  originUrl = [ "https://native.example.test/callback" ];
-                  originLanding = "https://native.example.test/";
-                  allowInsecureClientDisablePkce = false;
-                  preferShortUsername = true;
-                  scopeMaps = { };
-                  supplementaryScopeMaps = { };
-                  removeOrphanedClaimMaps = true;
+                systems.oauth2 = {
+                  fixture-native = {
+                    displayName = "Synthetic native application";
+                    public = false;
+                    originUrl = [ "https://native.example.test/callback" ];
+                    originLanding = "https://native.example.test/";
+                    allowInsecureClientDisablePkce = false;
+                    preferShortUsername = true;
+                    scopeMaps = { };
+                    supplementaryScopeMaps = { };
+                    removeOrphanedClaimMaps = true;
+                  };
+                }
+                // lib.optionalAttrs publicClient {
+                  fixture-native-public = {
+                    displayName = "Synthetic public native application";
+                    public = true;
+                    originUrl = [ "https://public-native.example.test/callback" ];
+                    originLanding = "https://public-native.example.test/";
+                    allowInsecureClientDisablePkce = false;
+                    preferShortUsername = true;
+                    scopeMaps = { };
+                    supplementaryScopeMaps = { };
+                    removeOrphanedClaimMaps = true;
+                  };
                 };
               }
             );
@@ -102,6 +117,13 @@ let
                   ];
                 }
               ]
+              ++ lib.optional publicClient {
+                name = "fixture-native-public";
+                public = true;
+                eligibleGroup = group;
+                inherit scopes;
+                secrets = [ ];
+              }
             );
           };
         }
@@ -173,13 +195,20 @@ in
             "openid"
             "profile"
             "email"
-          ]
+          ] false
+        );
+        publicManifests = manifestSet "identity-public-b-manifests" (
+          fixtureObjects "fixture-native-users" [
+            "openid"
+            "profile"
+            "email"
+          ] true
         );
         replacementManifests = manifestSet "identity-private-b-replacement-manifests" (
           fixtureObjects "fixture-native-replacement" [
             "openid"
             "profile"
-          ]
+          ] false
         );
         imageB = self.packages.${system}.kanidm-provision-image;
         # Test-only: trust the test CA. Everything else is the committed Job.
@@ -245,6 +274,7 @@ in
               provisioner = "system:serviceaccount:identity:kanidm-provision"
               private_identity = "${privateManifests}"
               replacement_identity = "${replacementManifests}"
+              public_identity = "${publicManifests}"
               source_identity = "${sourceManifests}"
               archive_reference = "${imageB.imageReference}"
 
@@ -687,6 +717,63 @@ in
                   assert probe("private-oauth", person="fixture-invited", client="argocd",
                                redirect=callbacks[0], scopes=["openid", "groups_name"], allowed=False) == {"denied": True}
                   evidence("source-B-native-ordinary-user", claims)
+
+              with subtest("source B: a public client needs S256 PKCE, exact callback and eligibility, not a Secret"):
+                  def publication_boundary():
+                      resources = json.loads(cluster.succeed(
+                          f"{kubectl} get secrets,roles,rolebindings --namespace identity --output json"
+                      ))["items"]
+                      return {
+                          (item["kind"], item["metadata"]["name"]): dict(
+                              uid=item["metadata"]["uid"],
+                              **{key: item[key] for key in ("data", "rules", "roleRef", "subjects") if key in item},
+                          ) for item in resources
+                      }
+
+                  publication_before = publication_boundary()
+                  selected, scopes, secrets = select_private(public_identity)
+                  clients = sorted(scopes)
+                  public = next(client for client in selected if client["name"] == "fixture-native-public")
+                  assert public["public"] is True and public["secrets"] == [], public
+                  for verb in ("get", "patch"):
+                      cluster.fail(
+                          f"{kubectl} auth can-i {verb} secret/fixture-native-public-oidc "
+                          f"--namespace identity --as={provisioner}"
+                      )
+                  cluster.fail(f"{kubectl} auth can-i create secrets --namespace identity --as={provisioner}")
+                  cluster.fail(f"{kubectl} get secret --namespace identity fixture-native-public-oidc")
+                  run_job("Complete")
+                  assert_private(selected)
+                  assert_published()
+                  assert digests() == private_first
+                  assert publication_boundary() == publication_before, "public client changed Secrets or publication authority"
+                  assert probe("public-client", client=public["name"]) == {"public": True, "basic_secret": None}
+                  public_request = dict(client=public["name"], public=True,
+                                        redirect="https://public-native.example.test/callback",
+                                        scopes=public["scopes"])
+                  public_claims = probe("private-oauth", person="fixture-invited", **public_request)
+                  assert public_claims["token_authentication"] == "none", public_claims
+                  denied = {
+                      "ineligible": probe("private-oauth", person="fixture-uninvited",
+                                          allowed=False, **public_request),
+                      "no_pkce": probe("private-oauth", person="fixture-invited", allowed=False,
+                                       denied_status=400, pkce=False, **public_request),
+                      "wrong_callback": probe("private-oauth", person="fixture-invited", allowed=False,
+                                              denied_status=400,
+                                              **(public_request | {"redirect": public_request["redirect"] + "/wrong"})),
+                  }
+                  assert all(result == {"denied": True} for result in denied.values()), denied
+                  cluster.fail(f"{kubectl} get secret --namespace identity fixture-native-public-oidc")
+                  evidence("source-B-public-native", dict(claims=public_claims, denied=denied,
+                                                         basic_secret=None, publication_target=None))
+                  # Keep every later confidential/publication and selected-A
+                  # case on its original declaration; reconcile away only ours.
+                  selected, scopes, secrets = select_private(private_identity)
+                  clients = sorted(scopes)
+                  run_job("Complete")
+                  assert_private(selected)
+                  assert_published()
+                  assert digests() == private_first
 
               with subtest("Home accepts household and administrator sign-in, not arbitrary identities"):
                   consumer = json.loads(cluster.succeed(
