@@ -1028,7 +1028,7 @@
                     # event readback: another calendar tick may already restart a
                     # failed oneshot while its first failure event is observed.
                     machine.wait_until_succeeds(
-                        f'test "$(systemctl show -p InvocationID --value {importer})" != {shlex.quote(importer_invocation)}', timeout=180)
+                        f'invocation="$(systemctl show -p InvocationID --value {importer})"; test -n "$invocation" && test "$invocation" != {shlex.quote(importer_invocation)}', timeout=180)
                     machine.succeed("systemctl stop dependency-track-sync.timer")
                     # Stopping the timer does not stop its service. Require that
                     # invocation to finish, emit OnFailure and run the UID705 probe.
