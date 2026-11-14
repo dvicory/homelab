@@ -303,31 +303,53 @@ in
 
         ## Private Dependency-Track (available, not enrolled)
 
-        `kubernetes.services.dependency-track` is an opt-in stock API/frontend
-        integration. No fleet includes it, and no public route, host listener,
-        trusted-interface rule or ingress identity client is created.
-        Selecting it still requires placement/resource admission and working
-        NetworkPolicy enforcement; this is independent of any CNI or guest
-        backend migration. Its 1344MiB/2CPU limits are a bounded pilot budget,
-        not full-feed or full-fleet capacity qualification.
+        No fleet selects this service or its ingestor. Production enrollment
+        requires placement, storage, recovery and NetworkPolicy admission.
+        The declared resource limits are not full-feed capacity qualification.
 
-        After an explicit deployment admission, use the existing authenticated
-        Kubernetes administrative path with two loopback-only forwards:
+        Select `kubernetes.services.dependency-track` with `privateAccess=true`,
+        and select `workloads.dependency-track-sync.compute-guest` on the
+        corresponding compute guest. Set its `apiUrl` to
+        `http://127.0.0.1:1022`. Set the service's `automaticInventory=true` when
+        its operator-issued ingestion credentials are available. Keep the
+        workload's `onCalendar=null` until bootstrap and mirror admission finish.
+        Selecting the service alone enables no import schedule.
+
+        Private HTTPS uses the existing internal Gateway and native Kanidm
+        login for the existing administrators group. The UI and API hostnames
+        come from their Den routes. Routes remain absent until
+        `databasePhase=restore` and `identity.phase=normal`. The public OIDC
+        client has no client secret. Its provisioning Job requires a verified,
+        main-published `kanidm-provision` release with public-client support;
+        a PR image or an incomplete release receipt is not a substitute.
+
+        The separate root access-policy service requires the old default
+        password to fail and verifies the recovery administrator and allowed
+        group mapping before admitting each API Pod UID to Service endpoints.
+        The importer never receives that password or a kubeconfig.
+        Readiness controls routing, not direct Pod-IP access: bootstrap must
+        take place on a controlled, trusted node and network.
+        Group removal takes effect at a new login; it does not instantly revoke
+        existing browser sessions.
+
+        For controlled bootstrap or recovery, use the existing authenticated
+        Kubernetes administrative path with loopback-only forwards:
 
         ```sh
         kubectl -n dependency-track port-forward --address 127.0.0.1 service/dependency-track-api 18080:8080
         kubectl -n dependency-track port-forward --address 127.0.0.1 service/dependency-track-frontend 18081:8080
         ```
 
-        The stock UI is `http://127.0.0.1:18081`; its browser API URL defaults
-        to `http://127.0.0.1:18080`. Keep both forwards on the same operator
-        machine. Public exposure, central sign-in and automatic acquisition
-        are not inferred from selecting this service.
+        Normal operation uses private HTTPS, not these forwards. The separate
+        loopback-only profile defaults its browser API URL to
+        `http://127.0.0.1:18080`; both forwards must be on the browser's machine.
 
-        The task scheduler and telemetry default off. Before accepting
-        inventories, rotate the stock bootstrap password and disable remote
-        analyzers, package repositories, KEV and EPSS through the native
-        administrative interface. Egress allows PostgreSQL, cluster DNS and
+        The task scheduler and telemetry default off. In the private profile,
+        only explicit bootstrap may rotate the stock password; restore must
+        authenticate the retained recovery administrator instead.
+        Before accepting inventories, disable remote analyzers, package
+        repositories, KEV and EPSS through the native administrative interface.
+        API egress allows PostgreSQL, cluster DNS and
         public HTTPS; the stock outbound policy further restricts HTTP
         destinations to `storage.googleapis.com` and `nvd.nist.gov`.
 
@@ -363,28 +385,55 @@ in
         Do not enable the scheduler before applying and qualifying the policy.
         More sources need separate capacity, destination and freshness checks.
 
-        Give the dedicated ingestion team only `VIEW_PORTFOLIO`,
-        `PORTFOLIO_MANAGEMENT` and `BOM_UPLOAD`. Those are the stock operation
-        permissions, not per-project credentials; use a dedicated private
-        instance and do not claim project-level key isolation.
-        Keep its key in a mode-0600 file for manual use:
+        ### Automatic inventories and retained evidence
 
-        ```sh
-        dependency-track-sync sync --api-url http://127.0.0.1:18080 --api-key-file "$DT_API_KEY_FILE" --inventory "$SEALED_INVENTORY" --state-dir "$RETAINED_EVIDENCE"
-        ```
+        Routine operation requires no `dependency-track-sync sync` command:
 
-        The source-owned CLI acquires only explicit artifact inputs and verifies
-        the producer seal; it neither enrolls the fleet nor uploads to Code
-        Scanning. Its `status` command reports missing, stale and failed coverage.
-        Projects follow actual Nix derivation/output or image/platform identity,
-        not report timestamps. Recollection may change only document UUID,
-        timestamp or JSON formatting without replacing accepted projects.
-        Changed software content for the same immutable root fails closed;
-        the last complete snapshot and every byte-exact original remain.
-        Cached projects must still have their expected identity, owner, parent
-        and leaf layout before activation, staging updates or retirement.
-        Failure status is published only after the same ownership check;
-        rejected collections keep the failure in the local journal.
+        1. GitHub Actions builds or reuses declared software inventories and
+           refreshes scanner reports. Downloadable original artifacts remain on
+           GitHub for 90 days. They describe public configuration, not observed
+           running software.
+        2. The compute guest's `dependency-track-sync.service` checks the latest
+           completed allowed-event producer on the configured repository/branch.
+           It verifies declarations, GitHub artifact digests, sizes and seals
+           before importing. Production trusts `dvicory/homelab` branch `main`;
+           qualification branches require separate evidence and API state.
+        3. The service imports desired hosts and referenced images by default,
+           then evaluates supported host inclusion paths from that exact trusted
+           source revision. Exported packages remain accounted for but require
+           explicit selection. The selected workload defaults to a daily timer;
+           `onCalendar=null` leaves an explicitly started oneshot.
+
+        Give its dedicated ingestion team only `VIEW_PORTFOLIO`,
+        `PORTFOLIO_MANAGEMENT` and `BOM_UPLOAD`. These are instance-wide stock
+        permissions, not per-project isolation. Use a dedicated private instance.
+        Enroll its API key and a read-only GitHub acquisition token through the
+        existing agenix/runtime-secret flow. The service requests
+        `dependency-track--dependency-track-sync--api-key.age` and
+        `dependency-track--dependency-track-sync--github-token.age` for the
+        compute instance; neither credential is generated.
+
+        Root projects only those two keys from the exact Kubernetes Secret.
+        systemd gives non-login UID/GID705 private credential files; the importer
+        has no root control files or trusted Nix-daemon access. A fixed root-owned
+        loopback broker supplies the API transport without handing out Kubernetes
+        credentials. Failed policy admission stops ingestion.
+
+        Original ZIPs, sealed inventories, source receipts, origin reports and
+        the single-writer journal stay on the compute guest under
+        `/srv/state/dependency-track-evidence`, owned by 705:705. Routine operation
+        needs no operator-local build or artifact directory. Dashboard properties
+        keep compact run/commit references; full receipts stay in retained evidence.
+        A stale source, corrupt cache or failed import preserves the last complete
+        snapshot and records failed/unknown coverage. Check the unit journal and
+        `dependency-track-sync status --state-dir /srv/state/dependency-track-evidence`
+        rather than treating an old dashboard as current.
+
+        Software revisions follow actual Nix derivation/output or image/platform
+        identity, not report timestamps. Changed content for the same immutable
+        root fails closed. Cached projects must retain expected identity, owner,
+        parent and leaf layout before update or retirement. Failed ownership
+        checks keep failure status local instead of modifying another collection.
         The UI uses readable Host, Package and Image names; short display
         suffixes do not replace full managed identity checks. Within Nix
         targets, Nix packages lists the derivation-backed package inventory;
@@ -398,36 +447,17 @@ in
         all contents compiled libraries. The source Application/Library
         classifier does not establish deployment or exposure.
 
-        For a host's Homelab inclusion paths, supply a separately trusted
-        `github:dvicory/homelab/<full-commit-SHA>` as `PINNED_HOMELAB_FLAKE`:
+        For supported host inventories, inclusion tracing runs automatically.
+        It currently covers `environment.systemPackages` and `systemd.package`,
+        not every option, exported package or image. The evaluated derivation
+        and output must match the admitted inventory. Component Details →
+        Properties shows Homelab inclusion paths; the chain-link menu opens
+        pinned source files. Unresolved paths stay unknown. Enrichment keeps the
+        original seals and software identities intact.
 
-        ```sh
-        dependency-track-sync origins --api-url http://127.0.0.1:18080 --api-key-file "$DT_API_KEY_FILE" --inventory "$SEALED_INVENTORY" --state-dir "$RETAINED_EVIDENCE" --flake "$PINNED_HOMELAB_FLAKE"
-        ```
-
-        The evaluated derivation/output must match the already-imported build.
-        Coverage currently includes `environment.systemPackages` and
-        `systemd.package`, not every option, exported package or image.
-        View Details → Properties shows inclusion paths and declarations;
-        the chain-link menu opens pinned source files. Unresolved paths remain
-        unknown, not guessed ownership. Original sealed inventories stay intact.
-
-        Source update preparation remains the existing artifact/update-PR path;
-        findings are not automatic merges, activations or package affectedness
-        decisions.
-
-        `workloads.dependency-track-sync` is a separate optional NixOS oneshot.
-        Select it on a host with the existing agenix and persistence profiles;
-        it does not enable those host-wide facilities or reconfigure storage.
-        Set its private `apiUrl` and admitted `inventoryDirectory` explicitly.
-        Its `onCalendar=null` default installs no timer. Its canonical evidence
-        and journal live at deliberately persisted
-        `/var/lib/dependency-track-sync`, owned by non-login UID/GID 705.
-        Supply `dependency-track-sync-api-key.age` under that host's secret
-        directory: the matching secret request and systemd credential pass a
-        file, not a key in argv or the Nix store. For a manually operated
-        compute-local ingestor, use the separately retained
-        `/srv/state/dependency-track-evidence` path (also 705:705).
+        Update preparation remains independent of this dashboard. Findings do
+        not yet create CVE-driven update PRs, merge updates, activate software or
+        establish package affectedness.
 
         ### Dependency-Track bootstrap, backup and recovery
 
@@ -442,7 +472,8 @@ in
         authentication, with no password or TCP access. The API refuses
         elevated role flags or dangerous memberships on bootstrap and restore;
         recover correct roles and object ownership rather than weakening that
-        check. The existing encrypted application password is the only DB secret.
+        check. Recover the encrypted database and recovery-administrator
+        credentials with their matching retained data.
 
         Retain the three host-owned `dependency-track-postgres` (70:70),
         `dependency-track-api` (1000:0) and `dependency-track-evidence` (705:705)
@@ -461,13 +492,18 @@ in
         Pods have terminated. Do not copy while a writer remains or Argo can
         restart one. Snapshot/copy all three retained host directories and the
         encrypted secret source, then restore the recorded sync policies and
-        ingestion schedule. Restore the directories and credential together
-        with their declared ownership on encrypted retained storage before
-        reconstructing disposable compute/Kubernetes state.
-        Recreate static retained claims against those existing directories;
+        ingestion schedule. Restore the directories and encrypted credential
+        sources together with their declared numeric ownership and private
+        modes on encrypted retained storage before reconstructing disposable
+        compute/Kubernetes state. Preserve the API encryption keyset byte-exact:
+        an API-key login proves hash authentication, not retained-secret decryption.
+        A different valid key with the same IDs can pass initialization.
+        Recreate static retained claims against the existing directories;
         do not provision substitute storage or restore an old container cache,
         root filesystem or Kubernetes object UID. Use `restore`, then start
-        PostgreSQL before the API and inspect native login and coverage.
+        PostgreSQL before the API. Require native login, root policy admission
+        and resumed inventory/provenance coverage. If managed secrets exist,
+        exercise a retained secret through its normal consumer as well.
         Backup/restore rehearsal and retention/capacity qualification remain
         rollout gates; no recovery SLA is introduced.
 

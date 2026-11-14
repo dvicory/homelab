@@ -143,6 +143,28 @@ To use the hosted executor for a reviewed ref instead:
 gh workflow run ci.yml --ref "$REF" -f system=x86_64-linux -f check=verify-kubernetes-api
 ```
 
+### `qualify-dependency-track` on `x86_64-linux`
+
+Executor requirements: `docker`, `ownedStorage`, `root`.
+Use an exclusive disposable runner with owned Docker and scratch storage,
+never a shared daemon or a production host. Prefer the hosted executor,
+which prepares this storage, over running the command on a workstation.
+Run in an owned evidence directory where `dependency-track-result.json` does
+not already exist. Preserve the sanitized report, not fixture credentials
+or raw logs.
+
+
+```sh
+nix run .#qualify-dependency-track -- --docker-context default --admit-disposable-github-runner --report dependency-track-result.json --producer-branch main --github-token-file ../dependency-track-github-token
+nix run .#qualify-dependency-track -- --check-report dependency-track-result.json --producer-branch main
+```
+
+To use the hosted executor for a reviewed ref instead:
+
+```sh
+gh workflow run ci.yml --ref "$REF" -f system=x86_64-linux -f check=qualify-dependency-track
+```
+
 
 ## Use hosted CI and inspect failures
 
