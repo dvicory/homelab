@@ -1335,17 +1335,17 @@ def main():
                     if time.monotonic() >= deadline:
                         raise QualificationFailure("native-browser-authorization-absent")
                     page.wait_for_timeout(50)
+                page.wait_for_function("() => (location.hostname === 'idm.dt-fixture.invalid' && (document.querySelector('#username') !== null || document.querySelector(\"form[action='/ui/oauth2/consent']\") !== null || location.pathname === '/ui/oauth2/resume' || Array.from(document.querySelectorAll('h2')).some(node => node.textContent === 'Access Denied'))) || document.querySelector('.app-header') !== null || document.querySelector('.modal.show') !== null")
+                if (urllib.parse.urlsplit(page.url).hostname == "idm.dt-fixture.invalid"
+                        and page.locator("#username").is_visible()):
+                    page.locator("#username").fill(person)
+                    page.locator("form[action='/ui/login/begin'] button[type=submit]").click()
                 if denied:
                     page.wait_for_function("""() => location.hostname === 'idm.dt-fixture.invalid'
                       && Array.from(document.querySelectorAll('h2')).some(node => node.textContent === 'Access Denied')""")
                     if captured.get("callback") or captured.get("session") or captured.get("loginStatus") == 200:
                         raise QualificationFailure("native-ineligible-user-admitted")
                     return
-                page.wait_for_function("() => (location.hostname === 'idm.dt-fixture.invalid' && (document.querySelector('#username') !== null || document.querySelector(\"form[action='/ui/oauth2/consent']\") !== null || location.pathname === '/ui/oauth2/resume')) || document.querySelector('.app-header') !== null || document.querySelector('.modal.show') !== null")
-                if (urllib.parse.urlsplit(page.url).hostname == "idm.dt-fixture.invalid"
-                        and page.locator("#username").is_visible()):
-                    page.locator("#username").fill(person)
-                    page.locator("form[action='/ui/login/begin'] button[type=submit]").click()
                 page.wait_for_function("() => location.hostname === 'dt.dt-fixture.invalid' || document.querySelector(\"form[action='/ui/oauth2/consent']\") !== null || location.pathname === '/ui/oauth2/resume'")
                 consent = page.locator("form[action='/ui/oauth2/consent'] button[type=submit]")
                 if consent.count():

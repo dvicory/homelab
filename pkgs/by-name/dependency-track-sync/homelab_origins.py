@@ -57,7 +57,8 @@ def _file_in(prefix, filename):
 
 
 def _nix_json(arguments):
-    command = ["nix", *arguments, "--no-write-lock-file", "--option",
+    command = ["nix", "--extra-experimental-features", "nix-command flakes",
+               *arguments, "--no-write-lock-file", "--option",
                "accept-flake-config", "false", "--option",
                "allow-import-from-derivation", "false", "--builders", ""]
     result = subprocess.run(command, check=False, capture_output=True, text=True)
