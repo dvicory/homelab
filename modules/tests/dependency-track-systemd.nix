@@ -1024,10 +1024,15 @@
                     before = events()
                     importer_invocation = machine.succeed(f"systemctl show -p InvocationID --value {importer}").strip()
                     machine.succeed(f"rm {evidence}/unit-probe.json; systemctl start dependency-track-sync.timer")
-                    # No manual service start: a new semantic OnFailure event,
-                    # invocation and UID705 probe must all come from the timer.
-                    fresh_event(before, timeout=180)
+                    # Disarm after the timer starts a fresh invocation, not after
+                    # event readback: another calendar tick may already restart a
+                    # failed oneshot while its first failure event is observed.
+                    machine.wait_until_succeeds(
+                        f'test "$(systemctl show -p InvocationID --value {importer})" != {shlex.quote(importer_invocation)}', timeout=180)
                     machine.succeed("systemctl stop dependency-track-sync.timer")
+                    # Stopping the timer does not stop its service. Require that
+                    # invocation to finish, emit OnFailure and run the UID705 probe.
+                    fresh_event(before, timeout=180)
                     assert uuid.UUID(machine.succeed(f"systemctl show -p InvocationID --value {importer}").strip()).hex != importer_invocation
                     assert machine.succeed(f"systemctl show -p ActiveState --value {importer}").strip() == "failed"
                     machine.wait_until_succeeds(f"test $(systemctl show -p ActiveState --value {notifier}) = inactive", timeout=90)
