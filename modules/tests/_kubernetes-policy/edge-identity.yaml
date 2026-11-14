@@ -53,10 +53,10 @@ spec:
         - name: peers
           expression: variables.cluster.ingress.trustedProxyCIDRs
         - name: gatewayImage
-          expression: '''docker.io/envoyproxy/gateway:v1.9.1@sha256:0049bcb384c591c6a6dd043fe5c9929ef6e74f230e12dd678d2d3701df9b301e'''
+          expression: '''docker.io/envoyproxy/gateway:v1.9.3@sha256:192fc9bdadb6d2462e8cf7bd702ce3dd9648f3310c6038787448a1f509b7cd9f'''
         - name: proxyImage
           expression: >-
-            'docker.io/envoyproxy/envoy:distroless-v1.39.1@sha256:eb2c01c13125d1629637cb4e4cce7207009fb7cc2c8027f9742758549d15b6f4'
+            'docker.io/envoyproxy/envoy:distroless-v1.39.6@sha256:1cac8b3a2f72d5a0918f54d7b49e68aae0b0ba325c2d50c8a9a3fff7a4d1f994'
         expressions:
         - expression: variables.phase in ['initial', 'provisioning', 'normal']
           message: >-
@@ -921,7 +921,7 @@ spec:
         expressions:
         - expression: >-
             object.spec.template.spec.containers.filter(c, c.name == 'envoy-gateway').size() == 1 && object.spec.template.spec.containers.filter(c,
-            c.name == 'envoy-gateway').all(c, c.image == 'docker.io/envoyproxy/gateway:v1.9.1@sha256:0049bcb384c591c6a6dd043fe5c9929ef6e74f230e12dd678d2d3701df9b301e')
+            c.name == 'envoy-gateway').all(c, c.image == 'docker.io/envoyproxy/gateway:v1.9.3@sha256:192fc9bdadb6d2462e8cf7bd702ce3dd9648f3310c6038787448a1f509b7cd9f')
           message: gateway controller image
   - name: gateway-proxy-image
     match:
@@ -938,7 +938,7 @@ spec:
       cel:
         expressions:
         - expression: >-
-            object.spec.provider.kubernetes.envoyDeployment.container.image == 'docker.io/envoyproxy/envoy:distroless-v1.39.1@sha256:eb2c01c13125d1629637cb4e4cce7207009fb7cc2c8027f9742758549d15b6f4'
+            object.spec.provider.kubernetes.envoyDeployment.container.image == 'docker.io/envoyproxy/envoy:distroless-v1.39.6@sha256:1cac8b3a2f72d5a0918f54d7b49e68aae0b0ba325c2d50c8a9a3fff7a4d1f994'
           message: gateway proxy image
   - name: controller-config-pinned-images
     match:
@@ -963,10 +963,10 @@ spec:
           - key: '{{ controller.envoyProxy.provider.kubernetes.envoyDeployment.container.image }}'
             operator: NotEquals
             value: >-
-              docker.io/envoyproxy/envoy:distroless-v1.39.1@sha256:eb2c01c13125d1629637cb4e4cce7207009fb7cc2c8027f9742758549d15b6f4
+              docker.io/envoyproxy/envoy:distroless-v1.39.6@sha256:1cac8b3a2f72d5a0918f54d7b49e68aae0b0ba325c2d50c8a9a3fff7a4d1f994
           - key: '{{ controller.provider.kubernetes.shutdownManager.image }}'
             operator: NotEquals
-            value: docker.io/envoyproxy/gateway:v1.9.1@sha256:0049bcb384c591c6a6dd043fe5c9929ef6e74f230e12dd678d2d3701df9b301e
+            value: docker.io/envoyproxy/gateway:v1.9.3@sha256:192fc9bdadb6d2462e8cf7bd702ce3dd9648f3310c6038787448a1f509b7cd9f
   - name: backend-isolation-shape
     match:
       any:

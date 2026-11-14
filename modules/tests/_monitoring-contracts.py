@@ -117,6 +117,10 @@ checks.update({
         and all(verified_kubelet_job(job) for job in kubelet_jobs),
     "a monitoring image is not pinned as tag@digest":
         all(re.fullmatch(r"[^@ ]+:[^@ ]+@sha256:[0-9a-f]{64}", c["image"]) for c in containers),
+    "VictoriaMetrics or vmalert differs from the native collector/rule/heartbeat test release":
+        all(next(c["image"] for c in containers if c["name"] == name)
+            .split("@", 1)[0].rsplit(":", 1)[1] == f'v{inputs["collectorVersion"]}'
+            for name in ("victoriametrics", "vmalert")),
     "VictoriaMetrics no longer has one non-overlapping retained-store writer":
         vm_deployment.get("replicas", 1) == 1 and vm_deployment["strategy"]["type"] == "Recreate"
         and len(vm["containers"]) == 1

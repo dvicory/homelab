@@ -106,6 +106,111 @@ in
         rollback requires the previous generation's `deploy-rs-activate` hook;
         a plain NixOS profile needs a wrapper around its exact existing system first.
 
+        Native `deploy-schema` and `deploy-activate` checks use deploy-rs's own
+        validation and build the exact activation wrappers for that platform's
+        enabled deployment nodes. They do not activate a system or replace the
+        controlled production dry-activation and recovery checks.
+
+        On an x86 Linux checkout, run
+        `nix run path:.#stock-go-audit -- /absolute/path/to/report-directory`
+        to audit the selected Incus daemon/client and Tailscale multicall ELF
+        without contacting their daemons. It retains build metadata, extraction
+        metadata, complete govulncheck JSON and OSV output for each binary.
+        Without a directory argument it retains a temporary report directory
+        and prints its path. Reports must be written outside a checkout used
+        as the immutable flake source.
+
+        The daemon builds retain Go symbol tables. The auditor fails if the
+        scan envelope is absent, duplicated or incompatible, symbol extraction
+        is unavailable, or any advisory remains, including a module-only match.
+        govulncheck 1.9 can manufacture symbol-shaped
+        findings from advisory data when extraction fails; its “Symbol Results”
+        heading alone is not proof of extracted symbols. Inspect `extract.json`
+        and the precision annotations in `govulncheck-summary.json`; raw findings
+        are retained without ignores or database substitutions. Binary symbol
+        presence does not establish runtime reachability or audit C libraries.
+
+        `nix flake update nixpkgs --flake path:.` advances the ordinary fleet
+        channel, including the kernel and K3s. Review retained source patches
+        and vendor hashes against the selected releases. The Tailscale release
+        override rejects newer upstream versions rather than downgrading them.
+        The upgrade fixtures pin the former production package set separately;
+        they must not follow the candidate root.
+
+        `modules/meta/go-security.nix` supplies the released Go 1.26.11 and
+        1.27.4 fixes pending Nixpkgs #586271/#586269, without a second package
+        snapshot or a Go source patch. It updates module builders and explicit
+        service compilers, not raw Go used by unrelated C-library build helpers.
+        K3s's compiler-version metadata and Docker's explicit compiler agree
+        with their builders. Independently evaluated Hoopsnake is rebound once
+        for both initrd and installed use; `hoopsnake-go-security` checks its
+        actual binary compiler and CGO-disabled mode.
+        Equal or newer upstream compilers take precedence. Remove the release
+        overrides once both ordinary-root recipes catch up, retaining the shared
+        Hoopsnake selection and binary guard. Audit actual package build information;
+        a shell's unrelated Go is not proof.
+
+        K3s's bundled containerd overlay capability probe retains its real
+        multi-lowerdir mount and selects `userxattr` with `NeedsUserXAttr`, as
+        the runtime snapshotter does. This does not grant host capabilities,
+        make the Incus guest privileged, or select a storage fallback.
+        Its bundled cAdvisor backports the released
+        [ZFS statistics correction](https://github.com/google/cadvisor/commit/0e107a38f5941b558c03ee3572906632a8198ae8):
+        a visible but unusable `/dev/zfs` must not erase rootfs capacity.
+        If ZFS-specific queries cannot run, existing VFS `statfs` reports the
+        mounted filesystem's real capacity and inodes. This is statistics
+        collection, not a snapshotter change; no host ZFS device authority or
+        administration tools are granted to the guest.
+        The native API fixture builds its server and airgap inputs from the
+        evaluated compute K3s package; its Secret reconciler still requires
+        exact client/server versions. A privileged Docker API fixture or
+        direct-VM upgrade does not prove nested Incus compatibility: require
+        `compute-guest-upgrade`, `prod-home-replacement` and
+        `prod-home-consumer-resilience` before activation.
+
+        Tailscale retains the `compress` fix for
+        [GO-2026-6865](https://vuln.go.dev/ID/GO-2026-6865): control-map zstd
+        decoding imports the affected Huffman/FSE decoder. Selected-command
+        source graphs do not include deprecated OpenPGP
+        ([GO-2026-5932](https://vuln.go.dev/ID/GO-2026-5932)) or `x/net/html`
+        ([GO-2026-6860](https://vuln.go.dev/ID/GO-2026-6860),
+        [GO-2026-6866](https://vuln.go.dev/ID/GO-2026-6866)). This source evidence
+        is not a substitute for qualifying the actual packaged ELF, especially
+        when a scanner loses extraction precision. Module matches and unresolved
+        findings stay visible; they are not grounds to silently declare the
+        binary unaffected or patch unrelated packages just to clear a report.
+        Incus retains the adjacent/empty ID-map correction and completion fix.
+
+        Incus has a 330-second graceful shutdown budget. Before restarting it,
+        retain a stopped full-state backup and each
+        external storage pool; a profile rollback cannot undo database changes.
+
+        CrowdSec uses the native directory module and 1.8.1 package from the
+        pinned CrowdSec component source, not the historical flat fork module.
+        The native module owns the manual's reset section; deleting its data
+        directories is destructive recovery, not a migration step.
+        Keep `/persist/crowdsec/data` intact: it holds SQLite decisions, local
+        API credentials, online API credentials and console sharing state.
+        Generated console defaults initialize missing state without replacing
+        operator sharing choices; other configuration remains declarative.
+        The enrollment key remains an agenix runtime secret, and registration
+        keeps its existing setup ownership and sandbox. The bouncer key under
+        `/var/lib/crowdsec-firewall-bouncer-register` is not newly persisted;
+        native registration must reconcile its loss after an ephemeral-root boot.
+
+        Before an upgrade, stop the engine, setup, bouncer and registration
+        units and retain a consistent copy of the whole persistent CrowdSec
+        directory and current bouncer registration directory. Run
+        `nix build .#checks.x86_64-linux.crowdsec-upgrade` on an authorized KVM
+        test host: it activates the actual old 1.8.0 and new 1.8.1 aspects,
+        cold-boots both with retained state, verifies credentials, decisions
+        and packet enforcement, and attempts old-binary rollback against
+        new-touched state. This fixture uses the candidate root package set
+        for both generations; it is not a complete historical host upgrade.
+        It does not enroll production console/CAPI identities or prove
+        compatibility with every live database. Retain the stopped-state
+        backup even if this bounded rollback fixture passes.
+
         ## Declared routes
 
         | Service | Exposure | Canonical URL | Secondary URL | Backend | Auth |

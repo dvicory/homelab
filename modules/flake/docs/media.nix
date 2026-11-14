@@ -91,10 +91,11 @@ in
         formats and scores, so a shared quality ladder does not mean identical
         release preferences. Review those differences before changing policy.
 
-        Configarr reconciles managed profile names, quality structure and scores,
-        but pinned Configarr 1.32 does **not** repair allowed-checkbox-only drift
-        when names/grouping/order still match. Inspect allowed qualities after a
-        policy change; do not expect a scheduled run to undo that isolated UI edit.
+        Configarr reconciles managed profile names, quality structure and scores.
+        Earlier Configarr 1.32 checks did **not** repair allowed-checkbox-only
+        drift when names/grouping/order still matched. Recheck that behavior after
+        upgrades; inspect allowed qualities after a policy change rather than
+        assuming a scheduled run undoes that isolated UI edit.
 
         ## Update managed policy
 
@@ -107,7 +108,7 @@ in
         1. Review the candidate upstream changes. In `source.json`, update `revision`
            and/or `templateRevision` to full immutable Git commit SHAs; unchanged
            repositories need no pin bump. Keep a template revision compatible with
-           Configarr 1.32's legacy template layout. Review selected profile IDs and
+           the selected Configarr release's template layout. Review selected profile IDs and
            each app's resulting qualities, custom formats and scores; a new SHA is
            not approval of changed guide preferences.
         2. Use [Deploy configuration](../operations.md#deploy-configuration) for
@@ -591,6 +592,40 @@ in
         these records by hand; reconciliation owns them. Other clients and servers
         are left alone, although Seerr clears another server's default flag when
         selecting the managed default for that tier.
+
+        Seerr's 3.5 library API separates discovery (`POST .../library/sync`),
+        selection (`PUT .../library/{id}`), and read-only inspection (`GET .../library`).
+        The paired helper uses those operations and checks the final library state;
+        do not substitute an older helper that writes through `GET`.
+
+        Before a Seerr upgrade, retain a usable, application-consistent backup of
+        its database and settings. Release 3.5 migrates retained application data;
+        rollback across those migrations requires restoring the backup, not merely
+        selecting the previous image. No production migration or rollback is
+        established by source or reconciliation-helper checks.
+
+        On a disposable native Linux Docker Engine 26+ fixture, run
+        `nix run path:.#media-live-acceptance -- --docker-host unix:///var/run/docker.sock`.
+        The real-app suite creates Seerr state with MAIN
+        `90920bac376c6640478c1c45feaf6afa2c1c3900`'s frozen image and owned helper,
+        stops Seerr, and archives its complete configuration before upgrading.
+        It checks native sign-in, owner identity, libraries, managed and UI-owned
+        Arr connections, request selectors and paired-helper idempotence.
+        Recovery stops the new image and restores the cold archive before
+        starting the old image with its old helper; it never downgrades a
+        migrated database in place. A passing run proves only this synthetic
+        upgrade/restore path, not production backup freshness, production
+        migration, Incus/MergerFS storage or Kubernetes RBAC.
+
+        Pin-change state failures report bounded field paths and numeric
+        differences, not credential/string values. Snapshots ignore only the
+        order of contiguous leading
+        disabled leaf qualities in managed profiles: native execution proved
+        Configarr 1.36 changes that prefix's order when quality-size writes
+        become no-ops. Every leaf field, membership and duplicate remains
+        checked; enabled priority, groups, later disabled positions and UI-owned
+        ordering remain exact. Native policy/profile checks still enforce the
+        declared qualities, cutoff and scores; other state differences fail.
 
         ### Source cache and offline recovery
 

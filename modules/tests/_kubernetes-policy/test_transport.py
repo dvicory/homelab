@@ -44,6 +44,7 @@ def rejects(category, operation):
         operation()
     except NativeRejection as error:
         assert error.category == category, error
+        return error
     else:
         raise AssertionError(f"accepted required {category} rejection")
 
@@ -142,7 +143,12 @@ def check_reports(root):
             mutant = deepcopy(rows)
             mutant[0]["Message"] = message
             if message in messages:
-                rejects("native-evaluation-error", lambda: validate_rows(mutant, expected[key], key))
+                error = rejects("native-evaluation-error", lambda: validate_rows(mutant, expected[key], key))
+                assert mutant[0]["POLICY"] in str(error) and mutant[0]["RULE"] in str(error)
+                assert mutant[0]["RESOURCE"] in str(error) and message[-2000:] in str(error)
+                mutant[0]["Message"] = "long CEL expression " * 200 + message
+                error = rejects("native-evaluation-error", lambda: validate_rows(mutant, expected[key], key))
+                assert mutant[0]["Message"][-2000:] in str(error) and len(str(error)) < 3000
             else:
                 validate_rows(mutant, expected[key], key)
 

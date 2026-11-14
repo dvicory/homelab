@@ -1,5 +1,7 @@
-{ den, lib, inputs, ... }: {
+{ den, lib, ... }: {
   den.aspects.core."remote-unlock" = {
+    includes = [ den.aspects.core.hoopsnake ];
+
     settings = {
       sshUsers = lib.mkOption {
         type = lib.types.listOf lib.types.str;
@@ -19,7 +21,6 @@
     };
 
     nixos = { host, config, pkgs, ... }: let
-      poolName = host.zfs.rootPool.name or null;
       sshUserNames = host.settings.core.remote-unlock.sshUsers or [ ];
       sshKeys = lib.concatLists (
         lib.mapAttrsToList (_name: userCfg: userCfg.sshKeys or [ ])
@@ -27,13 +28,10 @@
       );
       authorizedKeysFile = pkgs.writeText "hoopsnake-keys" (lib.concatStringsSep "\n" sshKeys);
     in {
-      imports = [ inputs.hoopsnake.nixosModules.default ];
-
       config = lib.mkIf (host.hasAspect den.aspects.disk.zfs) {
         boot.initrd = {
           network.enable = true;
           systemd = {
-            enable = true;
             network.enable = true;
             network.networks = lib.mapAttrs' (name: iface: {
               name = "40-${name}";
@@ -57,11 +55,12 @@
         };
 
         environment.systemPackages = [
-          inputs.hoopsnake.packages.${pkgs.stdenv.hostPlatform.system}.hoopsnake
+          config.boot.initrd.network.hoopsnake.package
         ];
 
         boot.initrd.network.hoopsnake = {
           enable = true;
+          package = pkgs.hoopsnake;
           ssh.authorizedKeysFile = authorizedKeysFile;
           systemd-credentials = {
             privateHostKey.file = "/boot/boot_host_key";

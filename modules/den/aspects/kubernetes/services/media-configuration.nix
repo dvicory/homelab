@@ -95,13 +95,13 @@
       images = builtins.mapAttrs (_: image: "${image.repository}:${image.tag}@${image.digest}") {
         configarr = {
           repository = "docker.io/configarr/configarr";
-          tag = "1.32.0";
-          digest = "sha256:8a94c8355f86619ac4c52298144f15859f9c66311515f96c4688435fa020039e";
+          tag = "1.36.0";
+          digest = "sha256:0d15c74cf74cd980bb2f9e9dd0cfdde1655a8f928e481c3258d7ccd4cde9dcbc";
         };
         node = {
           repository = "docker.io/library/node";
-          tag = "22.14.0-bookworm-slim";
-          digest = "sha256:1c18d9ab3af4585870b92e4dbc5cac5a0dc77dd13df1a5905cea89fc720eb05b";
+          tag = "22.23.4-bookworm-slim";
+          digest = "sha256:5ec23b7c622b00547753bc6ffd78085dd868a68aeb41c8e0a1418f033e13d96d";
         };
       };
       trashRevision = policySource.revision;
@@ -673,7 +673,7 @@
               {
                 name = "configarr";
                 image = images.configarr;
-                # Configarr 1.32 can report failed API writes while exiting zero.
+                # Keep log-level failures fail-closed as well as checking the exit status.
                 command = [
                   "/bin/sh"
                   "-ec"

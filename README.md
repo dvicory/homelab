@@ -17,7 +17,7 @@ NixOS homelab and nix-darwin workstation configuration, composed with
 
 ### `prod-home`
 
-- **Kubernetes API:** `1.35.8`; ingress `direct` on NodePort `30443`.
+- **Kubernetes API:** `1.36.5`; ingress `direct` on NodePort `30443`.
 - **Persistent state:** `/var/lib/homelab/compute-1/state` on [`hvn-hyp1`](modules/den/hosts/hvn-hyp1/default.nix), mounted at `/srv/state` in the guest. [Paths and owners](docs/operations.md#retained-state).
 - **GitOps:** [generated manifests](generated/manifests/prod-home/), tracked from `main` by Argo CD. [Deployment runbook](docs/operations.md#deploy-configuration).
 

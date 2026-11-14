@@ -40,8 +40,8 @@ let
       pnpmConfigHook
     ];
     pnpmDeps = fetchPnpmDeps {
-      fetcherVersion = 4;
-      hash = "sha256-jo1BjRAjjfNKF0xb5cLCuELSveHeJ98iLPhMDKP1QbI=";
+      fetcherVersion = 5;
+      hash = "sha256-J9eUPNYt40XQUlsEjtMWmWYN2jO8g7IEsHc9k9ntSbY=";
       inherit pnpm;
       inherit (finalAttrs) pname src version;
     };

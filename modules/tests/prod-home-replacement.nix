@@ -20,6 +20,19 @@
           hostConfig
           guest
           ;
+        # Freeze the existing guest declaration AND its complete input
+        # graph. Importing today's guest with an "old" label is not a baseline.
+        baselineSource = builtins.fetchTree {
+          type = "github";
+          owner = "dvicory";
+          repo = "homelab";
+          rev = "90920bac376c6640478c1c45feaf6afa2c1c3900";
+          narHash = "sha256-2KHmKX0smBDl3Pk554o30z44RxN2sAP1yX5gPvImSBM=";
+        };
+        baselineFlake = builtins.getFlake "github:dvicory/homelab/${baselineSource.rev}";
+        baselineGuest = baselineFlake.nixosConfigurations.compute-1;
+        baselineLock = builtins.fromJSON (builtins.readFile "${baselineSource.outPath}/flake.lock");
+        baselineRoot = baselineLock.nodes.${baselineLock.nodes.root.inputs.nixpkgs}.locked;
         descriptor = builtins.fromJSON hostConfig.environment.etc."homelab/compute.json".text;
         poolPath = descriptor.poolPath;
         renderNodeRule =
@@ -130,13 +143,43 @@
           cp "$out/server.crt" "$out/client/ca.crt"
           chmod 0444 "$out/server.key"
         '';
-        # Initial fixture trust only: transitions do not restart or reconfigure K3s.
-        helperGuestBundle =
-          (guest.extendModules {
+        # Identical disposable registry trust is the only extension of either
+        # guest; each keeps its own full input graph and selected K3s package.
+        withFixtureTrust =
+          configuration:
+          configuration.extendModules {
             modules = [
               { security.pki.certificateFiles = [ "${helperTls}/client/ca.crt" ]; }
             ];
-          }).config.system.build.computeBundle;
+          };
+        baselineFixtureGuest = withFixtureTrust baselineGuest;
+        candidateFixtureGuest = withFixtureTrust guest;
+        baselineBundle = baselineFixtureGuest.config.system.build.computeBundle;
+        helperGuestBundle = candidateFixtureGuest.config.system.build.computeBundle;
+        replacementVersions = pkgs.writeText "prod-home-replacement-versions.json" (
+          builtins.toJSON {
+            baseline = {
+              source = baselineSource.rev;
+              sourceNarHash = baselineSource.narHash;
+              root = baselineRoot.rev;
+              rootNarHash = baselineRoot.narHash;
+              bundle = baselineBundle;
+              system = "${baselineBundle}/system";
+              package = baselineFixtureGuest.config.services.k3s.package;
+              serverPackage = baselineFixtureGuest.config.services.k3s.package.k3sBundle;
+              version = baselineFixtureGuest.config.services.k3s.package.version;
+            };
+            candidate = {
+              root = inputs.nixpkgs.rev or null;
+              rootNarHash = inputs.nixpkgs.narHash;
+              bundle = helperGuestBundle;
+              system = "${helperGuestBundle}/system";
+              package = candidateFixtureGuest.config.services.k3s.package;
+              serverPackage = candidateFixtureGuest.config.services.k3s.package.k3sBundle;
+              version = candidateFixtureGuest.config.services.k3s.package.version;
+            };
+          }
+        );
         canonical = lib.fileset.toSource {
           root = ../../generated/manifests/prod-home;
           fileset = lib.fileset.unions [
@@ -186,6 +229,16 @@
             guestBundle =
               if family == "replacement" then helperGuestBundle else guest.config.system.build.computeBundle;
           in
+          assert lib.assertMsg
+            (
+              family != "replacement"
+              || (
+                baselineRoot.rev == "801bef6abd86b91e51083066b83fb354a11fc640"
+                && baselineFixtureGuest.config.services.k3s.package.version == "1.35.8+k3s1"
+                && lib.hasPrefix "1.36." candidateFixtureGuest.config.services.k3s.package.version
+              )
+            )
+            "Replacement requires frozen main 90920/root 801bef6 K3s 1.35.8+k3s1 and the selected candidate K3s 1.36 guest";
           (pkgs.testers.runNixOSTest {
             name = if family == "replacement" then "prod-home-replacement" else "prod-home-consumer-resilience";
             globalTimeout = 4 * 60 * 60;
@@ -259,6 +312,8 @@
                     helperImageB
                     helperRuntimeB
                     helperTls
+                    baselineBundle
+                    replacementVersions
                   ];
 
                   incus = {
@@ -385,6 +440,8 @@
                   " --bootstrap-host ${bootstrapHost}/bin/household-bootstrap-host"
                   " --helper ${computeGuest}/bin/compute-guest"
                   ${lib.optionalString (family == "replacement") ''
+                    " --baseline-bundle ${baselineBundle}"
+                    " --versions ${replacementVersions}"
                     " --helper-image-b ${helperImageB}"
                     " --helper-b ${helperRuntimeB}/bin/retained-directories"
                     " --helper-tls ${helperTls}"
@@ -413,13 +470,15 @@
               python3 ${./prod-home-registry-check.py} ${./prod-home-replacement.py}
               touch "$out"
             '';
-        # The same inputs can exercise the scenario on a disposable native
-        # x86_64 or aarch64 Linux host.
+        # Replacement alone starts from the frozen 1.35 guest. Consumer
+        # resilience and registry classification remain candidate-only checks.
         legacyPackages.prod-home-replacement-test = replacementTest // {
           inherit
             fixture
             testRepo
             testSeed
+            baselineBundle
+            replacementVersions
             ;
           guestBundle = helperGuestBundle;
         };

@@ -201,7 +201,8 @@ in
           values = {
             image = {
               repository = "rancher/local-path-provisioner";
-              tag = "v0.0.34@sha256:6ff68ebe98bc623b45ad22c28be84f8a08214982710f3247d5862e9bccce73ef";
+              # v0.0.37 removes the base-image/toolchain and validates HelperPod templates.
+              tag = "v0.0.37@sha256:e757967a5ec338f6a9b371c5a9688bedaa8c3578ea3dd4db329ea0084be0a86f";
               pullPolicy = "IfNotPresent";
             };
             helperImage = {

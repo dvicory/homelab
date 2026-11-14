@@ -1,6 +1,6 @@
 --- a/shared/idmap/entry.go
 +++ b/shared/idmap/entry.go
-@@ -34,20 +34,9 @@
+@@ -34,20 +34,10 @@
  
  // HostIDsIntersect checks whether the provided entry intersects with the host IDs of the existing one.
  func (e *Entry) HostIDsIntersect(i Entry) bool {
@@ -18,7 +18,8 @@
 -	}
 -
 -	return false
-+	return ((e.IsUID && i.IsUID) || (e.IsGID && i.IsGID)) &&
++	return e.MapRange > 0 && i.MapRange > 0 &&
++		((e.IsUID && i.IsUID) || (e.IsGID && i.IsGID)) &&
 +		e.HostID < i.HostID+i.MapRange &&
 +		i.HostID < e.HostID+e.MapRange
  }
@@ -26,10 +27,48 @@
  // Intersects checks whether the provided entry intersects with the existing one.
 --- a/shared/idmap/set_test.go
 +++ b/shared/idmap/set_test.go
-@@ -200,3 +200,19 @@
+@@ -200,3 +200,57 @@
  	assert.Equal(t, false, combinedEntry.HostIDsCoveredBy(nil, allowedCombinedMaps))
  	assert.Equal(t, true, combinedEntry.HostIDsCoveredBy(allowedCombinedMaps, allowedCombinedMaps))
  }
++
++func TestEntryHostIDsIntersect(t *testing.T) {
++	for _, tc := range []struct {
++		name       string
++		start      int64
++		size       int64
++		intersects bool
++	}{
++		{"adjacent below", 90, 10, false},
++		{"adjacent above", 110, 10, false},
++		{"overlap below", 99, 10, true},
++		{"overlap above", 109, 10, true},
++		{"equal", 100, 10, true},
++		{"contained", 102, 2, true},
++		{"containing", 99, 12, true},
++		{"single ID", 100, 1, true},
++		{"empty inside", 105, 0, false},
++		{"empty boundary", 100, 0, false},
++		{"empty outside", 120, 0, false},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			for _, kind := range []Entry{{IsUID: true}, {IsGID: true}, {IsUID: true, IsGID: true}} {
++				e, i := kind, kind
++				e.HostID, e.MapRange = 100, 10
++				i.HostID, i.MapRange = tc.start, tc.size
++				assert.Equal(t, tc.intersects, e.HostIDsIntersect(i))
++				assert.Equal(t, tc.intersects, i.HostIDsIntersect(e))
++				assert.Equal(t, tc.intersects, (&Set{Entries: []Entry{e}}).HostIDsIntersect(i))
++			}
++		})
++	}
++
++	uid := Entry{IsUID: true, HostID: 100, MapRange: 10}
++	gid := Entry{IsGID: true, HostID: 100, MapRange: 10}
++	assert.False(t, uid.HostIDsIntersect(gid))
++	assert.False(t, gid.HostIDsIntersect(uid))
++	assert.False(t, uid.HostIDsIntersect(Entry{HostID: 100, MapRange: 10}))
++}
 +
 +func TestSetAddSafeAdjacentHostRanges(t *testing.T) {
 +	original := Set{Entries: []Entry{

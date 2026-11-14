@@ -51,14 +51,14 @@
     # agenix + agenix-rekey declared by batteries/agenix.nix (self-contained)
 
     # Impermanence
-    impermanence.url = "github:dvicory/impermanence/systemd-requires";
+    impermanence.url = "github:nix-community/impermanence/fa627f4c8b8e92f58f58a73d99ee4e1304e64eb2";
 
     # Hardware detection
     nixos-facter-modules.url = "github:nix-community/nixos-facter-modules";
 
     # Remote ZFS unlock
     hoopsnake = {
-      url = "github:boinkor-net/hoopsnake/106a95e01352db2143f355fba1a328c887e0c807";
+      url = "github:dvicory/hoopsnake/2ac8db429b5159387c47c2499ffb34fc9a7773bd";
       inputs = {
         nixpkgs.follows = "nixpkgs";
         flake-parts.follows = "flake-parts";

@@ -11,8 +11,10 @@
     let
       namespace = "gateway";
       peers = cluster.ingress.trustedProxyCIDRs;
-      gatewayImage = "docker.io/envoyproxy/gateway:v1.9.1@sha256:0049bcb384c591c6a6dd043fe5c9929ef6e74f230e12dd678d2d3701df9b301e";
-      proxyImage = "docker.io/envoyproxy/envoy:distroless-v1.39.1@sha256:eb2c01c13125d1629637cb4e4cce7207009fb7cc2c8027f9742758549d15b6f4";
+      gatewayImage = "docker.io/envoyproxy/gateway:v1.9.3@sha256:192fc9bdadb6d2462e8cf7bd702ce3dd9648f3310c6038787448a1f509b7cd9f";
+      # v1.39.5's distroless bundle still trusted the compromised eMudhra CAs.
+      # https://gateway.envoyproxy.io/news/releases/notes/v1.9.3/
+      proxyImage = "docker.io/envoyproxy/envoy:distroless-v1.39.6@sha256:1cac8b3a2f72d5a0918f54d7b49e68aae0b0ba325c2d50c8a9a3fff7a4d1f994";
       listenerPort = 443;
       # Envoy Gateway binds a privileged listener port (below 1024) at the
       # port plus 10000 inside the proxy pod, so the pod never needs
@@ -249,7 +251,14 @@
         annotations."argocd.argoproj.io/sync-wave" = "1";
         finalizer = "foreground";
         helm.releases.envoy-gateway = {
-          chart = charts.envoyproxy.gateway-helm;
+          # Keep the separately managed CRDs unchanged; this patch chart supplies
+          # the controller's matching service-account/fullname environment.
+          chart = lib.helm.downloadHelmChart {
+            repo = "oci://registry-1.docker.io/envoyproxy";
+            chart = "gateway-helm";
+            version = "1.9.3";
+            chartHash = "sha256-PAMhV2B9e2K1l8Ok6A8bTZBdBQAl1cMXv4+dflZGo0w=";
+          };
           includeCRDs = false;
           values = {
             crds.enabled = false;

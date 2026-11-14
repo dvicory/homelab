@@ -23,7 +23,8 @@
     lib.optionalAttrs (system == "x86_64-linux") (
       let
         incus =
-          (import ../den/aspects/virtualization/incus.nix { inherit lib; }).den.aspects.virtualization.incus;
+          (import ../den/aspects/virtualization/incus.nix { inherit lib; })
+          .den.aspects.virtualization.incus;
 
         # A unified Incus image: busybox and its store closure, with an init
         # that only waits.
@@ -147,7 +148,7 @@
               def lifecycle(machine, command, step):
                   status, output = machine.execute(f"incus {command} c 2>&1")
                   assert status == 0, f"{step}: incus {command} failed: {output.strip()}"
-                  assert machine.succeed("incus exec c -- cat /srv/media/data/probe") == "probe\n", step
+                  assert machine.succeed("incus exec c --disable-stdin -- cat /srv/media/data/probe") == "probe\n", step
 
               def restart_with_nested_source(machine):
                   # As on the host, /srv/media/data is its own mount below the
@@ -212,7 +213,7 @@
                   machine.succeed("systemctl restart incus-mount-isolation.service")
                   assert propagation(machine) == "private", propagation(machine)
                   assert copies(machine) == [], f"copies remain: {copies(machine)}"
-                  assert machine.succeed("incus exec c -- cat /srv/media/data/probe") == "probe\n"
+                  assert machine.succeed("incus exec c --disable-stdin -- cat /srv/media/data/probe") == "probe\n"
                   machine.succeed("incus stop --force c")
                   lifecycle(machine, "start", "start after the unit removed copies")
 

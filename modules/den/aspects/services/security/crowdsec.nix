@@ -1,23 +1,31 @@
 { inputs, ... }: {
   flake-file.inputs = {
-    # CrowdSec refactor from TornaxO7's follow-up PR:
-    # https://github.com/NixOS/nixpkgs/pull/535319
-    # Reference config: https://github.com/1randomguy/nixconfig/blob/main/modules/nixos/homelab/services/crowdsec.nix
-    crowdsec-pr.url = "github:dvicory/nixpkgs/crowdsec";
+    # Channel module plus upstream's tmpfiles percent-escaping fix.
+    # https://github.com/NixOS/nixpkgs/commit/6bb67f729e59cf0b784da894be55bc8eb8491dca
+    crowdsec.url = "github:dvicory/nixpkgs/b7ede101d44b588263ea5dd9d9ea1d027c097a5c";
   };
 
   den.aspects.services.security.crowdsec = {
-    nixos = { config, lib, pkgs, ... }:
+    nixos =
+      {
+        config,
+        lib,
+        pkgs,
+        ...
+      }:
       let
         cfg = config.services.crowdsec;
         persistDataDir = "/persist/crowdsec/data";
-      in {
+      in
+      {
         disabledModules = [
+          # Replace the native directory as a unit, including its manual section.
+          "services/security/crowdsec"
           "services/security/crowdsec.nix"
         ];
 
         imports = [
-          "${inputs.crowdsec-pr}/nixos/modules/services/security/crowdsec.nix"
+          "${inputs.crowdsec}/nixos/modules/services/security/crowdsec"
         ];
 
         config = lib.mkMerge [
@@ -35,14 +43,13 @@
             services.crowdsec = {
               autoUpdateService = true;
 
-              package = pkgs.callPackage "${inputs.crowdsec-pr}/pkgs/by-name/cr/crowdsec/package.nix" { };
+              package = pkgs.callPackage "${inputs.crowdsec}/pkgs/by-name/cr/crowdsec/package.nix" { };
 
               hub.collections = [ "crowdsecurity/linux" ];
 
               settings = {
                 config.config_paths.data_dir = persistDataDir;
-                config.api.server.online_client.credentials_path =
-                  "${persistDataDir}/online_api_credentials.yaml";
+                config.api.server.online_client.credentials_path = "${persistDataDir}/online_api_credentials.yaml";
 
                 acquisitions = [
                   {
@@ -55,6 +62,10 @@
                 console.enrollKeyFile = config.age.secrets."crowdsec-enrollmentKey".path;
               };
             };
+
+            # cscli owns live console sharing choices; initialize, never reset.
+            systemd.tmpfiles.settings."10-crowdsec".${cfg.settings.config.api.server.console_path}."f+".type =
+              lib.mkForce "f";
 
             # Keep CrowdSec data on the persistent dataset without relying on
             # systemd's private state-directory namespace.
@@ -69,7 +80,6 @@
                 ];
               };
             };
-
 
             # Run cscli in the same sandboxed context as CrowdSec while
             # pointing it at the persistent data directory.
@@ -105,24 +115,32 @@
       };
 
     provides.bouncer = {
-      nixos = { config, lib, pkgs, ... }: let
-        persistDataDir = "/persist/crowdsec/data";
-      in {
-        disabledModules = [
-          "services/security/crowdsec-firewall-bouncer.nix"
-        ];
-
-        imports = [
-          "${inputs.crowdsec-pr}/nixos/modules/services/security/crowdsec-firewall-bouncer.nix"
-        ];
-
-        config = lib.mkIf config.services.crowdsec-firewall-bouncer.enable {
-          systemd.services.crowdsec-firewall-bouncer-register.serviceConfig.ReadWritePaths = lib.mkForce [
-            persistDataDir
-            "/var/lib/crowdsec-firewall-bouncer-register"
+      nixos =
+        {
+          config,
+          lib,
+          pkgs,
+          ...
+        }:
+        let
+          persistDataDir = "/persist/crowdsec/data";
+        in
+        {
+          disabledModules = [
+            "services/security/crowdsec-firewall-bouncer.nix"
           ];
+
+          imports = [
+            "${inputs.crowdsec}/nixos/modules/services/security/crowdsec-firewall-bouncer.nix"
+          ];
+
+          config = lib.mkIf config.services.crowdsec-firewall-bouncer.enable {
+            systemd.services.crowdsec-firewall-bouncer-register.serviceConfig.ReadWritePaths = lib.mkForce [
+              persistDataDir
+              "/var/lib/crowdsec-firewall-bouncer-register"
+            ];
+          };
         };
-      };
     };
   };
 }

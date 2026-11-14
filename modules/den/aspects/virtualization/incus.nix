@@ -35,21 +35,28 @@
       {
         virtualisation.incus = {
           enable = true;
-          # Adjacent raw ID maps remain broken in the pinned Incus release.
+          # Incus 7.6 includes the client-certificate authentication fix.
+          # Preserve adjacent raw ID maps with the ordinary root package.
           package = pkgs.incus.overrideAttrs (
             old:
             let
               patchedSrc = pkgs.applyPatches {
                 inherit (old) src;
-                patches = [ ./incus-adjacent-idmap.patch ];
+                patches = [
+                  ./incus-adjacent-idmap.patch
+                ];
               };
             in
             {
               src = patchedSrc;
+              # govulncheck needs go:func.* in the static symbol table.
+              # Stripping it makes advisory symbol names look like ELF evidence.
+              ldflags = lib.remove "-s" old.ldflags;
+              dontStrip = true;
               passthru = old.passthru // {
                 client = old.passthru.client.overrideAttrs (client: {
                   src = patchedSrc;
-                  # Concurrent completion generators otherwise race to create
+                  # Concurrent completion generators still race to create
                   # config.yml; --force-local skips that first-run write.
                   postInstall =
                     builtins.replaceStrings
@@ -61,13 +68,12 @@
             }
           );
           ui.enable = true;
-          ui.package = pkgs.incus-ui-canonical;
           # Only the explicitly opened Tailscale port admits remote management.
           # Keep this port closed on LAN and compute-guest interfaces.
           preseed.config."core.https_address" = ":8443";
         };
 
-        systemd.services.incus.serviceConfig.TimeoutStopSecond = lib.mkForce "330s";
+        systemd.services.incus.serviceConfig.TimeoutStopSec = lib.mkForce "330s";
 
         # A bind mount that provides /var/lib/incus, such as impermanence's
         # persistence bind, is a mount peer of the filesystem it came from:

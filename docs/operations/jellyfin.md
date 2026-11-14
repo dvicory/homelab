@@ -370,6 +370,22 @@ image, administrator, libraries, and playback state.
 Both runtime checks must run their complete required scenario inventories;
 do not select scenarios by changed files.
 
+Replacement freezes main `90920bac376c6640478c1c45feaf6afa2c1c3900` and its
+complete locked input graph (root `801bef6abd86b91e51083066b83fb354a11fc640`).
+Both actual production guest declarations receive only the same disposable
+registry CA; versions and package paths come from their evaluated K3s packages.
+The running-server probe executes `/proc/<MainPID>/exe` and binds its bytes to
+the selected server payload. CLI version checks compare the exact selected
+version token, not upstream's incidental `argv[0]`-derived program label.
+Structured witnesses log each observed CLI, running executable, client,
+server and kubelet version before strict checks.
+Both guests must pass the nested unprivileged overlay and real filesystem
+statistics gates. The candidate host, manifests and application images are
+used throughout, so this is guest replacement/application recovery, not a full
+historical host or application-release upgrade. The old SQLite state is
+discarded, not migrated. Retained files stay mounted in place: this acceptance
+does not prove cold backup, export or restore of application state.
+
 ### First real upgrade
 
 Nobody has run this procedure yet. Jellyfin 12.1 was the first release
