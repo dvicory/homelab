@@ -126,7 +126,8 @@ in
             inherit namespace;
             name = "dependency-track-admin";
             key = "password";
-          } // lib.optionalAttrs (settings.databasePhase == "bootstrap") {
+          }
+          // lib.optionalAttrs (settings.databasePhase == "bootstrap") {
             generator = { pkgs, ... }: ''
               ${pkgs.openssl}/bin/openssl rand -hex 32 | ${pkgs.coreutils}/bin/tr -d '\n'
             '';
@@ -395,302 +396,322 @@ in
         };
         applications.dependency-track = {
           inherit namespace;
-          objects = [
-            {
+          objects =
+            lib.optional settings.privateAccess {
               apiVersion = "v1";
               kind = "ConfigMap";
               metadata = {
-                name = "dependency-track-postgres-config";
+                name = "dependency-track-access-policy";
                 inherit namespace;
               };
-              data = {
-                "init.sql" = ''
-                  \getenv dtrack_password POSTGRES_PASSWORD
-                  BEGIN;
-                  SET LOCAL password_encryption = 'scram-sha-256';
-                  CREATE ROLE dtrack LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD :'dtrack_password';
-                  ALTER DATABASE dtrack OWNER TO dtrack;
-                  REVOKE ALL ON DATABASE dtrack FROM PUBLIC;
-                  ALTER SCHEMA public OWNER TO dtrack;
-                  REVOKE ALL ON SCHEMA public FROM PUBLIC;
-                  ALTER ROLE postgres PASSWORD NULL;
-                  COMMIT;
-                '';
-                "pg_hba.conf" = postgresHba;
+              data."policy.json" = builtins.toJSON {
+                schema = 1;
+                bootstrap = settings.databasePhase == "bootstrap";
+                oidcGroup = cluster.settings.kubernetes.services.identity.adminGroup;
               };
             }
-            {
-              apiVersion = "v1";
-              kind = "ConfigMap";
-              metadata = {
-                name = "dependency-track-frontend-config";
-                inherit namespace;
-              };
-              data = {
-                "config.json" = frontendConfig;
-                # Stock frontend template, rendered for the required root context.
-                "default.conf" = ''
-                  server {
-                    listen 8080;
-                    server_name _;
-                    location / {
-                      root /opt/owasp/dependency-track-frontend;
-                      index index.html;
-                      try_files $uri $uri/ /index.html;
-                      location ~ (config\.json|index\.html)$ {
-                        add_header Cache-Control "max-age=0, no-cache, no-store, must-revalidate";
-                        add_header Pragma "no-cache";
-                        add_header Expires 0;
+            ++ [
+              {
+                apiVersion = "v1";
+                kind = "ConfigMap";
+                metadata = {
+                  name = "dependency-track-postgres-config";
+                  inherit namespace;
+                };
+                data = {
+                  "init.sql" = ''
+                    \getenv dtrack_password POSTGRES_PASSWORD
+                    BEGIN;
+                    SET LOCAL password_encryption = 'scram-sha-256';
+                    CREATE ROLE dtrack LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD :'dtrack_password';
+                    ALTER DATABASE dtrack OWNER TO dtrack;
+                    REVOKE ALL ON DATABASE dtrack FROM PUBLIC;
+                    ALTER SCHEMA public OWNER TO dtrack;
+                    REVOKE ALL ON SCHEMA public FROM PUBLIC;
+                    ALTER ROLE postgres PASSWORD NULL;
+                    COMMIT;
+                  '';
+                  "pg_hba.conf" = postgresHba;
+                };
+              }
+              {
+                apiVersion = "v1";
+                kind = "ConfigMap";
+                metadata = {
+                  name = "dependency-track-frontend-config";
+                  inherit namespace;
+                };
+                data = {
+                  "config.json" = frontendConfig;
+                  # Stock frontend template, rendered for the required root context.
+                  "default.conf" = ''
+                    server {
+                      listen 8080;
+                      server_name _;
+                      location / {
+                        root /opt/owasp/dependency-track-frontend;
+                        index index.html;
+                        try_files $uri $uri/ /index.html;
+                        location ~ (config\.json|index\.html)$ {
+                          add_header Cache-Control "max-age=0, no-cache, no-store, must-revalidate";
+                          add_header Pragma "no-cache";
+                          add_header Expires 0;
+                        }
+                      }
+                      error_page 500 502 503 504 /50x.html;
+                      location = /50x.html {
+                        root /usr/share/nginx/html;
                       }
                     }
-                    error_page 500 502 503 504 /50x.html;
-                    location = /50x.html {
-                      root /usr/share/nginx/html;
-                    }
+                  '';
+                };
+              }
+              (service "postgres" 5432)
+              (service "api" 8080)
+              (service "frontend" 8080)
+              # The service owns port-specific admission; no additive Gateway policy.
+              (policy "frontend" gatewayIngress [ ])
+              (policy "api" gatewayIngress (
+                [
+                  {
+                    to = [ (peer "postgres") ];
+                    ports = [ (tcp 5432) ];
                   }
-                '';
-              };
-            }
-            (service "postgres" 5432)
-            (service "api" 8080)
-            (service "frontend" 8080)
-            # The service owns port-specific admission; no additive Gateway policy.
-            (policy "frontend" gatewayIngress [ ])
-            (policy "api"
-              gatewayIngress
-              ([
-                {
-                  to = [ (peer "postgres") ];
-                  ports = [ (tcp 5432) ];
-                }
-                {
+                  {
+                    to = [
+                      {
+                        namespaceSelector.matchLabels."kubernetes.io/metadata.name" = "kube-system";
+                        podSelector.matchLabels."k8s-app" = "kube-dns";
+                      }
+                    ];
+                    ports = [
+                      {
+                        protocol = "UDP";
+                        port = 53;
+                      }
+                      (tcp 53)
+                    ];
+                  }
+                  {
+                    to = [
+                      {
+                        ipBlock = {
+                          cidr = "0.0.0.0/0";
+                          except = [
+                            "0.0.0.0/8"
+                            "10.0.0.0/8"
+                            "100.64.0.0/10"
+                            "127.0.0.0/8"
+                            "169.254.0.0/16"
+                            "172.16.0.0/12"
+                            "192.168.0.0/16"
+                            "198.18.0.0/15"
+                            "224.0.0.0/4"
+                            "240.0.0.0/4"
+                          ];
+                        };
+                      }
+                    ];
+                    ports = [ (tcp 443) ];
+                  }
+                ]
+                ++ lib.optional privateReady {
                   to = [
                     {
-                      namespaceSelector.matchLabels."kubernetes.io/metadata.name" = "kube-system";
-                      podSelector.matchLabels."k8s-app" = "kube-dns";
+                      namespaceSelector.matchLabels."kubernetes.io/metadata.name" = "identity";
+                      podSelector.matchLabels."app.kubernetes.io/name" = "kanidm";
                     }
                   ];
-                  ports = [
-                    {
-                      protocol = "UDP";
-                      port = 53;
-                    }
-                    (tcp 53)
-                  ];
+                  ports = [ (tcp 8443) ];
                 }
+              ))
+              (policy "postgres"
+                [
+                  {
+                    from = [ (peer "api") ];
+                    ports = [ (tcp 5432) ];
+                  }
+                ]
+                [ ]
+              )
+              (workload "postgres"
                 {
-                  to = [
-                    {
-                      ipBlock = {
-                        cidr = "0.0.0.0/0";
-                        except = [
-                          "0.0.0.0/8"
-                          "10.0.0.0/8"
-                          "100.64.0.0/10"
-                          "127.0.0.0/8"
-                          "169.254.0.0/16"
-                          "172.16.0.0/12"
-                          "192.168.0.0/16"
-                          "198.18.0.0/15"
-                          "224.0.0.0/4"
-                          "240.0.0.0/4"
-                        ];
-                      };
-                    }
+                  image = images.postgres;
+                  securityContext = security paths.postgres.uid paths.postgres.gid;
+                  resources = resources "512Mi" "500m";
+                  env = [
+                    (env "POSTGRES_DB" "dtrack")
+                    (env "POSTGRES_USER" "postgres")
+                    (env "PGDATA" "/var/lib/postgresql/18/docker")
+                    (password "POSTGRES_PASSWORD")
                   ];
-                  ports = [ (tcp 443) ];
-                }
-              ] ++ lib.optional privateReady {
-                to = [
-                  {
-                    namespaceSelector.matchLabels."kubernetes.io/metadata.name" = "identity";
-                    podSelector.matchLabels."app.kubernetes.io/name" = "kanidm";
-                  }
-                ];
-                ports = [ (tcp 8443) ];
-              })
-            )
-            (policy "postgres"
-              [
-                {
-                  from = [ (peer "api") ];
-                  ports = [ (tcp 5432) ];
-                }
-              ]
-              [ ]
-            )
-            (workload "postgres"
-              {
-                image = images.postgres;
-                securityContext = security paths.postgres.uid paths.postgres.gid;
-                resources = resources "512Mi" "500m";
-                env = [
-                  (env "POSTGRES_DB" "dtrack")
-                  (env "POSTGRES_USER" "postgres")
-                  (env "PGDATA" "/var/lib/postgresql/18/docker")
-                  (password "POSTGRES_PASSWORD")
-                ];
-                command = [
-                  "/bin/sh"
-                  "-ec"
-                ];
-                args = [
-                  ''
-                    ${lib.optionalString (settings.databasePhase != "bootstrap") ''
-                      test -s "$PGDATA/PG_VERSION" && test "$(cat "$PGDATA/PG_VERSION")" = 18 || { echo "Restore requires existing PostgreSQL18 state; refusing substitute initialization." >&2; exit 1; }
-                    ''}
-                    exec /usr/local/bin/docker-entrypoint.sh postgres -c hba_file=/etc/dependency-track-postgres/pg_hba.conf -c shared_buffers=32MB -c max_connections=30
-                  ''
-                ];
-                volumeMounts = [
-                  (mount "/var/lib/postgresql")
-                  {
-                    name = "postgres-config";
-                    mountPath = "/etc/dependency-track-postgres";
-                    readOnly = true;
-                  }
-                  {
-                    name = "postgres-config";
-                    mountPath = "/docker-entrypoint-initdb.d/10-dependency-track.sql";
-                    subPath = "init.sql";
-                    readOnly = true;
-                  }
-                ];
-                # pg_isready reports success even when authentication is refused.
-                # Exercise the same TCP/SCRAM credential and database as the API.
-                startupProbe = {
-                  exec.command = [
+                  command = [
                     "/bin/sh"
                     "-ec"
-                    ''PGPASSWORD="$POSTGRES_PASSWORD" psql -XAt -h 127.0.0.1 -U dtrack -d dtrack -v ON_ERROR_STOP=1 -c 'SELECT 1' | /bin/grep -qx 1''
                   ];
-                  periodSeconds = 5;
+                  args = [
+                    ''
+                      ${lib.optionalString (settings.databasePhase != "bootstrap") ''
+                        test -s "$PGDATA/PG_VERSION" && test "$(cat "$PGDATA/PG_VERSION")" = 18 || { echo "Restore requires existing PostgreSQL18 state; refusing substitute initialization." >&2; exit 1; }
+                      ''}
+                      exec /usr/local/bin/docker-entrypoint.sh postgres -c hba_file=/etc/dependency-track-postgres/pg_hba.conf -c shared_buffers=32MB -c max_connections=30
+                    ''
+                  ];
+                  volumeMounts = [
+                    (mount "/var/lib/postgresql")
+                    {
+                      name = "postgres-config";
+                      mountPath = "/etc/dependency-track-postgres";
+                      readOnly = true;
+                    }
+                    {
+                      name = "postgres-config";
+                      mountPath = "/docker-entrypoint-initdb.d/10-dependency-track.sql";
+                      subPath = "init.sql";
+                      readOnly = true;
+                    }
+                  ];
+                  # pg_isready reports success even when authentication is refused.
+                  # Exercise the same TCP/SCRAM credential and database as the API.
+                  startupProbe = {
+                    exec.command = [
+                      "/bin/sh"
+                      "-ec"
+                      ''PGPASSWORD="$POSTGRES_PASSWORD" psql -XAt -h 127.0.0.1 -U dtrack -d dtrack -v ON_ERROR_STOP=1 -c 'SELECT 1' | /bin/grep -qx 1''
+                    ];
+                    periodSeconds = 5;
+                    failureThreshold = 60;
+                    timeoutSeconds = 5;
+                  };
+                  readinessProbe = {
+                    exec.command = [
+                      "/bin/sh"
+                      "-ec"
+                      ''PGPASSWORD="$POSTGRES_PASSWORD" psql -XAt -h 127.0.0.1 -U dtrack -d dtrack -v ON_ERROR_STOP=1 -c 'SELECT 1' | /bin/grep -qx 1''
+                    ];
+                    timeoutSeconds = 5;
+                  };
+                }
+                [
+                  (volume "postgres")
+                  {
+                    name = "postgres-config";
+                    configMap.name = "dependency-track-postgres-config";
+                  }
+                ]
+              )
+              (workload "api" {
+                image = images.api;
+                securityContext = security paths.api.uid paths.api.gid;
+                resources = resources "2Gi" "2";
+                env = [
+                  (env "DT_DATA_DIRECTORY" "/data/.dependency-track")
+                  (env "DT_SECRET_MANAGEMENT_DATABASE_KEK_KEYSET_CREATE_IF_MISSING" (
+                    lib.boolToString (settings.databasePhase == "bootstrap")
+                  ))
+                  (env "DT_DATASOURCE_URL" "jdbc:postgresql://dependency-track-postgres:5432/dtrack")
+                  (env "DT_DATASOURCE_USERNAME" "dtrack")
+                  (password "DT_DATASOURCE_PASSWORD")
+                  (env "DT_DATASOURCE_POOL_MAX_SIZE" "8")
+                  (env "DT_DATASOURCE_POOL_MIN_IDLE" "2")
+                  (env "DT_TASK_SCHEDULER_ENABLED" (lib.boolToString settings.advisoryRefresh))
+                  (env "DT_TASK_PORTFOLIO_ANALYSIS_MAX_IN_FLIGHT_ANALYSES" "1")
+                  (env "DT_TASK_OSV_VULN_DATA_SOURCE_MIRROR_CRON" "0 3 * * *")
+                  (env "DT_TASK_NVD_VULN_DATA_SOURCE_MIRROR_CRON" "0 4 * * *")
+                  (env "DT_DEX_ENGINE_ACTIVITY_WORKER_DEFAULT_MAX_CONCURRENCY" "1")
+                  (env "DT_DEX_ENGINE_ACTIVITY_WORKER_VULN_ANALYSIS_MAX_CONCURRENCY" "1")
+                  (env "DT_DEX_ENGINE_ACTIVITY_WORKER_VULN_ANALYSIS_RECONCILIATION_MAX_CONCURRENCY" "1")
+                  (env "DT_DEX_ENGINE_ACTIVITY_WORKER_ARTIFACT_IMPORT_MAX_CONCURRENCY" "1")
+                  (env "DT_DEX_ENGINE_ACTIVITY_WORKER_VULN_ANALYSIS_ENABLED" (
+                    lib.boolToString (!settings.initialMirror)
+                  ))
+                  (env "DT_DEX_ENGINE_ACTIVITY_WORKER_VULN_ANALYSIS_RECONCILIATION_ENABLED" (
+                    lib.boolToString (!settings.initialMirror)
+                  ))
+                  (env "DT_DEX_ENGINE_ACTIVITY_WORKER_ARTIFACT_IMPORT_ENABLED" (
+                    lib.boolToString (!settings.initialMirror)
+                  ))
+                  (env "DT_DEX_ENGINE_ACTIVITY_MIRROR_VULN_DATA_SOURCE_EXECUTION_TIMEOUT_MS" (
+                    if settings.initialMirror then "86400000" else "3600000"
+                  ))
+                  (env "DT_OUTBOUND_ALLOWED_DESTINATIONS" "storage.googleapis.com,nvd.nist.gov")
+                  (env "DT_TELEMETRY_SUBMISSION_DEFAULT_ENABLED" "false")
+                  (env "EXTRA_JAVA_OPTIONS" "-Xms256m -Xmx1400m -XX:ActiveProcessorCount=2")
+                ]
+                ++ lib.optionals privateReady [
+                  (env "DT_OIDC_ENABLED" "true")
+                  (env "DT_OIDC_ISSUER" issuer)
+                  (env "DT_OIDC_CLIENT_ID" "dependency-track")
+                  (env "DT_OIDC_USERNAME_CLAIM" "preferred_username")
+                  (env "DT_OIDC_USER_PROVISIONING" "true")
+                  (env "DT_OIDC_TEAM_SYNCHRONIZATION" "true")
+                  (env "DT_OIDC_TEAMS_CLAIM" "groups")
+                  (env "DT_CORS_ENABLED" "true")
+                  (env "DT_CORS_ALLOW_CREDENTIALS" "false")
+                ];
+                volumeMounts = [ (mount "/data") ];
+                startupProbe = {
+                  httpGet = {
+                    path = "/health/started";
+                    port = 9000;
+                  };
                   failureThreshold = 60;
+                  periodSeconds = 10;
                   timeoutSeconds = 5;
                 };
                 readinessProbe = {
-                  exec.command = [
-                    "/bin/sh"
-                    "-ec"
-                    ''PGPASSWORD="$POSTGRES_PASSWORD" psql -XAt -h 127.0.0.1 -U dtrack -d dtrack -v ON_ERROR_STOP=1 -c 'SELECT 1' | /bin/grep -qx 1''
-                  ];
+                  httpGet = {
+                    path = "/health/ready";
+                    port = 9000;
+                  };
                   timeoutSeconds = 5;
                 };
-              }
-              [
-                (volume "postgres")
+              } [ (volume "api") ])
+              (workload "frontend"
                 {
-                  name = "postgres-config";
-                  configMap.name = "dependency-track-postgres-config";
+                  image = images.frontend;
+                  securityContext = (security 101 101) // {
+                    readOnlyRootFilesystem = true;
+                  };
+                  resources = resources "128Mi" "500m";
+                  volumeMounts = [
+                    {
+                      name = "frontend-config";
+                      mountPath = "/opt/owasp/dependency-track-frontend/static/config.json";
+                      subPath = "config.json";
+                      readOnly = true;
+                    }
+                    {
+                      name = "frontend-config";
+                      mountPath = "/etc/nginx/conf.d/default.conf";
+                      subPath = "default.conf";
+                      readOnly = true;
+                    }
+                    {
+                      name = "frontend-tmp";
+                      mountPath = "/tmp";
+                    }
+                  ];
+                  readinessProbe.httpGet = {
+                    path = "/";
+                    port = 8080;
+                  };
                 }
-              ]
-            )
-            (workload "api" {
-              image = images.api;
-              securityContext = security paths.api.uid paths.api.gid;
-              resources = resources "2Gi" "2";
-              env = [
-                (env "DT_DATA_DIRECTORY" "/data/.dependency-track")
-                (env "DT_SECRET_MANAGEMENT_DATABASE_KEK_KEYSET_CREATE_IF_MISSING" (
-                  lib.boolToString (settings.databasePhase == "bootstrap")
-                ))
-                (env "DT_DATASOURCE_URL" "jdbc:postgresql://dependency-track-postgres:5432/dtrack")
-                (env "DT_DATASOURCE_USERNAME" "dtrack")
-                (password "DT_DATASOURCE_PASSWORD")
-                (env "DT_DATASOURCE_POOL_MAX_SIZE" "8")
-                (env "DT_DATASOURCE_POOL_MIN_IDLE" "2")
-                (env "DT_TASK_SCHEDULER_ENABLED" (lib.boolToString settings.advisoryRefresh))
-                (env "DT_TASK_PORTFOLIO_ANALYSIS_MAX_IN_FLIGHT_ANALYSES" "1")
-                (env "DT_TASK_OSV_VULN_DATA_SOURCE_MIRROR_CRON" "0 3 * * *")
-                (env "DT_TASK_NVD_VULN_DATA_SOURCE_MIRROR_CRON" "0 4 * * *")
-                (env "DT_DEX_ENGINE_ACTIVITY_WORKER_DEFAULT_MAX_CONCURRENCY" "1")
-                (env "DT_DEX_ENGINE_ACTIVITY_WORKER_VULN_ANALYSIS_MAX_CONCURRENCY" "1")
-                (env "DT_DEX_ENGINE_ACTIVITY_WORKER_VULN_ANALYSIS_RECONCILIATION_MAX_CONCURRENCY" "1")
-                (env "DT_DEX_ENGINE_ACTIVITY_WORKER_ARTIFACT_IMPORT_MAX_CONCURRENCY" "1")
-                (env "DT_DEX_ENGINE_ACTIVITY_WORKER_VULN_ANALYSIS_ENABLED" (
-                  lib.boolToString (!settings.initialMirror)
-                ))
-                (env "DT_DEX_ENGINE_ACTIVITY_WORKER_VULN_ANALYSIS_RECONCILIATION_ENABLED" (
-                  lib.boolToString (!settings.initialMirror)
-                ))
-                (env "DT_DEX_ENGINE_ACTIVITY_WORKER_ARTIFACT_IMPORT_ENABLED" (
-                  lib.boolToString (!settings.initialMirror)
-                ))
-                (env "DT_DEX_ENGINE_ACTIVITY_MIRROR_VULN_DATA_SOURCE_EXECUTION_TIMEOUT_MS" (
-                  if settings.initialMirror then "86400000" else "3600000"
-                ))
-                (env "DT_OUTBOUND_ALLOWED_DESTINATIONS" "storage.googleapis.com,nvd.nist.gov")
-                (env "DT_TELEMETRY_SUBMISSION_DEFAULT_ENABLED" "false")
-                (env "EXTRA_JAVA_OPTIONS" "-Xms256m -Xmx1400m -XX:ActiveProcessorCount=2")
-              ] ++ lib.optionals privateReady [
-                (env "DT_OIDC_ENABLED" "true")
-                (env "DT_OIDC_ISSUER" issuer)
-                (env "DT_OIDC_CLIENT_ID" "dependency-track")
-                (env "DT_OIDC_USERNAME_CLAIM" "preferred_username")
-                (env "DT_OIDC_USER_PROVISIONING" "true")
-                (env "DT_OIDC_TEAM_SYNCHRONIZATION" "true")
-                (env "DT_OIDC_TEAMS_CLAIM" "groups")
-                (env "DT_CORS_ENABLED" "true")
-                (env "DT_CORS_ALLOW_CREDENTIALS" "false")
-              ];
-              volumeMounts = [ (mount "/data") ];
-              startupProbe = {
-                httpGet = {
-                  path = "/health/started";
-                  port = 9000;
-                };
-                failureThreshold = 60;
-                periodSeconds = 10;
-                timeoutSeconds = 5;
-              };
-              readinessProbe = {
-                httpGet = {
-                  path = "/health/ready";
-                  port = 9000;
-                };
-                timeoutSeconds = 5;
-              };
-            } [ (volume "api") ])
-            (workload "frontend" {
-              image = images.frontend;
-              securityContext = (security 101 101) // { readOnlyRootFilesystem = true; };
-              resources = resources "128Mi" "500m";
-              volumeMounts = [
-                {
-                  name = "frontend-config";
-                  mountPath = "/opt/owasp/dependency-track-frontend/static/config.json";
-                  subPath = "config.json";
-                  readOnly = true;
-                }
-                {
-                  name = "frontend-config";
-                  mountPath = "/etc/nginx/conf.d/default.conf";
-                  subPath = "default.conf";
-                  readOnly = true;
-                }
-                {
-                  name = "frontend-tmp";
-                  mountPath = "/tmp";
-                }
-              ];
-              readinessProbe.httpGet = {
-                path = "/";
-                port = 8080;
-              };
-            } [
-              {
-                name = "frontend-config";
-                configMap.name = "dependency-track-frontend-config";
-              }
-              {
-                name = "frontend-tmp";
-                emptyDir = {
-                  medium = "Memory";
-                  sizeLimit = "32Mi";
-                };
-              }
-            ])
-          ];
+                [
+                  {
+                    name = "frontend-config";
+                    configMap.name = "dependency-track-frontend-config";
+                  }
+                  {
+                    name = "frontend-tmp";
+                    emptyDir = {
+                      medium = "Memory";
+                      sizeLimit = "32Mi";
+                    };
+                  }
+                ]
+              )
+            ];
         };
       };
   };

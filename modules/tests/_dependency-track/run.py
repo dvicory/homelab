@@ -25,10 +25,15 @@ import stat
 import sys
 import subprocess
 import tempfile
+import tarfile
 from datetime import datetime, timezone
 import time
 from types import SimpleNamespace
 import urllib.parse
+import ssl
+import socket
+
+from playwright.sync_api import sync_playwright
 import uuid
 
 import yaml
@@ -47,12 +52,15 @@ REQUIRED_CHECKS = [
     "restore-refuses-missing-keyset-and-privileged-role-then-recovers",
     "restore-refuses-malformed-nonempty-keyset-without-rewrite-then-recovers",
     "restore-refuses-missing-database-version-without-reinitializing",
+    "native-root-access-policy-bootstrap-restore-and-pod-uid-readmission",
+    "native-trusted-browser-public-pkce-admin-denial-logout-and-group-removal",
 ]
 
 MALFORMED_KEYSET = b"fixture-malformed-nonempty-keyset\n"
 STORAGE_CATEGORIES = ("archive", "acquisitions", "origins", "artifacts")
 SAFE_ERROR_SIGNATURES = {
     "permission-denied": b"permission denied",
+    "permission-error": b"permissionerror",
     "nix-daemon-denied": b"not allowed to connect to the nix daemon",
     "api-unauthorized": b"http 401",
     "api-forbidden": b"http 403",
@@ -73,6 +81,7 @@ SAFE_ERROR_SIGNATURES = {
     "database-password-refused": b"password authentication failed",
     "connection-refused": b"connection refused",
     "dns-resolution-failed": b"could not resolve",
+    "cri-cli-dispatch-refused": b"no help topic for 'crictl'",
 }
 SAFE_CONTAINER_REASONS = {
     "Completed", "Error", "OOMKilled", "CrashLoopBackOff", "ContainerCannotRun",
@@ -99,6 +108,36 @@ class QualificationFailure(ValueError):
 def safe_error_categories(data):
     lowered = data.lower()
     return [category for category, signature in SAFE_ERROR_SIGNATURES.items() if signature in lowered]
+
+
+def retained_tree(root):
+    result = {}
+    for path in [root, *sorted(root.rglob("*"))]:
+        info = path.lstat()
+        if not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)):
+            raise QualificationFailure("retained-evidence-is-not-regular")
+        digest = None
+        if stat.S_ISREG(info.st_mode):
+            with path.open("rb") as stream:
+                digest = hashlib.file_digest(stream, "sha256").hexdigest()
+        result[str(path.relative_to(root))] = [
+            info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode), digest]
+    return result
+
+
+def extract_retained_tree(archive, root):
+    if os.geteuid() != 0 or root.is_symlink() or not root.is_dir() or any(root.iterdir()):
+        raise QualificationFailure("retained-extraction-requires-root-and-empty-directory")
+    with tarfile.open(archive, "r:") as source:
+        members = source.getmembers()
+        paths = [Path(member.name) for member in members]
+        if (len(members) > 8192 or len(set(paths)) != len(paths)
+                or sum(member.size for member in members) > 256 * 1024 * 1024
+                or any(path.is_absolute() or ".." in path.parts for path in paths)
+                or any(not (member.isdir() or member.isreg()) or member.mode & 0o7022
+                       for member in members)):
+            raise QualificationFailure("unsafe-retained-evidence-archive")
+        source.extractall(root, members=members, numeric_owner=True, filter="tar")
 
 
 def safe_failure(error, phase):
@@ -136,7 +175,7 @@ def image_refs(value):
 
 
 def source_inputs(settings):
-    paths = [Path(settings[key]) for key in ("bootstrap", "restore", "retained")]
+    paths = [Path(settings[key]) for key in ("bootstrap", "restore", "retained", "identityInitial")]
     paths += sorted(Path(settings["networkPolicy"]).glob("*.yaml"))
     digest = hashlib.sha256()
     objects = []
@@ -147,6 +186,10 @@ def source_inputs(settings):
         objects.extend(yaml.safe_load_all(raw))
     for raw in (Path(settings["credentialStage"]).read_bytes(), Path(settings["brokerPortGuard"]).read_bytes(),
                 Path(settings["failureNotifier"]).read_bytes(),
+                Path(settings["accessPolicy"]).read_bytes(),
+                Path(settings["accessBroker"]).read_bytes(),
+                json.dumps([settings["identityDesired"], settings["provisionImage"],
+                            settings["provisionImageDrv"], settings["chromium"]], sort_keys=True).encode(),
                 json.dumps([settings["sync"], settings["qualificationTargets"], settings["failureHost"],
                             settings["alertmanager"]], sort_keys=True).encode()):
         digest.update(len(raw).to_bytes(8, "big"))
@@ -394,6 +437,47 @@ def validate_report(report, settings, producer_branch="main"):
         require(type(negative.get("exitCode")) is int and 0 < negative["exitCode"] < 256)
         require(negative.get("lastGoodPreserved") is True)
         require(negative.get("coverageStatus") == ("complete" if negative["reason"] == "source-policy" else "failed-unknown"))
+    section = "native-access-policy"
+    policy = observed.get("accessPolicy", {})
+    for key in ("beforeAdmissionGateway", "freshRestoreGateway", "badBootstrapCredentialGateway",
+                "badRestoreCredentialGateway", "recreatedPodGateway"):
+        require(type(policy.get(key)) is int and policy[key] in (502, 503, 504))
+    require(policy.get("admittedGateway") == 401 and type(policy["admittedGateway"]) is int)
+    require(policy.get("defaultLoginRefusal") == "INVALID_CREDENTIALS")
+    require(policy.get("healthyReconciliationPreserved") is True
+            and policy.get("successAndFailureSessionLogout") is True)
+    for key in ("uid705PolicyExit", "uid705BrokerReadExit"):
+        require(type(policy.get(key)) is int and 0 < policy[key] < 256)
+    for key in ("bootstrapPodUID", "previousPodUID", "recreatedPodUID", "validatedPodUID", "finalPodUID"):
+        require(isinstance(policy.get(key), str) and str(uuid.UUID(policy[key])) == policy[key])
+    require(policy["bootstrapPodUID"] != policy["recreatedPodUID"])
+    require(policy["previousPodUID"] != policy["recreatedPodUID"] and policy.get("finalPodAdmitted") is True)
+    require(policy["recreatedPodUID"] == policy["validatedPodUID"])
+    section = "native-browser-oidc"
+    oidc = observed.get("nativeOidc", {})
+    require(observed.get("frontendReadOnlyRoot") is True and observed.get("frontendReadOnlyConfig") is True)
+    require(oidc.get("pkceCallback") is True)
+    for key, status in (("administratorStatus", 200), ("localLogoutStatus", 401),
+                        ("unmappedStatus", 403), ("nonmemberStatus", 403),
+                        ("existingSessionAfterGroupRemoval", 200), ("removedGroupReloginStatus", 403),
+                        ("afterNegativeRecoveryStatus", 200)):
+        require(type(oidc.get(key)) is int and oidc[key] == status)
+    for key in ("wrongAudienceStatus", "wrongIssuerStatus"):
+        require(type(oidc.get(key)) is int and oidc[key] in (401, 403))
+    permissions = oidc.get("administratorPermissions", [])
+    require(isinstance(permissions, list) and permissions == sorted(set(permissions))
+            and {"ACCESS_MANAGEMENT", "SYSTEM_CONFIGURATION", "VIEW_PORTFOLIO"} <= set(permissions)
+            and all(isinstance(permission, str) and re.fullmatch(r"[A-Z_]+", permission)
+                    for permission in permissions))
+    helper = observed.get("fixtureHelper", {})
+    require(helper.get("productionReceipt") is False
+            and helper.get("sourceArchive") == settings["provisionImage"]
+            and helper.get("producerDrv") == settings["provisionImageDrv"])
+    require(isinstance(helper.get("configDigest"), str)
+            and bool(re.fullmatch(r"sha256:[0-9a-f]{64}", helper["configDigest"]))
+            and helper["configDigest"] == helper.get("runtimeConfigDigest"))
+    require(isinstance(helper.get("archiveSha256"), str)
+            and bool(re.fullmatch(r"[0-9a-f]{64}", helper["archiveSha256"])))
     section = "cleanup-and-safe-operation-evidence"
     operations = report.get("operations", [])
     require(isinstance(operations, list) and 0 < len(operations) <= 24)
@@ -408,7 +492,8 @@ def validate_report(report, settings, producer_branch="main"):
     require(report.get("cleanup") is True)
     cleanup = report.get("cleanupWitness", {})
     require(set(cleanup) == {"containerRemoved", "networkRemoved", "volumesRemoved", "credentialsRemoved",
-                             "identityRemoved", "failureProxyRemoved", "alertmanagerRemoved"})
+                             "identityRemoved", "failureProxyRemoved", "alertmanagerRemoved",
+                             "nativeProcessesRemoved"})
     require(all(value is True for value in cleanup.values()))
 
 
@@ -480,12 +565,15 @@ def main():
                "status": "failed", "checks": [], "cleanup": False,
                "limitations": ["Isolated service with two public desired/reference inventories; not deployed or production recovery proof",
                                "Offline same-node PostgreSQL18 physical backup, not PITR or cross-version restore",
-                               "No advisory bulk import, fleet sizing, browser flow or production credential enrollment",
+                               "No advisory bulk import, fleet sizing or production credential enrollment",
                                "Fixture-only API ingress overlay proves packet enforcement, not an admitted fleet route",
                                "Local PV capacities are declarations, not filesystem quotas; tiny fixture does not prove production disk sizing"]}
     receipt["limitations"].append("Exact projection/getter/rotation and705 transport only; envelope reconciler and systemd lifecycle are not executed")
     receipt["limitations"].append("Storage counts are logical regular-file bytes per retained path, not physical allocation or a capacity proof")
     receipt["limitations"].append("Exact root notifier with null receivers only; no systemd sandbox/lifecycle or provider delivery proof")
+    receipt["limitations"].append("Disposable source-built helper is not a verified production helper release or release-authority bypass")
+    receipt["limitations"].append("Native trusted fixture HTTPS only; no production Gateway, enrollment, instantaneous IdP revocation or systemd lifecycle claim")
+    receipt["limitations"].append("Wrong issuer uses another real client's discovery/keys; refusal does not isolate issuer versus signature validation order")
     receipt.update(sourceDigest=source_inputs(settings)[0], http=[], observed={"forbiddenSqlStates": [], "refusedExits": {}},
                    cleanupWitness={"containerRemoved": False, "networkRemoved": False, "volumesRemoved": False, "credentialsRemoved": False},
                    host={"architecture": platform.machine().lower(), "ubuntu": release["VERSION_ID"].strip('"'),
@@ -512,6 +600,8 @@ def main():
     ingestor_temporary = None
     notifier_groups = set()
     alertmanager_created = False
+    oidc_processes = []
+    policy_initialized = False
     notification_canary = uuid.uuid4().hex
     host_port_boundary = int(Path("/proc/sys/net/ipv4/ip_unprivileged_port_start").read_text())
     success = False
@@ -624,8 +714,13 @@ def main():
             k("-n", "dependency-track", "scale", "deployment/dependency-track-" + component,
               "--replicas=" + str(replicas))
             if replicas:
-                k("-n", "dependency-track", "rollout", "status", "deployment/dependency-track-" + component,
-                  "--timeout=600s", timeout=620)
+                if component == "api":
+                    wait(lambda: api_pod_ready(), seconds=620, reason="api-container-not-ready")
+                    if policy_initialized:
+                        reconcile_access()
+                else:
+                    k("-n", "dependency-track", "rollout", "status", "deployment/dependency-track-" + component,
+                      "--timeout=600s", timeout=620)
             else:
                 k("-n", "dependency-track", "wait", "--for=delete", "pod",
                   "-l", "app.kubernetes.io/name=dependency-track-" + component,
@@ -840,6 +935,500 @@ def main():
             if len(pods["items"]) != 1:
                 raise QualificationFailure("unexpected-pod-population")
             return pods["items"][0]["status"]["podIP"]
+
+        def api_pod():
+            pods = json.loads(k("-n", "dependency-track", "get", "pod", "-l",
+                                "app.kubernetes.io/name=dependency-track-api", "-o", "json").stdout)["items"]
+            pods = [pod for pod in pods if not pod["metadata"].get("deletionTimestamp")]
+            return pods[0] if len(pods) == 1 else None
+
+        def api_pod_ready():
+            pod = api_pod()
+            desired = json.loads(k("-n", "dependency-track", "get",
+                                   "deployment/dependency-track-api", "-o", "json").stdout)
+            return bool(pod and pod.get("status", {}).get("phase") == "Running"
+                        and pod["status"].get("containerStatuses")
+                        and pod["spec"]["containers"][0].get("env", [])
+                            == desired["spec"]["template"]["spec"]["containers"][0].get("env", [])
+                        and all(container["ready"] for container in pod["status"]["containerStatuses"]))
+
+        def admitted():
+            pod = api_pod()
+            return bool(pod and any(condition["type"] == "security.homelab/access-policy-ready"
+                                    and condition["status"] == "True"
+                                    for condition in pod.get("status", {}).get("conditions", [])))
+
+        def reconcile_access(*, succeeds=True):
+            was_forwarding = forward is not None
+            stop_forward()
+            runtime = work / "access-policy"
+            runtime.mkdir(mode=0o700, exist_ok=True)
+            policy_env = {**env, "KUBECONFIG": str(work / "policy-kubeconfig"),
+                          "RUNTIME_DIRECTORY": str(runtime)}
+            broker = subprocess.Popen([settings["nsenter"], "--target", str(node["State"]["Pid"]),
+                "--net", "--", settings["accessBroker"]], stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL, env={**policy_env,
+                    "RUNTIME_DIRECTORY": "/run/dependency-track-sync-api-tunnel"}, start_new_session=True)
+            oidc_processes.append(broker)
+            try:
+                with selectors.DefaultSelector() as selector:
+                    selector.register(broker.stdout, selectors.EVENT_READ)
+                    if not selector.select(60) or broker.stdout.readline(1024) != b"Forwarding from 127.0.0.1:1022 -> 8080\n":
+                        raise QualificationFailure("source-broker-identity-unavailable")
+                result = run([settings["nsenter"], "--target", str(node["State"]["Pid"]), "--net", "--",
+                              settings["accessPolicy"]], timeout=180, check=False,
+                             environment=policy_env, operation="root-access-policy")
+                if (result.returncode == 0) != succeeds:
+                    raise QualificationFailure("access-policy-unexpected-result")
+                wait(lambda: admitted() == succeeds, reason="access-policy-gate-mismatch")
+                return result
+            finally:
+                if broker.poll() is None:
+                    os.killpg(broker.pid, signal.SIGTERM)
+                try:
+                    broker.wait(timeout=20)
+                except subprocess.TimeoutExpired:
+                    os.killpg(broker.pid, signal.SIGKILL)
+                    broker.wait(timeout=10)
+                broker.stdout.close()
+                if was_forwarding:
+                    start_forward()
+
+        def endpoints_ready():
+            slices = json.loads(k("-n", "dependency-track", "get", "endpointslices",
+                                  "-l", "kubernetes.io/service-name=dependency-track-api", "-o", "json").stdout)
+            return any(endpoint.get("conditions", {}).get("ready") is True
+                       for item in slices["items"] for endpoint in item.get("endpoints", []))
+
+        def trusted_https(host, path, *, method="GET", data=None, headers=None):
+            trust = ssl.create_default_context(cafile=str(work / "oidc" / "ca.crt"))
+            connection = http.client.HTTPSConnection(host, context=trust, timeout=20)
+            connection.sock = trust.wrap_socket(socket.create_connection(("127.0.0.1", 443), timeout=20),
+                                                server_hostname=host)
+            try:
+                connection.request(method, path, body=data, headers=headers or {})
+                response = connection.getresponse()
+                return response.status, response.read(1024 * 1024), response.getheaders()
+            finally:
+                connection.close()
+
+        def gateway_closed():
+            wait(lambda: not endpoints_ready(), reason="unadmitted-endpoint-published")
+            status, _, _ = trusted_https("api.dt-fixture.invalid", "/api/v1/project")
+            if status not in (502, 503, 504):
+                raise QualificationFailure("unadmitted-gateway-accessible")
+            return status
+
+        def policy_phase(bootstrap_phase):
+            # Mutate only the source-owned desired phase, never a learned command or URL.
+            k("-n", "dependency-track", "patch", "configmap/dependency-track-access-policy",
+              "--type=merge", "--patch-file=/dev/stdin", data=json.dumps({"data": {"policy.json":
+              json.dumps({"schema": 1, "bootstrap": bootstrap_phase,
+                          "oidcGroup": settings["oidcGroup"]})}}).encode())
+
+        def oidc_setup():
+            """Existing native gateway fixture conventions: own CA, stock Kanidm,
+            source desired state and genuine public wrapper; no production images forged."""
+            ca = work / "oidc"
+            ca.mkdir(mode=0o700)
+            run([settings["openssl"], "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+                 "-days", "2", "-subj", "/CN=DT fixture CA", "-addext",
+                 "basicConstraints=critical,CA:TRUE", "-addext", "keyUsage=critical,keyCertSign,cRLSign",
+                 "-keyout", str(ca / "ca.key"), "-out", str(ca / "ca.crt")])
+            run([settings["openssl"], "req", "-new", "-newkey", "rsa:2048", "-nodes",
+                 "-subj", "/CN=idm.dt-fixture.invalid", "-keyout", str(ca / "tls.key"),
+                 "-out", str(ca / "tls.csr")])
+            (ca / "tls.ext").write_text("subjectAltName=DNS:idm.dt-fixture.invalid,DNS:dt.dt-fixture.invalid,DNS:api.dt-fixture.invalid\nextendedKeyUsage=serverAuth\n")
+            run([settings["openssl"], "x509", "-req", "-in", str(ca / "tls.csr"),
+                 "-CA", str(ca / "ca.crt"), "-CAkey", str(ca / "ca.key"), "-CAcreateserial",
+                 "-days", "2", "-extfile", str(ca / "tls.ext"), "-out", str(ca / "tls.crt")])
+            for namespace in ("identity", "gateway"):
+                apply({"apiVersion": "v1", "kind": "Namespace", "metadata": {"name": namespace}})
+                apply({"apiVersion": "v1", "kind": "Secret", "metadata": {"namespace": namespace,
+                       "name": "kanidm-tls"}, "stringData": {
+                       "tls.crt": (ca / "tls.crt").read_text(), "tls.key": (ca / "tls.key").read_text()}})
+                apply({"apiVersion": "v1", "kind": "ConfigMap", "metadata": {"namespace": namespace,
+                       "name": "fixture-ca"}, "data": {"ca.crt": (ca / "ca.crt").read_text()}})
+            initial = json.loads(Path(settings["identityInitial"]).read_text())
+            for obj in initial["items"]:
+                if obj["kind"] == "Deployment":
+                    spec = obj["spec"]["template"]["spec"]
+                    spec["securityContext"]["fsGroup"] = 1000
+                    spec["volumes"] = [{"name": "data", "emptyDir": {}} if volume["name"] == "data"
+                                       else volume for volume in spec["volumes"]]
+            apply(initial)
+            k("-n", "identity", "rollout", "status", "deployment/kanidm", "--timeout=300s", timeout=320)
+            # The production rewrite mechanism with only the reserved fixture issuer.
+            apply({"apiVersion": "v1", "kind": "ConfigMap", "metadata": {"namespace": "kube-system",
+                   "name": "coredns-custom"}, "data": {"kanidm.override":
+                   "rewrite name exact idm.dt-fixture.invalid kanidm.identity.svc.cluster.local\n"}})
+            k("-n", "kube-system", "rollout", "restart", "deployment/coredns")
+            k("-n", "kube-system", "rollout", "status", "deployment/coredns", "--timeout=120s", timeout=140)
+            recovered = json.loads(k("-n", "identity", "exec", "deployment/kanidm", "--",
+                "/sbin/kanidmd", "scripting", "recover-account", "idm_admin", "-c",
+                "/etc/kanidm/server.toml").stdout)
+            if recovered.get("status") != "ok":
+                raise QualificationFailure("fixture-idm-recovery-refused")
+            apply({"apiVersion": "v1", "kind": "Secret", "metadata": {"namespace": "identity",
+                   "name": "kanidm-provision"}, "stringData": {"idm-admin-password": recovered["output"]}})
+            desired = settings["identityDesired"]
+            state = json.loads(desired["state.json"])
+            # Public source registration only; no confidential app secret publication
+            # or real fleet identities in this disposable qualification population.
+            client = state["systems"]["oauth2"]["dependency-track"]
+            state["systems"]["oauth2"] = {"dependency-track": client}
+            state["systems"]["oauth2"]["fixture-wrong-issuer"] = {
+                **client, "displayName": "Fixture issuer rejection"}
+            state["persons"] = {"fixture-administrator": {"displayName": "Fixture administrator",
+                                 "mailAddresses": ["administrator@dt-fixture.invalid"]},
+                                "fixture-nonmember": {"displayName": "Fixture nonmember",
+                                 "mailAddresses": ["nonmember@dt-fixture.invalid"]}}
+            fixture_clients = [entry for entry in json.loads(desired["clients.json"])
+                               if entry["name"] == "dependency-track"]
+            fixture_clients.append({**fixture_clients[0], "name": "fixture-wrong-issuer"})
+            fixture_desired = {**desired, "state.json": json.dumps(state),
+                "members.json": json.dumps(["fixture-administrator"]),
+                "clients.json": json.dumps(fixture_clients)}
+            apply({"apiVersion": "v1", "kind": "ConfigMap", "metadata": {"namespace": "identity",
+                   "name": "kanidm-provision"}, "data": fixture_desired})
+            # The local image is genuine derivation output, never assigned a fake
+            # production receipt/digest. Record and verify its actual config identity.
+            with tarfile.open(settings["provisionImage"]) as archive:
+                manifest = json.load(archive.extractfile("manifest.json"))
+                if len(manifest) != 1 or settings["provisionImageRef"] not in manifest[0]["RepoTags"]:
+                    raise QualificationFailure("fixture-helper-archive-reference-mismatch")
+                config_bytes = archive.extractfile(manifest[0]["Config"]).read()
+                helper_digest = "sha256:" + hashlib.sha256(config_bytes).hexdigest()
+                if json.loads(config_bytes)["architecture"] != "amd64":
+                    raise QualificationFailure("fixture-helper-architecture-mismatch")
+            with Path(settings["provisionImage"]).open("rb") as archive:
+                archive_digest = hashlib.file_digest(archive, "sha256").hexdigest()
+            d("cp", settings["provisionImage"], name + ":/run/fixture-helper.tar", timeout=600)
+            native("/bin/ctr", "--address", "/run/k3s/containerd/containerd.sock",
+                   "--namespace", "k8s.io", "images", "import", "/run/fixture-helper.tar", timeout=600)
+            apply({"apiVersion": "batch/v1", "kind": "Job", "metadata": {"namespace": "identity",
+                   "name": "fixture-public-provision"}, "spec": {"backoffLimit": 0, "template": {
+                   "metadata": {"labels": {"app.kubernetes.io/name": "kanidm-provision"}},
+                   "spec": {"restartPolicy": "Never", "automountServiceAccountToken": False,
+                   "securityContext": {"runAsUser": 1000, "runAsGroup": 1000, "fsGroup": 1000},
+                   "containers": [{"name": "provision", "image": settings["provisionImageRef"],
+                   "imagePullPolicy": "Never", "env": [
+                       {"name": "KANIDM_URL", "value": "https://idm.dt-fixture.invalid"},
+                       {"name": "KANIDM_ADMIN_GROUP", "value": settings["oidcGroup"]},
+                       {"name": "HOME", "value": "/work"},
+                       {"name": "TMPDIR", "value": "/work"},
+                       {"name": "SSL_CERT_FILE", "value": "/fixture-ca/ca.crt"}],
+                   "volumeMounts": [{"name": mount, "mountPath": path, "readOnly": mount != "work"}
+                       for mount, path in (("desired", "/desired"), ("credentials", "/credentials"),
+                                           ("work", "/work"), ("fixture-ca", "/fixture-ca"))]}],
+                   "volumes": [{"name": "desired", "configMap": {"name": "kanidm-provision"}},
+                       {"name": "credentials", "secret": {"secretName": "kanidm-provision"}},
+                       {"name": "work", "emptyDir": {"medium": "Memory"}},
+                       {"name": "fixture-ca", "configMap": {"name": "fixture-ca"}}]}}}})
+            k("-n", "identity", "wait", "--for=condition=Complete", "job/fixture-public-provision",
+              "--timeout=600s", timeout=620)
+            helpers = json.loads(k("-n", "identity", "get", "pods", "-l",
+                "job-name=fixture-public-provision", "-o", "json").stdout)["items"]
+            if len(helpers) != 1:
+                raise QualificationFailure("fixture-helper-execution-population")
+            execution = helpers[0]["status"]["containerStatuses"][0]
+            actual_helper = json.loads(native("/bin/crictl",
+                "--runtime-endpoint=unix:///run/k3s/containerd/containerd.sock",
+                "--image-endpoint=unix:///run/k3s/containerd/containerd.sock",
+                "inspecti", "-o", "json", execution["imageID"]).stdout)["status"]["id"]
+            if actual_helper != helper_digest or execution["state"]["terminated"]["exitCode"] != 0:
+                raise QualificationFailure("fixture-helper-runtime-config-mismatch")
+            observed["fixtureHelper"] = {"configDigest": helper_digest, "runtimeConfigDigest": actual_helper,
+                "archiveSha256": archive_digest, "sourceArchive": settings["provisionImage"],
+                "producerDrv": settings["provisionImageDrv"],
+                "productionReceipt": False}
+            # Trust only this fixture CA in Java and Chromium, never disable TLS.
+            run([settings["keytool"], "-importcert", "-noprompt", "-alias", "fixture",
+                 "-file", str(ca / "ca.crt"), "-keystore", str(ca / "truststore"),
+                 "-storepass", "fixture-trust-only"])
+            import base64
+            apply({"apiVersion": "v1", "kind": "Secret", "metadata": {"namespace": "dependency-track",
+                   "name": "fixture-java-trust"}, "data": {"truststore":
+                   base64.b64encode((ca / "truststore").read_bytes()).decode()}})
+            nss = work / ".pki" / "nssdb"
+            nss.mkdir(mode=0o700, parents=True)
+            run([settings["certutil"], "-N", "--empty-password", "-d", "sql:" + str(nss)])
+            run([settings["certutil"], "-A", "-d", "sql:" + str(nss), "-n", "fixture",
+                 "-t", "C,,", "-i", str(ca / "ca.crt")])
+            frontend_image = next(obj["spec"]["template"]["spec"]["containers"][0]["image"]
+                for obj in bootstrap["items"] if obj["kind"] == "Deployment"
+                and obj["metadata"]["name"] == "dependency-track-frontend")
+            servers = []
+            for host, backend in (("dt", "http://dependency-track-frontend.dependency-track.svc:8080"),
+                                  ("api", "http://dependency-track-api.dependency-track.svc:8080"),
+                                  ("idm", "https://kanidm.identity.svc:443")):
+                servers.append("server { listen 8443 ssl; server_name " + host +
+                    ".dt-fixture.invalid; ssl_certificate /tls/tls.crt; ssl_certificate_key /tls/tls.key; "
+                    "location / { proxy_pass " + backend + "; proxy_set_header Host $host; proxy_connect_timeout 2s; "
+                    "proxy_ssl_verify on; proxy_ssl_trusted_certificate /ca/ca.crt; "
+                    "proxy_ssl_server_name on; proxy_ssl_name idm.dt-fixture.invalid; }}")
+            apply({"apiVersion": "v1", "kind": "ConfigMap", "metadata": {"namespace": "gateway",
+                   "name": "fixture-gateway"}, "data": {"nginx.conf":
+                   "pid /tmp/nginx.pid; events {} http { access_log off; "
+                   "client_body_temp_path /tmp/client_temp; proxy_temp_path /tmp/proxy_temp; "
+                   + "".join(servers) + "}"}})
+            apply({"apiVersion": "v1", "kind": "Pod", "metadata": {"namespace": "gateway",
+                   "name": "fixture-gateway", "labels": {"gateway.envoyproxy.io/owning-gateway-name": "household",
+                       "gateway.envoyproxy.io/owning-gateway-namespace": "gateway"}},
+                   "spec": {"automountServiceAccountToken": False, "containers": [{"name": "gateway",
+                   "image": frontend_image, "command": ["/usr/sbin/nginx", "-c", "/fixture/nginx.conf",
+                   "-g", "daemon off;"], "volumeMounts": [
+                       {"name": mount, "mountPath": path, "readOnly": True}
+                       for mount, path in (("config", "/fixture"), ("tls", "/tls"), ("ca", "/ca"))]}],
+                   "volumes": [{"name": "config", "configMap": {"name": "fixture-gateway"}},
+                               {"name": "tls", "secret": {"secretName": "kanidm-tls"}},
+                               {"name": "ca", "configMap": {"name": "fixture-ca"}}]}})
+            k("-n", "gateway", "wait", "--for=condition=Ready", "pod/fixture-gateway", "--timeout=120s", timeout=140)
+            with socket.socket() as reserved:
+                reserved.bind(("127.0.0.1", 443))
+            process = subprocess.Popen([settings["kubectl"], "--context", name, "-n", "gateway",
+                "port-forward", "--address=127.0.0.1", "pod/fixture-gateway", "443:8443"],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env)
+            oidc_processes.append(process)
+            with selectors.DefaultSelector() as selector:
+                selector.register(process.stdout, selectors.EVENT_READ)
+                if not selector.select(30) or process.stdout.readline(1024) != b"Forwarding from 127.0.0.1:443 -> 8443\n":
+                    raise QualificationFailure("fixture-https-forward-unavailable")
+            return recovered["output"]
+
+        def private_restore():
+            objects = json.loads(Path(settings["restore"]).read_text())
+            for obj in objects["items"]:
+                if obj["kind"] == "Deployment" and obj["metadata"]["name"] == "dependency-track-api":
+                    spec = obj["spec"]["template"]["spec"]
+                    spec["volumes"].append({"name": "fixture-trust",
+                                            "secret": {"secretName": "fixture-java-trust"}})
+                    container = spec["containers"][0]
+                    container["volumeMounts"].append({"name": "fixture-trust", "mountPath": "/fixture-trust",
+                                                     "readOnly": True})
+                    next(entry for entry in container["env"] if entry["name"] == "EXTRA_JAVA_OPTIONS")["value"] += (
+                        " -Djavax.net.ssl.trustStore=/fixture-trust/truststore"
+                        " -Djavax.net.ssl.trustStorePassword=fixture-trust-only")
+            return objects
+
+        def qualify_browser(recovery_password, admin_bearer):
+            idm, ui = "https://idm.dt-fixture.invalid", "https://dt.dt-fixture.invalid"
+            proof, captured = {}, {}
+
+            def idm_api(method, path, body=None, bearer=None, session=None, expected=200):
+                headers = {"Content-Type": "application/json"}
+                if bearer:
+                    headers["Authorization"] = "Bearer " + bearer
+                if session:
+                    headers["X-KANIDM-AUTH-SESSION-ID"] = session
+                status, raw, returned = trusted_https("idm.dt-fixture.invalid", path, method=method,
+                    data=None if body is None else json.dumps(body).encode(), headers=headers)
+                if status != expected:
+                    raise QualificationFailure("native-idm-api-unexpected-status")
+                return (json.loads(raw) if raw else None,
+                        next((value for key, value in returned
+                              if key.lower() == "x-kanidm-auth-session-id"), session))
+
+            _, session = idm_api("POST", "/v1/auth", {"step": {"init": "idm_admin"}})
+            _, session = idm_api("POST", "/v1/auth", {"step": {"begin": "password"}}, session=session)
+            state, _ = idm_api("POST", "/v1/auth",
+                              {"step": {"cred": {"password": recovery_password}}}, session=session)
+            idm_admin = state["state"]["success"]
+
+            def credential(page, challenge, create):
+                return page.evaluate("""async ({challenge, create}) => {
+                  const publicKey = create
+                    ? PublicKeyCredential.parseCreationOptionsFromJSON(challenge.publicKey)
+                    : PublicKeyCredential.parseRequestOptionsFromJSON(challenge.publicKey);
+                  return (create ? await navigator.credentials.create({publicKey})
+                                 : await navigator.credentials.get({publicKey})).toJSON();
+                }""", {"challenge": challenge, "create": create})
+
+            def enroll(page, person):
+                intent, _ = idm_api("GET", f"/v1/person/{person}/_credential/_update_intent/600",
+                                    bearer=idm_admin)
+                update, _ = idm_api("POST", "/v1/credential/_exchange_intent", intent["token"])
+                session_token, _ = update
+                status, _ = idm_api("POST", "/v1/credential/_update", ["passkeyinit", session_token])
+                registration = credential(page, status["mfaregstate"]["Passkey"], True)
+                status, _ = idm_api("POST", "/v1/credential/_update",
+                    [{"passkeyfinish": ["Fixture verified passkey", registration]}, session_token])
+                if not status["can_commit"] or status["warnings"]:
+                    raise QualificationFailure("fixture-passkey-not-committable")
+                idm_api("POST", "/v1/credential/_commit", session_token)
+
+            def native_login(page, person):
+                state, session = idm_api("POST", "/v1/auth", {"step": {"init": person}})
+                if "passkey" not in state["state"]["choose"]:
+                    raise QualificationFailure("fixture-native-passkey-absent")
+                state, session = idm_api("POST", "/v1/auth", {"step": {"begin": "passkey"}}, session=session)
+                challenge = next(item["passkey"] for item in state["state"]["continue"] if "passkey" in item)
+                assertion = credential(page, challenge, False)
+                state, _ = idm_api("POST", "/v1/auth", {"step": {"cred": {"passkey": assertion}}}, session=session)
+                token = state["state"]["success"]
+                identity, _ = idm_api("GET", "/v1/self", bearer=token)
+                if identity["youare"]["attrs"]["name"] != [person]:
+                    raise QualificationFailure("fixture-native-actor-mismatch")
+                return token
+
+            def observe(request):
+                parsed = urllib.parse.urlsplit(request.url)
+                if parsed.path == "/ui/oauth2":
+                    captured["authorization"] = urllib.parse.parse_qs(parsed.query)
+                if parsed.path == "/static/oidc-callback.html" and "code=" in parsed.query:
+                    captured["callback"] = True
+                if parsed.path == "/api/v1/user/oidc/login" and request.method == "POST":
+                    captured["oidc"] = {key: values[0] for key, values in
+                                        urllib.parse.parse_qs(request.post_data).items()}
+
+            def observe_response(response):
+                if urllib.parse.urlsplit(response.url).path == "/api/v1/user/oidc/login":
+                    captured["loginStatus"] = response.status
+                    if response.status == 200:
+                        captured["session"] = response.text()
+
+            def sign_in(page, person, *, denied=False):
+                captured.clear()
+                page.goto(ui + "/login")
+                page.evaluate("() => { localStorage.clear(); sessionStorage.clear(); }")
+                page.reload()
+                page.get_by_role("button", name="Kanidm", exact=True).click()
+                deadline = time.monotonic() + 60
+                while "authorization" not in captured:
+                    if time.monotonic() >= deadline:
+                        raise QualificationFailure("native-browser-authorization-absent")
+                    page.wait_for_timeout(50)
+                page.wait_for_function("() => (location.hostname === 'idm.dt-fixture.invalid' && (document.querySelector('#username') !== null || document.querySelector(\"form[action='/ui/oauth2/consent']\") !== null || location.pathname === '/ui/oauth2/resume')) || document.querySelector('.app-header') !== null || document.querySelector('.modal.show') !== null")
+                if (urllib.parse.urlsplit(page.url).hostname == "idm.dt-fixture.invalid"
+                        and page.locator("#username").is_visible()):
+                    page.locator("#username").fill(person)
+                    page.locator("form[action='/ui/login/begin'] button[type=submit]").click()
+                page.wait_for_function("() => location.hostname === 'dt.dt-fixture.invalid' || document.querySelector(\"form[action='/ui/oauth2/consent']\") !== null || location.pathname === '/ui/oauth2/resume'")
+                if denied:
+                    page.wait_for_url("**/ui/oauth2/resume")
+                    return
+                consent = page.locator("form[action='/ui/oauth2/consent'] button[type=submit]")
+                if consent.count():
+                    consent.click()
+                page.wait_for_url(ui + "/**")
+                page.wait_for_function("() => !location.pathname.includes('oidc-callback')")
+                page.wait_for_function("() => document.querySelector('.app-header') !== null || document.querySelector('.modal.show') !== null")
+                if captured.get("loginStatus") != 200 or not captured.get("session"):
+                    raise QualificationFailure("native-browser-dt-login-refused")
+                query = captured.get("authorization", {})
+                if (query.get("client_id") != ["dependency-track"]
+                        or query.get("response_type") != ["code"]
+                        or query.get("code_challenge_method") != ["S256"]
+                        or not query.get("code_challenge") or not captured.get("callback")):
+                    raise QualificationFailure("native-browser-pkce-callback-absent")
+                return captured["session"]
+
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch(executable_path=settings["chromium"], headless=True,
+                    env={**os.environ, **env}, args=["--host-resolver-rules=MAP *.dt-fixture.invalid 127.0.0.1",
+                        "--disable-background-networking", "--disable-component-update", "--no-proxy-server"])
+                try:
+                    for person in ("fixture-administrator", "fixture-nonmember"):
+                        context = browser.new_context()
+                        try:
+                            context.set_default_timeout(60000)
+                            context.route("**/*", lambda route: route.continue_()
+                                if urllib.parse.urlsplit(route.request.url).hostname in {
+                                    "idm.dt-fixture.invalid", "dt.dt-fixture.invalid", "api.dt-fixture.invalid"}
+                                else route.abort())
+                            context.on("request", observe)
+                            context.on("response", observe_response)
+                            page = context.new_page()
+                            cdp = context.new_cdp_session(page)
+                            cdp.send("WebAuthn.enable", {"enableUI": False})
+                            cdp.send("WebAuthn.addVirtualAuthenticator", {"options": {
+                                "protocol": "ctap2", "transport": "internal", "hasResidentKey": True,
+                                "hasUserVerification": True, "isUserVerified": True,
+                                "automaticPresenceSimulation": True}})
+                            page.goto(idm + "/ui/login")
+                            enroll(page, person)
+                            native_token = native_login(page, person)
+                            if person == "fixture-nonmember":
+                                sign_in(page, person, denied=True)
+                                idm_api("GET", "/oauth2/authorise?" + urllib.parse.urlencode(
+                                    captured["authorization"], doseq=True), bearer=native_token, expected=403)
+                                proof["nonmemberStatus"] = 403
+                                continue
+                            session_token = sign_in(page, person)
+                            proof["pkceCallback"] = True
+                            if json.loads(api("/v1/user/self", bearer=session_token, record=False))["username"] != person:
+                                raise QualificationFailure("native-dt-actor-mismatch")
+                            permissions = json.loads(api("/v1/user/self/permissions", bearer=session_token, record=False))
+                            catalog = json.loads(api("/v1/permission", bearer=admin_bearer, record=False))
+                            wanted = sorted(permission["name"] for permission in catalog)
+                            if sorted(permissions) != wanted:
+                                raise QualificationFailure("native-dt-admin-permissions-mismatch")
+                            proof.update(administratorPermissions=wanted, administratorStatus=200)
+                            original_tokens = dict(captured["oidc"])
+                            page.locator(".fa-user-circle-o").click()
+                            with page.expect_response(lambda response:
+                                    urllib.parse.urlsplit(response.url).path == "/api/v1/user/logout") as logged_out:
+                                page.locator(".fa-sign-out").click()
+                            if logged_out.value.status not in (200, 204):
+                                raise QualificationFailure("native-browser-logout-refused")
+                            page.wait_for_url(ui + "/login")
+                            api("/v1/user/self", bearer=session_token, expected=(401,), record=False)
+                            proof["localLogoutStatus"] = observed["lastHttpStatus"]
+                            group = next(group for group in json.loads(api("/v1/oidc/group",
+                                bearer=admin_bearer, record=False)) if group["name"] == settings["oidcGroup"])
+                            team = next(team for team in json.loads(api("/v1/oidc/group/" + group["uuid"] +
+                                "/team", bearer=admin_bearer, record=False)) if team["name"] == "Administrators")
+                            api("/v1/oidc/group/" + group["uuid"] + "/team/" + team["uuid"] + "/mapping",
+                                method="DELETE", bearer=admin_bearer, record=False)
+                            unmapped = sign_in(page, person)
+                            if json.loads(api("/v1/user/self/permissions", bearer=unmapped, record=False)):
+                                raise QualificationFailure("native-unmapped-human-has-permissions")
+                            api("/v1/configProperty", bearer=unmapped, expected=(403,), record=False)
+                            proof["unmappedStatus"] = observed["lastHttpStatus"]
+                            api("/v1/user/logout", method="POST", bearer=unmapped, record=False)
+                            reconcile_access()
+                            session_token = sign_in(page, person)
+                            idm_api("PUT", "/v1/group/" + settings["oidcGroup"] + "/_attr/member", [], bearer=idm_admin)
+                            api("/v1/user/self", bearer=session_token, record=False)
+                            proof["existingSessionAfterGroupRemoval"] = observed["lastHttpStatus"]
+                            api("/v1/user/logout", method="POST", bearer=session_token, record=False)
+                            sign_in(page, person, denied=True)
+                            idm_api("GET", "/oauth2/authorise?" + urllib.parse.urlencode(
+                                captured["authorization"], doseq=True), bearer=native_token, expected=403)
+                            proof["removedGroupReloginStatus"] = 403
+                            idm_api("PUT", "/v1/group/" + settings["oidcGroup"] + "/_attr/member",
+                                    ["fixture-administrator"], bearer=idm_admin)
+                        finally:
+                            context.close()
+                finally:
+                    browser.close()
+            # Genuine previously accepted signed ID token, independently
+            # mismatching the server's expected audience and issuer; no fake JWT.
+            for variable, value, key in (
+                    ("DT_OIDC_CLIENT_ID", "fixture-wrong-audience", "wrongAudienceStatus"),
+                    ("DT_OIDC_ISSUER", "https://idm.dt-fixture.invalid/oauth2/openid/fixture-wrong-issuer",
+                     "wrongIssuerStatus")):
+                changed = private_restore()
+                container = next(obj["spec"]["template"]["spec"]["containers"][0]
+                    for obj in changed["items"] if obj["kind"] == "Deployment"
+                    and obj["metadata"]["name"] == "dependency-track-api")
+                next(entry for entry in container["env"] if entry["name"] == variable)["value"] = value
+                stop_forward()
+                apply(changed)
+                deployment("api", 1)
+                start_forward()
+                api("/v1/user/oidc/login", method="POST", form=True, body=original_tokens,
+                    expected=(401, 403), record=False)
+                proof[key] = observed["lastHttpStatus"]
+            stop_forward()
+            apply(private_restore())
+            deployment("api", 1)
+            start_forward()
+            recovered = api("/v1/user/oidc/login", method="POST", form=True, body=original_tokens,
+                            record=False).decode()
+            proof["afterNegativeRecoveryStatus"] = observed["lastHttpStatus"]
+            api("/v1/user/logout", method="POST", bearer=recovered, record=False)
+            observed["nativeOidc"] = proof
 
         def alertmanager_objects():
             labels = {"app.kubernetes.io/name": "fixture-alertmanager"}
@@ -1288,6 +1877,10 @@ def main():
                 "users": [{"name": name, "user": {key: original["users"][0]["user"][key]
                            for key in ("client-certificate-data", "client-key-data")}}],
             }
+            policy_kubeconfig = json.loads(json.dumps(kubeconfig))
+            policy_kubeconfig["clusters"][0]["cluster"]["server"] = "https://127.0.0.1:6443"
+            (work / "policy-kubeconfig").write_text(yaml.safe_dump(policy_kubeconfig))
+            (work / "policy-kubeconfig").chmod(0o600)
             config_path = work / "kubeconfig"
             config_path.write_text(yaml.safe_dump(kubeconfig))
             config_path.chmod(0o600)
@@ -1299,12 +1892,15 @@ def main():
             # Docker save reconstructs manifests and can lose the original pinned index reference.
             # Pull through the actual CRI instead; never invent an alias for different manifest bytes.
             phase = "runtime-image-fetch"
-            image_runtime = ("k3s", "crictl", "--runtime-endpoint=unix:///run/k3s/containerd/containerd.sock",
+            # The released OCI image embeds cmd/server, not the extracting cmd/k3s launcher.
+            # Its Linux `k3s crictl` path retains "crictl" in os.Args; use the registered multicall alias.
+            image_runtime = ("/bin/crictl", "--runtime-endpoint=unix:///run/k3s/containerd/containerd.sock",
                              "--image-endpoint=unix:///run/k3s/containerd/containerd.sock")
             receipt["runtimeManifestDigests"] = {}
             for image in sorted(images):
-                native(*image_runtime, "pull", image, timeout=600)
-                status = json.loads(native(*image_runtime, "inspecti", "-o", "json", image).stdout)["status"]
+                native(*image_runtime, "pull", image, timeout=600, operation="cri-image-pull")
+                status = json.loads(native(*image_runtime, "inspecti", "-o", "json", image,
+                                           operation="cri-image-inspect").stdout)["status"]
                 digests = sorted({reference.rsplit("@", 1)[-1] for reference in status.get("repoDigests", [])
                                   if re.fullmatch(r"sha256:[0-9a-f]{64}", reference.rsplit("@", 1)[-1])})
                 if image.rsplit("@", 1)[1] not in digests:
@@ -1329,8 +1925,65 @@ def main():
                       "stringData": {"password": password}}
             apply(secret)
             apply(bootstrap)
+            # Expose only the source restore peer rules inside this fixture so
+            # readiness, rather than staged production routes, is the variable.
+            for obj in json.loads(Path(settings["restore"]).read_text())["items"]:
+                if obj["kind"] == "NetworkPolicy" and obj["metadata"]["name"] in {
+                        "dependency-track-api", "dependency-track-frontend"}:
+                    apply(obj)
+            recovery_password = oidc_setup()
             for component in ("postgres", "api", "frontend"):
                 deployment(component, 1)
+            phase = "native-access-bootstrap"
+            if os.path.lexists("/run/dependency-track-sync-api-tunnel"):
+                raise QualificationFailure("fixture-broker-runtime-already-exists")
+            Path("/run/dependency-track-sync-api-tunnel").mkdir(mode=0o700)
+            owned_host_paths.append(Path("/run/dependency-track-sync-api-tunnel"))
+            policy_proof = {"bootstrapPodUID": api_pod()["metadata"]["uid"]}
+            policy_proof["beforeAdmissionGateway"] = gateway_closed()
+            new_password = secrets.token_urlsafe(36)
+            apply({"apiVersion": "v1", "kind": "Secret", "metadata": {"namespace": "dependency-track",
+                   "name": "dependency-track-admin"}, "stringData": {"password": new_password}})
+            # Desired restore must never default-bootstrap a fresh database.
+            policy_phase(False)
+            reconcile_access(succeeds=False)
+            policy_proof["freshRestoreGateway"] = gateway_closed()
+            policy_phase(True)
+            reconcile_access()
+            policy_initialized = True
+            wait(endpoints_ready, reason="validated-endpoint-unpublished")
+            policy_proof["admittedGateway"] = trusted_https("api.dt-fixture.invalid", "/api/v1/project")[0]
+            if policy_proof["admittedGateway"] != 401:
+                raise QualificationFailure("validated-gateway-unexpected-status")
+            # Nondefault recovery mismatches fail closed even when bootstrap was
+            # requested; a restored nondefault password is never reset.
+            apply({"apiVersion": "v1", "kind": "Secret", "metadata": {"namespace": "dependency-track",
+                   "name": "dependency-track-admin"}, "stringData": {"password": secrets.token_urlsafe(36)}})
+            reconcile_access(succeeds=False)
+            policy_proof["badBootstrapCredentialGateway"] = gateway_closed()
+            policy_phase(False)
+            reconcile_access(succeeds=False)
+            policy_proof["badRestoreCredentialGateway"] = gateway_closed()
+            apply({"apiVersion": "v1", "kind": "Secret", "metadata": {"namespace": "dependency-track",
+                   "name": "dependency-track-admin"}, "stringData": {"password": new_password}})
+            reconcile_access()
+            before = next(condition for condition in api_pod()["status"]["conditions"]
+                          if condition["type"] == "security.homelab/access-policy-ready")
+            reconcile_access()
+            after = next(condition for condition in api_pod()["status"]["conditions"]
+                         if condition["type"] == "security.homelab/access-policy-ready")
+            if before["lastTransitionTime"] != after["lastTransitionTime"] or not admitted():
+                raise QualificationFailure("healthy-admission-was-dropped")
+            policy_proof["healthyReconciliationPreserved"] = True
+            policy_proof["uid705PolicyExit"] = run([settings["accessPolicy"]], user=705,
+                check=False, environment={**env, "RUNTIME_DIRECTORY": str(work / "access-policy")}).returncode
+            policy_proof["uid705BrokerReadExit"] = run(
+                [settings["cat"], "/run/dependency-track-sync-api-tunnel/pod.json"],
+                user=705, check=False).returncode
+            if not policy_proof["uid705PolicyExit"] or not policy_proof["uid705BrokerReadExit"]:
+                raise QualificationFailure("ingestor-gained-root-access-policy-authority")
+            observed["accessPolicy"] = policy_proof
+            phase = "stock-bootstrap"
             role = pg("SELECT rolcanlogin AND NOT (rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication OR rolbypassrls) FROM pg_roles WHERE rolname='dtrack';").stdout.strip()
             observed["roleSafe"] = role.decode("ascii")
             if role != b"t":
@@ -1359,12 +2012,11 @@ def main():
             observed["authentication"]["anonymous"] = observed["lastHttpStatus"]
             api("/v1/project", key="fixture-invalid-key", expected=(401, 403))
             observed["authentication"]["invalidKey"] = observed["lastHttpStatus"]
-            new_password = secrets.token_urlsafe(36)
-            api("/v1/user/forceChangePassword", method="POST", form=True,
-                body={"username": "admin", "password": "admin", "newPassword": new_password,
-                      "confirmPassword": new_password})
-            api("/v1/user/login", method="POST", form=True,
-                body={"username": "admin", "password": "admin"}, expected=(401, 403))
+            old_default = api("/v1/user/login", method="POST", form=True,
+                body={"username": "admin", "password": "admin"}, expected=(401,))
+            if old_default != b"INVALID_CREDENTIALS":
+                raise QualificationFailure("default-admin-not-precisely-refused")
+            policy_proof["defaultLoginRefusal"] = old_default.decode()
             observed["authentication"]["oldDefault"] = observed["lastHttpStatus"]
             bearer = api("/v1/user/login", method="POST", form=True,
                          body={"username": "admin", "password": new_password}).decode()
@@ -1518,18 +2170,27 @@ def main():
                     command += ["--run-id", str(pinned_run)]
                 for declaration_id in targets:
                     command += ["--target", declaration_id]
+                state = refresh_state / "state.json"
+                previous_attempt = sync.load(state).get("refresh", {}).get("at") if state.exists() else None
                 result = run(command, timeout=1800, check=False, user=705, environment=cli_environment)
                 if result.returncode:
                     state = refresh_state / "state.json"
                     failed = sync.load(state).get("refresh", {}) if state.exists() else {}
+                    updated = failed.get("at") != previous_attempt
+                    current = failed if updated else {}
+                    classified = re.fullmatch(
+                        rb"dependency-track-sync failed: (PermissionError|BlockingIOError|FileNotFoundError|OSError|TypeError|KeyError|AttributeError)\n?",
+                        result.stderr)
                     receipt["refreshFailure"] = {
                         "exitCode": result.returncode, "journalPresent": state.exists(),
-                        "operation": failed.get("operation"), "errorType": failed.get("errorType"),
-                        "run": failed.get("run"), "errorCategories": safe_error_categories(result.stderr),
+                        "journalUpdated": updated,
+                        "operation": current.get("operation"), "errorType": (
+                            classified[1].decode() if classified else current.get("errorType")),
+                        "run": current.get("run"), "errorCategories": safe_error_categories(result.stderr),
                         "targets": [
                             {"target": target, **{key: record.get(key) for key in
                              ("status", "operation", "errorType", "httpStatus")}}
-                            for target, record in list(failed.get("targets", {}).items())[:8]
+                            for target, record in list(current.get("targets", {}).items())[:8]
                         ],
                     }
                 else:
@@ -1598,7 +2259,7 @@ def main():
             stop_forward()
             deployment("api", 0)
             deployment("postgres", 0)
-            apply(json.loads(Path(settings["restore"]).read_text()))
+            apply(private_restore())
             for component in ("postgres", "api"):
                 deployment(component, 1)
             start_forward()
@@ -1617,6 +2278,7 @@ def main():
             stop_forward()
             deployment("api", 0)
             deployment("postgres", 0)
+            retained_metadata = retained_tree(refresh_state)
             native("mkdir", "-p", "/srv/dependency-track/evidence/sync-state")
             d("cp", "-a", str(refresh_state) + "/.", name + ":/srv/dependency-track/evidence/sync-state", timeout=600)
             native("chown", "705:705", "/srv/dependency-track/evidence/sync-state")
@@ -1633,8 +2295,21 @@ def main():
             d("cp", str(backup_file), name + ":/run/fixture-dt-backup/state.tar", timeout=600)
             archive_restore = native("sh", "-ec", "tar -C /srv -xpf /run/fixture-dt-backup/state.tar; rm /run/fixture-dt-backup/state.tar")
             refresh_state.mkdir(mode=0o700)
-            os.chown(refresh_state, 705, 705)
-            d("cp", "-a", name + ":/srv/dependency-track/evidence/sync-state/.", str(refresh_state), timeout=600)
+            evidence_archive = work / "restored-evidence.tar"
+            with evidence_archive.open("xb") as archive_output:
+                os.fchmod(archive_output.fileno(), 0o600)
+                exported = subprocess.run(
+                    [*docker, "exec", name, "tar", "-C", "/srv/dependency-track/evidence/sync-state", "-cpf", "-", "."],
+                    stdout=archive_output, stderr=subprocess.DEVNULL, env=env, timeout=600)
+            if exported.returncode:
+                raise QualificationFailure("retained-evidence-export-failed", operation="docker-exec",
+                                           exit_code=exported.returncode)
+            # Docker's container-to-host cp -a drops numeric ownership.
+            extract_retained_tree(evidence_archive, refresh_state)
+            evidence_archive.unlink()
+            observed["retainedEvidenceMetadataMatches"] = retained_tree(refresh_state) == retained_metadata
+            if not observed["retainedEvidenceMetadataMatches"]:
+                raise QualificationFailure("retained-evidence-owner-mode-or-bytes-changed")
             observed["backupDestroyedAndRestored"] = destroyed.returncode == 0 and archive_restore.returncode == 0
             k("-n", "dependency-track", "delete", "secret/dependency-track-postgres")
             apply(secret)
@@ -1707,7 +2382,7 @@ def main():
             observed["malformedKeyset"] = malformed
             if malformed["nonemptyGuardExit"] != 0:
                 raise QualificationFailure("malformed-keyset-fixture-was-empty")
-            apply(json.loads(Path(settings["restore"]).read_text()))
+            apply(private_restore())
 
             def malformed_application_refused():
                 malformed["corruptBytesUnchanged"] = native("cat", key_path).stdout == MALFORMED_KEYSET
@@ -1766,6 +2441,78 @@ def main():
             start_forward()
             api("/v1/project/" + project_uuid, key=key)
             check("restore-refuses-missing-database-version-without-reinitializing")
+            phase = "native-access-pod-readmission"
+            previous_uid = api_pod()["metadata"]["uid"]
+            policy_proof["previousPodUID"] = previous_uid
+            stop_forward()
+            deployment("api", 0)
+            k("-n", "dependency-track", "scale", "deployment/dependency-track-api", "--replicas=1")
+            wait(api_pod_ready, seconds=620, reason="recreated-api-container-not-ready")
+            policy_proof["recreatedPodUID"] = api_pod()["metadata"]["uid"]
+            if policy_proof["recreatedPodUID"] == previous_uid or admitted():
+                raise QualificationFailure("recreated-pod-inherited-admission")
+            policy_proof["recreatedPodGateway"] = gateway_closed()
+            reconcile_access()
+            policy_proof["validatedPodUID"] = api_pod()["metadata"]["uid"]
+            start_forward()
+            start_host_forward()
+            inspection_admin = api("/v1/user/login", method="POST", form=True,
+                body={"username": "admin", "password": new_password}, record=False).decode()
+            try:
+                alternate = json.loads(api("/v1/team", method="PUT",
+                    body={"name": "fixture-alternate-privileged-team"}, bearer=inspection_admin, record=False))
+                api("/v1/permission/ACCESS_MANAGEMENT/team/" + alternate["uuid"],
+                    method="POST", bearer=inspection_admin, record=False)
+                unexpected = json.loads(api("/v1/oidc/group", method="PUT",
+                    body={"name": "fixture-unapproved-administrators"}, bearer=inspection_admin, record=False))
+                api("/v1/oidc/mapping", method="PUT",
+                    body={"team": alternate["uuid"], "group": unexpected["uuid"]},
+                    bearer=inspection_admin, record=False)
+                reconcile_access(succeeds=False)
+                policy_proof["alternatePrivilegedBindingGateway"] = gateway_closed()
+                api("/v1/oidc/group/" + unexpected["uuid"] + "/team/" + alternate["uuid"] + "/mapping",
+                    method="DELETE", bearer=inspection_admin, record=False)
+                reconcile_access()
+                policy_proof["alternatePrivilegedBindingRefused"] = True
+            finally:
+                api("/v1/user/logout", method="POST", bearer=inspection_admin, record=False)
+            # Exercise the CLI's actual managed-session owner against stock DT,
+            # including exception exit, then try those exact revoked sessions.
+            client = sync.Client("http://127.0.0.1:" + str(host_api_port), anonymous=True)
+            for fail_inside in (False, True):
+                try:
+                    with sync.managed_session(client, new_password):
+                        session_token = client.key
+                        if client.request("GET", "user/self")["username"] != "admin":
+                            raise QualificationFailure("managed-session-wrong-actor")
+                        if fail_inside:
+                            raise RuntimeError("fixture-owned-session-exception")
+                except RuntimeError as error:
+                    if str(error) != "fixture-owned-session-exception":
+                        raise
+                api("/v1/user/self", bearer=session_token, expected=(401,), record=False)
+            policy_proof["successAndFailureSessionLogout"] = True
+            check("native-root-access-policy-bootstrap-restore-and-pod-uid-readmission")
+            phase = "native-browser-oidc"
+            deployment("frontend", 1)
+            mounts = k("-n", "dependency-track", "exec", "deployment/dependency-track-frontend",
+                       "--", "/bin/cat", "/proc/self/mountinfo").stdout.decode().splitlines()
+            mount_options = {fields[4]: fields[5].split(",")
+                             for line in mounts if len(fields := line.split()) >= 6}
+            observed["frontendReadOnlyRoot"] = "ro" in mount_options.get("/", [])
+            observed["frontendReadOnlyConfig"] = "ro" in mount_options.get(
+                "/opt/owasp/dependency-track-frontend/static/config.json", [])
+            if not observed["frontendReadOnlyRoot"] or not observed["frontendReadOnlyConfig"]:
+                raise QualificationFailure("native-frontend-filesystem-not-readonly")
+            bearer = api("/v1/user/login", method="POST", form=True,
+                         body={"username": "admin", "password": new_password}, record=False).decode()
+            qualify_browser(recovery_password, bearer)
+            policy_proof["finalPodUID"] = api_pod()["metadata"]["uid"]
+            policy_proof["finalPodAdmitted"] = admitted() and endpoints_ready()
+            if not policy_proof["finalPodAdmitted"]:
+                raise QualificationFailure("final-native-pod-not-admitted")
+            api("/v1/user/logout", method="POST", bearer=bearer, record=False)
+            check("native-trusted-browser-public-pkce-admin-denial-logout-and-group-removal")
             success = True
         except Exception as error:
             # Native messages and traceback locals can contain credentials or response bodies.
@@ -1774,6 +2521,27 @@ def main():
             capture_failure_diagnostics()
         finally:
             cleanup = True
+            for process in oidc_processes:
+                try:
+                    if process.poll() is None:
+                        if process.args[0] == settings["nsenter"]:
+                            os.killpg(process.pid, signal.SIGTERM)
+                        else:
+                            process.terminate()
+                    try:
+                        process.wait(timeout=20)
+                    except subprocess.TimeoutExpired:
+                        if process.args[0] == settings["nsenter"]:
+                            os.killpg(process.pid, signal.SIGKILL)
+                        else:
+                            process.kill()
+                        process.wait(timeout=10)
+                    if process.stdout is not None:
+                        process.stdout.close()
+                except Exception:
+                    cleanup = False
+            receipt["cleanupWitness"]["nativeProcessesRemoved"] = all(
+                process.poll() is not None for process in oidc_processes)
             for group in notifier_groups:
                 if notifier_group_alive(group):
                     try:
@@ -1869,7 +2637,8 @@ def main():
             receipt["cleanup"] = cleanup
     receipt["cleanupWitness"]["credentialsRemoved"] = (
         not work.exists() and (ingestor_temporary is None or not Path(ingestor_temporary.name).exists())
-        and not any(os.path.lexists(path) for path in (credential_directory, staged_directory))
+        and not any(os.path.lexists(path) for path in (
+            credential_directory, staged_directory, Path("/run/dependency-track-sync-api-tunnel")))
         and receipt["cleanupWitness"]["containerRemoved"] and receipt["cleanupWitness"]["volumesRemoved"]
     )
     observed["hostPortBoundaryUnchanged"] = int(Path("/proc/sys/net/ipv4/ip_unprivileged_port_start").read_text()) == host_port_boundary

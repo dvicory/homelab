@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import signal
 import stat
 import sys
 import tempfile
@@ -155,14 +156,16 @@ def archive_inventory(source, root):
         return destination, provenance, manifest, description
 
 
-def credential(path):
+def credential(path, *, password=False):
     descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     with os.fdopen(descriptor) as stream:
         info = os.fstat(stream.fileno())
         if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o077 or info.st_size > 65536:
             raise ValueError("credential file must be bounded, regular and inaccessible to group/other")
-        value = stream.read().strip()
-    if not value or "\n" in value or "\r" in value:
+        value = stream.read()
+        if not password:
+            value = value.strip()
+    if not value.strip() or "\n" in value or "\r" in value:
         raise ValueError("credential file must contain one nonempty value")
     return value
 
@@ -194,13 +197,14 @@ class NoRedirect(HTTPRedirectHandler):
 
 
 class ApiError(RuntimeError):
-    def __init__(self, status):
+    def __init__(self, status, auth_error=None):
         self.status = status
+        self.auth_error = auth_error if auth_error in ("INVALID_CREDENTIALS", "FORCE_PASSWORD_CHANGE") else None
         super().__init__("Dependency-Track HTTP " + str(status))
 
 
 class Client:
-    def __init__(self, url, key_file, *, bearer=False):
+    def __init__(self, url, key_file=None, *, bearer=False, anonymous=False):
         parsed = urlsplit(url)
         if (parsed.scheme not in ("https", "http") or not parsed.hostname
                 or parsed.username is not None or parsed.password is not None
@@ -209,25 +213,40 @@ class Client:
         if parsed.scheme == "http" and parsed.hostname not in ("127.0.0.1", "::1", "localhost"):
             raise ValueError("unencrypted API is allowed only over loopback")
         self.url = url.rstrip("/")
-        self.key = credential(key_file)
+        self.key = None if anonymous else credential(key_file)
         self.bearer = bearer
         self.opener = build_opener(NoRedirect())
+        self.deadline = None
 
-    def request(self, method, path, data=None, *, version=1):
-        payload = None if data is None else json.dumps(data).encode()
-        auth = {"Authorization": "Bearer " + self.key} if self.bearer else {"X-Api-Key": self.key}
+    def request(self, method, path, data=None, *, version=1, form=False, text=False,
+                anonymous=False, expected_status=None):
+        payload = None if data is None else (urlencode(data) if form else json.dumps(data)).encode()
+        auth = {} if anonymous or self.key is None else (
+            {"Authorization": "Bearer " + self.key} if self.bearer else {"X-Api-Key": self.key})
         request = Request(self.url + "/api/v" + str(version) + "/" + path, payload, method=method,
-                          headers={**auth, "Content-Type": "application/json"})
+                          headers={**auth, "Content-Type": "application/x-www-form-urlencoded" if form
+                                   else "application/json"})
+        timeout = 30 if self.deadline is None else min(30, self.deadline - time.monotonic())
+        if timeout <= 0:
+            raise TimeoutError("access-policy deadline elapsed")
         try:
-            with self.opener.open(request, timeout=30) as response:
+            with self.opener.open(request, timeout=timeout) as response:
+                if expected_status is not None and response.status != expected_status:
+                    raise ApiError(response.status)
                 body = response.read()
-                return json.loads(body) if body else None
+                return body.decode("utf-8") if text else json.loads(body) if body else None
         except HTTPError as error:
             # Stock project PATCH returns 304 when the requested state already holds.
             if error.code == 304 and method == "PATCH" and re.fullmatch(r"project/[0-9a-fA-F-]{36}", path):
                 return None
+            # Retain only these exact stock login outcomes, never arbitrary server text.
+            auth_error = None
+            if method == "POST" and path == "user/login" and error.code == 401:
+                body = error.read(64)
+                if body in (b"INVALID_CREDENTIALS", b"FORCE_PASSWORD_CHANGE"):
+                    auth_error = body.decode("ascii")
             # Server bodies/redirect locations and request headers may contain secrets.
-            raise ApiError(error.code) from None
+            raise ApiError(error.code, auth_error) from None
         except URLError:
             raise RuntimeError("Dependency-Track connection failed") from None
         except ValueError:
@@ -662,6 +681,191 @@ def refresh(args, database, checkpoint, client):
 
 
 
+def configure_advisory_policy(client):
+    policy = load(Path(__file__).with_name("advisory-policy.json"))
+    for name, wanted in policy.items():
+        path = "extension-points/vuln-data-source/extensions/" + name + "/config"
+        if client.request("GET", path, version=2)["config"] != wanted:
+            try:
+                client.request("PUT", path, {"config": wanted}, version=2)
+            except ApiError as error:
+                if error.status != 304:
+                    raise
+        if client.request("GET", path, version=2)["config"] != wanted:
+            raise ValueError("advisory policy readback mismatch: " + name)
+    return {"advisorySources": {name: {"enabled": config["enabled"],
+            "ecosystems": config.get("ecosystems", [])} for name, config in policy.items()},
+            "coverage": "Enabled sources do not prove completed mirrors, Nix patch applicability, runtime use or a clean scan."}
+
+
+@contextmanager
+def managed_session(client, password, *, bootstrap=False):
+    """Own only the session created here, including an unexpectedly accepted default."""
+    def login():
+        return client.request("POST", "user/login", {"username": "admin", "password": password},
+                              form=True, text=True, anonymous=True, expected_status=200)
+
+    try:
+        token = login()
+    except ApiError as error:
+        if not bootstrap or error.status != 401 or error.auth_error != "INVALID_CREDENTIALS":
+            raise
+        client.request("POST", "user/forceChangePassword",
+                       {"username": "admin", "password": "admin", "newPassword": password,
+                        "confirmPassword": password}, form=True, text=True, anonymous=True,
+                       expected_status=200)
+        # Stock password change returns an empty 200, not a session.
+        token = login()
+    previous = client.key, client.bearer
+    client.key, client.bearer = token, True
+    try:
+        if not re.fullmatch(r"[\x21-\x7e]{1,65536}", token):
+            raise ValueError("invalid managed session")
+        yield
+    finally:
+        previous_deadline = client.deadline
+        client.deadline = time.monotonic() + 10
+        handlers = {signum: signal.signal(signum, signal.SIG_IGN)
+                    for signum in (signal.SIGTERM, signal.SIGINT)}
+        try:
+            client.request("POST", "user/logout", expected_status=204)
+        finally:
+            client.key, client.bearer = previous
+            client.deadline = previous_deadline
+            for signum, handler in handlers.items():
+                signal.signal(signum, handler)
+
+
+def access_uuid(item):
+    value = item["uuid"]
+    if not isinstance(value, str) or not re.fullmatch(
+            r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", value):
+        raise ValueError("invalid access resource identity")
+    return value
+
+
+def permission_names(items):
+    if not isinstance(items, list):
+        raise ValueError("invalid permission list")
+    names = [item["name"] for item in items]
+    if any(not isinstance(name, str) or not re.fullmatch(r"[A-Z][A-Z_]*", name) for name in names):
+        raise ValueError("invalid permission name")
+    if len(set(names)) != len(names):
+        raise ValueError("duplicate permissions")
+    return set(names)
+
+
+def administrator_team(client):
+    teams = {}
+    # Read through the empty final page, not just the page containing Administrators.
+    for page in range(1, 1001):
+        batch = client.request("GET", "team?" + urlencode(
+            {"pageNumber": page, "pageSize": 100, "sortName": "name", "sortOrder": "asc"}))
+        if not isinstance(batch, list):
+            raise ValueError("invalid team page")
+        if not batch:
+            break
+        for team in batch:
+            uuid = access_uuid(team)
+            if uuid in teams:
+                raise ValueError("team pagination repeated a resource")
+            teams[uuid] = team
+    else:
+        raise ValueError("team pagination exceeded safety bound")
+    matches = [team for team in teams.values() if team.get("name") == "Administrators"]
+    if len(matches) != 1:
+        raise ValueError("existing administrator team is not unique")
+    uuid = access_uuid(matches[0])
+    team = client.request("GET", "team/" + uuid)
+    if access_uuid(team) != uuid or team.get("name") != "Administrators":
+        raise ValueError("administrator team readback mismatch")
+    catalog = permission_names(client.request("GET", "permission"))
+    if (not {"ACCESS_MANAGEMENT", "SYSTEM_CONFIGURATION"} <= catalog
+            or permission_names(team.get("permissions")) != catalog):
+        raise ValueError("administrator team does not hold the complete real permission catalog")
+    effective = client.request("GET", "user/self/permissions")
+    if not isinstance(effective, list) or not all(isinstance(name, str) for name in effective) or not catalog <= set(effective):
+        raise ValueError("managed administrator lacks real administrator privileges")
+    return {"name": "Administrators", "uuid": uuid, "permissions": sorted(catalog)}
+
+
+def oidc_admin_group(client, name, team_uuid, *, require_mapping=False):
+    groups = client.request("GET", "oidc/group")  # This stock endpoint is explicitly unpaginated.
+    if not isinstance(groups, list):
+        raise ValueError("invalid OIDC group list")
+    ids, names = set(), set()
+    wanted = None
+    for group in groups:
+        uuid = access_uuid(group)
+        group_name = group["name"]
+        if not isinstance(group_name, str) or uuid in ids or group_name in names:
+            raise ValueError("invalid or duplicate OIDC group")
+        ids.add(uuid)
+        names.add(group_name)
+        mapped = client.request("GET", "oidc/group/" + uuid + "/team")
+        if not isinstance(mapped, list):
+            raise ValueError("invalid OIDC team mapping")
+        mapped_ids = {access_uuid(team) for team in mapped}
+        if group_name != name:
+            for mapped_uuid in mapped_ids:
+                if mapped_uuid == team_uuid:
+                    raise ValueError("unauthorized OIDC administrator binding; refusing to delete unrelated mappings")
+                team = client.request("GET", "team/" + mapped_uuid)
+                if (access_uuid(team) != mapped_uuid
+                        or "ACCESS_MANAGEMENT" in permission_names(team.get("permissions"))):
+                    raise ValueError("unauthorized OIDC access-management binding; refusing to delete unrelated mappings")
+        if group_name == name:
+            wanted = {"name": name, "uuid": uuid}
+            if require_mapping and team_uuid not in mapped_ids:
+                raise ValueError("OIDC administrator mapping readback mismatch")
+    if require_mapping and wanted is None:
+        raise ValueError("OIDC group readback mismatch")
+    return wanted
+
+
+def configure_access(args):
+    password = credential(args.admin_password_file, password=True)
+    if password.strip() == "admin":
+        raise ValueError("recovery administrator password must not be the stock default")
+    if (not 1 <= len(args.oidc_group) <= 255 or not args.oidc_group.strip()
+            or re.search(r"[\x00-\x1f\x7f-\x9f]", args.oidc_group)):
+        raise ValueError("OIDC group must be a bounded nonblank name without control characters")
+    client = Client(args.api_url, anonymous=True)
+    client.deadline = time.monotonic() + 90
+    def cancelled(signum, frame):
+        raise TimeoutError("access-policy reconciliation cancelled")
+    handlers = {signum: signal.signal(signum, cancelled)
+                for signum in (signal.SIGTERM, signal.SIGINT)}
+    try:
+        with managed_session(client, password, bootstrap=args.bootstrap):
+            if client.request("GET", "user/self").get("username") != "admin":
+                raise ValueError("managed session is not the recovery administrator")
+            team = administrator_team(client)
+            try:
+                with managed_session(client, "admin"):
+                    raise ValueError("stock default administrator credentials remain active")
+            except ApiError as error:
+                if error.status != 401 or error.auth_error != "INVALID_CREDENTIALS":
+                    raise
+            group = oidc_admin_group(client, args.oidc_group, team["uuid"])
+            policy = configure_advisory_policy(client)
+            if group is None:
+                created = client.request("PUT", "oidc/group", {"name": args.oidc_group})
+                if created.get("name") != args.oidc_group:
+                    raise ValueError("created OIDC group name mismatch")
+                group = {"name": args.oidc_group, "uuid": access_uuid(created)}
+            client.request("PUT", "oidc/mapping", {"team": team["uuid"], "group": group["uuid"]})
+            observed = oidc_admin_group(client, args.oidc_group, team["uuid"], require_mapping=True)
+            if observed != group:
+                raise ValueError("OIDC group identity changed during reconciliation")
+            result = {"schema": 1, "oidcGroup": group, "administratorTeam": team,
+                      "defaultLoginRefusal": "INVALID_CREDENTIALS", "advisoryPolicy": policy}
+        return result
+    finally:
+        for signum, handler in handlers.items():
+            signal.signal(signum, handler)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -704,25 +908,20 @@ def main():
     configure = commands.add_parser("configure", help="apply the source-owned advisory policy; requires admin session")
     configure.add_argument("--api-url", required=True)
     configure.add_argument("--admin-session-file", required=True, type=Path)
+    access = commands.add_parser("configure-access", help="reconcile private native administrator access; owns its ephemeral session")
+    access.add_argument("--api-url", required=True)
+    access.add_argument("--admin-password-file", required=True, type=Path)
+    access.add_argument("--oidc-group", required=True)
+    access.add_argument("--bootstrap", action="store_true", help="allow changing stock admin/admin only after intended login is rejected")
     args = parser.parse_args()
     os.umask(0o077)
     try:
+        if args.command == "configure-access":
+            print(json.dumps(configure_access(args)))
+            return 0
         if args.command == "configure":
             client = Client(args.api_url, args.admin_session_file, bearer=True)
-            policy = load(Path(__file__).with_name("advisory-policy.json"))
-            for name, wanted in policy.items():
-                path = "extension-points/vuln-data-source/extensions/" + name + "/config"
-                if client.request("GET", path, version=2)["config"] != wanted:
-                    try:
-                        client.request("PUT", path, {"config": wanted}, version=2)
-                    except ApiError as error:
-                        if error.status != 304:
-                            raise
-                if client.request("GET", path, version=2)["config"] != wanted:
-                    raise ValueError("advisory policy readback mismatch: " + name)
-            print(json.dumps({"advisorySources": {name: {"enabled": config["enabled"],
-                "ecosystems": config.get("ecosystems", [])} for name, config in policy.items()},
-                "coverage": "Enabled sources do not prove completed mirrors, Nix patch applicability, runtime use or a clean scan."}))
+            print(json.dumps(configure_advisory_policy(client)))
             return 0
         if args.command == "acquire":
             if (not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", args.repository)
@@ -814,6 +1013,11 @@ def main():
         return 0
     except Exception as error:
         # Do not stringify untrusted server/network exceptions or secret-file contents.
+        if args.command == "configure-access":
+            reason = ("HTTP " + str(error.status) + (" " + error.auth_error if error.auth_error else "")
+                      if isinstance(error, ApiError) else type(error).__name__)
+            print("dependency-track-sync failed: configure-access " + reason, file=sys.stderr)
+            return 1
         print("dependency-track-sync failed: " + (str(error) if isinstance(error, (ValueError, ApiError, TimeoutError))
                                                   else type(error).__name__), file=sys.stderr)
         return 1

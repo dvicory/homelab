@@ -1,13 +1,17 @@
 {
   den,
+  config,
   lib,
   inputs,
   ...
 }:
+let
+  rootConfig = config;
+in
 {
   den.aspects.workloads.dependency-track-sync = {
-    # Explicit paired selection: also enable the service's automaticInventory
-    # resource inputs. Neither this variant nor the service selects a real host.
+    # Explicit paired selection; private bootstrap can omit the ingestor credentials
+    # and schedule while the independent root access-policy controller admits it.
     compute-guest.includes = [ den.aspects.workloads.dependency-track-sync ];
     settings = {
       apiUrl = lib.mkOption {
@@ -81,6 +85,24 @@
         name = "dependency-track-sync";
         package = pkgs.callPackage (inputs.self + "/pkgs/by-name/dependency-track-sync/package.nix") { };
         computeGuest = host.hasAspect den.aspects.workloads.dependency-track-sync.compute-guest;
+        pairedClusters = lib.filterAttrs (
+          clusterName: cluster:
+          cluster.hostSystem == pkgs.stdenv.hostPlatform.system
+          &&
+            rootConfig.den.hosts.${cluster.hostSystem}.${cluster.hostName}.settings.virtualization.compute.instance
+            == host.name
+        ) rootConfig.den.clusters;
+        selectedClusters = lib.filterAttrs (
+          clusterName: cluster:
+          rootConfig.flake.nixidyEnvs.${cluster.hostSystem}.${clusterName}.config.applications
+          ? dependency-track
+        ) pairedClusters;
+        requestedPrivateAccess = lib.any (
+          cluster: cluster.settings.kubernetes.services.dependency-track.privateAccess or false
+        ) (builtins.attrValues pairedClusters);
+        privateAccess = computeGuest && requestedPrivateAccess;
+        policyRuntime = "/run/dependency-track-access-policy";
+        brokerRuntime = "/run/dependency-track-sync-api-tunnel";
         stateDirectory =
           if computeGuest then "/srv/state/dependency-track-evidence" else cfg.stateDirectory;
         # Reserve the listener against impersonation by unprivileged guest processes.
@@ -98,7 +120,8 @@
             "${credentialDirectory}/github-token"
           else
             config.age.secrets.dependency-track-sync-github-token.path;
-        kubectl = "${config.services.k3s.package}/bin/k3s kubectl --namespace dependency-track";
+        kubectlExe = lib.getExe' config.services.k3s.package.k3sBundle "kubectl";
+        kubectl = "${kubectlExe} --namespace dependency-track";
         stageCredentials = pkgs.writeShellScript "dependency-track-sync-credentials" ''
           set -euo pipefail
           test -s /srv/secrets/runtime-secrets.commit
@@ -164,6 +187,277 @@
             print("Dependency-Track loopback transport readiness deadline exceeded", file=sys.stderr)
             sys.exit(1)
           ''}
+        '';
+        accessPolicyProgram = pkgs.writeText "dependency-track-access-policy.py" ''
+          import base64
+          from datetime import datetime, timezone
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import signal
+          import subprocess
+          import sys
+          import time
+          import uuid
+
+          namespace = "dependency-track"
+          condition_type = "security.homelab/access-policy-ready"
+          runtime = Path(os.environ["RUNTIME_DIRECTORY"])
+          broker_record = Path("${brokerRuntime}/pod.json")
+          deadline = time.monotonic() + 240
+          os.umask(0o077)
+          if os.geteuid() != 0:
+              sys.exit("Dependency-Track policy requires root")
+          home = runtime if sys.argv[1] == "reconcile" else broker_record.parent
+          if (home.is_symlink() or not home.is_dir() or home.stat().st_uid != 0
+                  or home.stat().st_mode & 0o777 != 0o700):
+              sys.exit("Dependency-Track policy requires a private root runtime directory")
+          os.environ["HOME"] = str(home)
+          os.environ["XDG_CACHE_HOME"] = str(home / "cache")
+          (home / "cache").mkdir(mode=0o700, exist_ok=True)
+          kubectl = ["${kubectlExe}", "--namespace", namespace,
+                     "--cache-dir=" + str(home / "cache"), "--request-timeout=10s"]
+
+          def run(arguments, *, data=None, timeout=10):
+              process = subprocess.Popen(arguments, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                         stderr=subprocess.DEVNULL)
+              try:
+                  output, _ = process.communicate(
+                      data, timeout=max(0.1, min(timeout, deadline - time.monotonic())))
+              except BaseException:
+                  try:
+                      process.terminate()
+                  except ProcessLookupError:
+                      pass
+                  try:
+                      process.communicate(timeout=15)
+                  except subprocess.TimeoutExpired:
+                      process.kill()
+                      process.communicate()
+                  raise
+              if process.returncode:
+                  raise subprocess.CalledProcessError(process.returncode, arguments)
+              return subprocess.CompletedProcess(arguments, process.returncode, output)
+
+          def get(kind, name=None, selector=None):
+              arguments = kubectl + ["get", kind]
+              if name:
+                  arguments.append(name)
+              if selector:
+                  arguments += ["--selector", selector]
+              resource = json.loads(run(arguments + ["-o", "json"]).stdout)
+              if name and (resource["metadata"]["name"] != name
+                           or resource["metadata"]["namespace"] != namespace
+                           or resource["metadata"].get("deletionTimestamp")):
+                  raise ValueError()
+              return resource
+
+          def owned(resource, kind, uid):
+              return any(owner.get("controller") is True and owner.get("kind") == kind
+                         and owner.get("uid") == uid
+                         for owner in resource["metadata"].get("ownerReferences", []))
+
+          def current_pods():
+              deployment = get("deployment", "dependency-track-api")
+              metadata = deployment["metadata"]
+              if metadata.get("deletionTimestamp"):
+                  raise ValueError()
+              selector = "app.kubernetes.io/name=dependency-track-api"
+              replicasets = get("replicasets", selector=selector)["items"]
+              replica_uids = {replica["metadata"]["uid"] for replica in replicasets
+                              if owned(replica, "Deployment", metadata["uid"])
+                              and not replica["metadata"].get("deletionTimestamp")}
+              pods = [pod for pod in get("pods", selector=selector)["items"]
+                      if pod["metadata"]["namespace"] == namespace
+                      and not pod["metadata"].get("deletionTimestamp")
+                      and pod.get("status", {}).get("phase") == "Running"
+                      and any(owned(pod, "ReplicaSet", uid) for uid in replica_uids)]
+              return deployment, pods
+
+          def select():
+              deployment, pods = current_pods()
+              if (deployment["spec"].get("replicas") != 1
+                      or deployment["spec"]["strategy"]["type"] != "Recreate"
+                      or deployment["spec"]["selector"]["matchLabels"]
+                         != {"app.kubernetes.io/name": "dependency-track-api"}
+                      or len(pods) != 1):
+                  raise ValueError()
+              pod = pods[0]
+              if (not any(gate.get("conditionType") == condition_type
+                          for gate in pod["spec"].get("readinessGates", []))
+                      or [container["name"] for container in pod["spec"]["containers"]] != ["api"]):
+                  raise ValueError()
+              return deployment, pod
+
+          def identity(deployment, pod):
+              return {"deploymentUID": deployment["metadata"]["uid"],
+                      "podUID": pod["metadata"]["uid"], "podName": pod["metadata"]["name"]}
+
+          def set_condition(pod, admitted):
+              uid = pod["metadata"]["uid"]
+              while time.monotonic() < deadline:
+                  conditions = pod.get("status", {}).get("conditions", [])
+                  indices = [index for index, item in enumerate(conditions)
+                             if item["type"] == condition_type]
+                  if len(indices) > 1:
+                      raise ValueError()
+                  status = "True" if admitted else "False"
+                  if indices and conditions[indices[0]]["status"] == status:
+                      return
+                  condition = {"type": condition_type, "status": status,
+                               "reason": "AccessPolicyVerified" if admitted else "AccessPolicyUnverified",
+                               "message": "Root access-policy reconciliation " + ("succeeded" if admitted else "failed"),
+                               "lastTransitionTime": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")}
+                  patch = [{"op": "test", "path": "/metadata/uid", "value": uid},
+                           {"op": "test", "path": "/metadata/resourceVersion",
+                            "value": pod["metadata"]["resourceVersion"]}]
+                  if indices:
+                      patch.append({"op": "replace", "path": "/status/conditions/" + str(indices[0]),
+                                    "value": condition})
+                  elif "conditions" in pod.get("status", {}):
+                      patch.append({"op": "add", "path": "/status/conditions/-", "value": condition})
+                  else:
+                      patch.append({"op": "add", "path": "/status/conditions", "value": [condition]})
+                  try:
+                      run(kubectl + ["patch", "pod", pod["metadata"]["name"], "--subresource=status",
+                                     "--type=json", "--patch-file=/dev/stdin"],
+                          data=json.dumps(patch).encode())
+                      return
+                  except subprocess.CalledProcessError:
+                      current = get("pod", pod["metadata"]["name"])
+                      if current["metadata"]["uid"] != uid:
+                          raise ValueError()
+                      if current["metadata"]["resourceVersion"] == pod["metadata"]["resourceVersion"]:
+                          raise
+                      pod = current
+              raise TimeoutError()
+
+          def desired():
+              configmap = get("configmap", "dependency-track-access-policy")
+              if set(configmap.get("data", {})) != {"policy.json"}:
+                  raise ValueError()
+              policy = json.loads(configmap["data"]["policy.json"])
+              if (set(policy) != {"schema", "bootstrap", "oidcGroup"}
+                      or type(policy["schema"]) is not int or policy["schema"] != 1
+                      or type(policy["bootstrap"]) is not bool
+                      or not isinstance(policy["oidcGroup"], str)
+                      or not 1 <= len(policy["oidcGroup"]) <= 255
+                      or not policy["oidcGroup"].strip()
+                      or any(ord(char) < 32 or 127 <= ord(char) <= 159
+                             for char in policy["oidcGroup"])):
+                  raise ValueError()
+              return configmap, policy
+
+          def validate_result(raw, group):
+              if len(raw) > 65536:
+                  raise ValueError()
+              result = json.loads(raw)
+              if (set(result) != {"schema", "oidcGroup", "administratorTeam",
+                                 "defaultLoginRefusal", "advisoryPolicy"}
+                      or type(result["schema"]) is not int or result["schema"] != 1
+                      or result["defaultLoginRefusal"] != "INVALID_CREDENTIALS"
+                      or set(result["oidcGroup"]) != {"name", "uuid"}
+                      or result["oidcGroup"]["name"] != group
+                      or set(result["administratorTeam"]) != {"name", "uuid", "permissions"}
+                      or result["administratorTeam"]["name"] != "Administrators"):
+                  raise ValueError()
+              for item in (result["oidcGroup"], result["administratorTeam"]):
+                  if str(uuid.UUID(item["uuid"])) != item["uuid"]:
+                      raise ValueError()
+              permissions = result["administratorTeam"]["permissions"]
+              if (not isinstance(permissions, list) or not permissions
+                      or any(not isinstance(item, str) or not re.fullmatch(r"[A-Z_]+", item)
+                             for item in permissions)
+                      or permissions != sorted(set(permissions))):
+                  raise ValueError()
+              source = json.loads(Path("${package}/lib/dependency-track-sync/advisory-policy.json").read_text())
+              if result["advisoryPolicy"] != {
+                  "advisorySources": {name: {"enabled": value["enabled"],
+                                           "ecosystems": value.get("ecosystems", [])}
+                                      for name, value in source.items()},
+                  "coverage": "Enabled sources do not prove completed mirrors, Nix patch applicability, runtime use or a clean scan."
+              }:
+                  raise ValueError()
+
+          def reconcile():
+              deployment, pod = select()
+              expected = identity(deployment, pod)
+              if json.loads(broker_record.read_text()) != expected:
+                  raise ValueError()
+              configmap, policy = desired()
+              secret = get("secret", "dependency-track-admin")
+              password = base64.b64decode(secret["data"]["password"], validate=True)
+              if not 0 < len(password) <= 65536:
+                  raise ValueError()
+              password_file = runtime / "admin-password"
+              with password_file.open("xb") as output:
+                  os.fchmod(output.fileno(), 0o400)
+                  output.write(password)
+              arguments = ["${package}/bin/dependency-track-sync", "configure-access",
+                           "--api-url", "http://127.0.0.1:${toString apiPort}",
+                           "--admin-password-file", str(password_file),
+                           "--oidc-group", policy["oidcGroup"]]
+              if policy["bootstrap"]:
+                  arguments.append("--bootstrap")
+              run(["${waitForApi}"], timeout=65)
+              validate_result(run(arguments, timeout=120).stdout, policy["oidcGroup"])
+              current_configmap, current_policy = desired()
+              current_secret = get("secret", "dependency-track-admin")
+              current_deployment, current_pod = select()
+              if (identity(current_deployment, current_pod) != expected
+                      or json.loads(broker_record.read_text()) != expected
+                      or current_policy != policy
+                      or any(current["metadata"][key] != previous["metadata"][key]
+                             for current, previous in ((current_configmap, configmap), (current_secret, secret))
+                             for key in ("uid", "resourceVersion"))):
+                  raise ValueError()
+              set_condition(current_pod, True)
+
+          try:
+              if int(Path("/proc/sys/net/ipv4/ip_unprivileged_port_start").read_text()) <= ${toString apiPort}:
+                  raise ValueError()
+              if sys.argv[1] == "broker":
+                  deployment, pod = select()
+                  temporary = broker_record.with_suffix(".tmp")
+                  temporary.write_text(json.dumps(identity(deployment, pod)))
+                  temporary.chmod(0o400)
+                  temporary.replace(broker_record)
+                  os.execv(kubectl[0], kubectl + [
+                      "port-forward", "--address=127.0.0.1", "--pod-running-timeout=60s",
+                      "pod/" + pod["metadata"]["name"], "${toString apiPort}:8080"])
+              if sys.argv[1] != "reconcile":
+                  raise ValueError()
+              def interrupted(signum, frame):
+                  raise RuntimeError()
+              signal.signal(signal.SIGTERM, interrupted)
+              signal.signal(signal.SIGINT, interrupted)
+              reconcile()
+              print("Dependency-Track access policy verified for the current API Pod")
+          except Exception:
+              if sys.argv[1] == "reconcile":
+                  # Reserve a separate bounded failure fence even after the command deadline.
+                  deadline = time.monotonic() + 25
+                  try:
+                      _, pods = current_pods()
+                      for pod in pods:
+                          try:
+                              set_condition(pod, False)
+                          except Exception:
+                              pass
+                  except Exception:
+                      pass
+              print("Dependency-Track access-policy reconciliation failed", file=sys.stderr)
+              sys.exit(1)
+          finally:
+              if sys.argv[1] == "reconcile":
+                  (runtime / "admin-password").unlink(missing_ok=True)
+        '';
+        reconcileAccess = pkgs.writeShellScript "dependency-track-access-policy" ''
+          exec ${pkgs.python3}/bin/python3 -B ${accessPolicyProgram} reconcile
+        '';
+        brokerAccess = pkgs.writeShellScript "dependency-track-access-policy-broker" ''
+          exec ${pkgs.python3}/bin/python3 -B ${accessPolicyProgram} broker
         '';
         notifyFailure = pkgs.writeShellScript "dependency-track-sync-failure" ''
           set -euo pipefail
@@ -248,6 +542,10 @@
             ];
             message = "Dependency-Track ingestion requires non-trusted Nix daemon access for ${name}.";
           }
+          {
+            assertion = !requestedPrivateAccess || computeGuest;
+            message = "Dependency-Track private access requires the explicitly paired compute-guest workload variant.";
+          }
         ]
         ++ lib.optionals computeGuest [
           {
@@ -261,6 +559,15 @@
           {
             assertion = unprivilegedPortStart == null || lib.toInt (toString unprivilegedPortStart) > apiPort;
             message = "Dependency-Track compute-guest transport requires a reserved TCP port; do not lower ip_unprivileged_port_start past ${toString apiPort}.";
+          }
+          {
+            assertion =
+              !requestedPrivateAccess
+              || (
+                builtins.length (builtins.attrNames pairedClusters) == 1
+                && builtins.attrNames selectedClusters == builtins.attrNames pairedClusters
+              );
+            message = "Dependency-Track private access requires exactly one paired, explicitly selected service on this compute guest.";
           }
         ];
         # A dedicated non-login identity; numeric ownership survives recovery.
@@ -326,9 +633,24 @@
                 RuntimeDirectory = "dependency-track-sync-api-tunnel";
                 RuntimeDirectoryMode = "0700";
                 ExecStartPre = requireReservedPort;
-                ExecStart = "${kubectl} --cache-dir=/run/dependency-track-sync-api-tunnel/kube-cache port-forward --address=127.0.0.1 --pod-running-timeout=60s service/dependency-track-api ${toString apiPort}:8080";
+                ExecStart =
+                  if privateAccess then
+                    brokerAccess
+                  else
+                    "${kubectl} --cache-dir=${brokerRuntime}/kube-cache port-forward --address=127.0.0.1 --pod-running-timeout=60s service/dependency-track-api ${toString apiPort}:8080";
                 Restart = "always";
                 RestartSec = "15s";
+                UMask = "0077";
+                CapabilityBoundingSet = [ "CAP_NET_BIND_SERVICE" ];
+                AmbientCapabilities = [ "CAP_NET_BIND_SERVICE" ];
+                ReadWritePaths = [ brokerRuntime ];
+                RestrictAddressFamilies = [
+                  "AF_UNIX"
+                  "AF_INET"
+                  "AF_INET6"
+                ];
+                StandardOutput = "null";
+                StandardError = "null";
                 NoNewPrivileges = true;
                 ProtectHome = true;
                 ProtectSystem = "strict";
@@ -361,12 +683,63 @@
               };
             };
           }
+          // lib.optionalAttrs privateAccess {
+            dependency-track-access-policy = {
+              description = "Reconcile stock Dependency-Track access policy and admit the current API Pod";
+              # Wants, not Requires: transport/dependency failure must still execute
+              # the controller's False fence for any previously admitted Pod.
+              wants = [
+                "k3s.service"
+                "kubernetes-runtime-secrets.service"
+                "dependency-track-sync-api-tunnel.service"
+              ];
+              after = [
+                "k3s.service"
+                "kubernetes-runtime-secrets.service"
+                "dependency-track-sync-api-tunnel.service"
+              ];
+              unitConfig.RequiresMountsFor = [ "/srv/secrets" ];
+              environment.KUBECONFIG = "/etc/rancher/k3s/k3s.yaml";
+              serviceConfig = {
+                Type = "oneshot";
+                User = "root";
+                Group = "root";
+                UMask = "0077";
+                RuntimeDirectory = "dependency-track-access-policy";
+                RuntimeDirectoryMode = "0700";
+                ExecStart = reconcileAccess;
+                TimeoutStartSec = "5min";
+                TimeoutStopSec = "30s";
+                MemoryMax = "256M";
+                TasksMax = 64;
+                CPUQuota = "50%";
+                CapabilityBoundingSet = "";
+                NoNewPrivileges = true;
+                ProtectHome = true;
+                ProtectSystem = "strict";
+                PrivateTmp = true;
+                PrivateDevices = true;
+                ProtectKernelTunables = true;
+                ProtectKernelModules = true;
+                ProtectControlGroups = true;
+                RestrictSUIDSGID = true;
+                ReadWritePaths = [ policyRuntime ];
+                RestrictAddressFamilies = [
+                  "AF_UNIX"
+                  "AF_INET"
+                  "AF_INET6"
+                ];
+              };
+            };
+          }
           // {
             ${name} = {
               description = "Acquire trusted sealed inventories and refresh private Dependency-Track with host provenance";
               onFailure = lib.optionals computeGuest [ "dependency-track-sync-failure.service" ];
-              wants = [ "network-online.target" ];
-              requires = lib.optionals computeGuest [
+              wants = [
+                "network-online.target"
+              ]
+              ++ lib.optionals computeGuest [
                 "dependency-track-sync-credentials.service"
                 "dependency-track-sync-api-tunnel.service"
               ];
@@ -395,15 +768,26 @@
                 Group = name;
                 UMask = "0077";
                 TimeoutStartSec = "2h";
-                ExecStartPre = lib.optionals computeGuest [
-                  requireReservedPort
-                  waitForApi
-                ];
+                # A failed dependency job alone does not fail the importer. These
+                # fixed manager-owned root invocations do, preserving OnFailure.
+                # '+' bypasses User/filesystem sandbox only for systemctl; no 705
+                # command, home, argument or credential enters this root process.
+                ExecStartPre =
+                  lib.optionals privateAccess [
+                    "+${pkgs.coreutils}/bin/env -i ${pkgs.systemd}/bin/systemctl --system --no-ask-password --no-pager start --wait dependency-track-access-policy.service"
+                  ]
+                  ++ lib.optionals computeGuest [
+                    "+${pkgs.coreutils}/bin/env -i ${pkgs.systemd}/bin/systemctl --system --no-ask-password --no-pager start --wait dependency-track-sync-credentials.service"
+                    requireReservedPort
+                    waitForApi
+                  ];
                 InaccessiblePaths = lib.optionals computeGuest [
                   "/etc/rancher/k3s"
                   "/var/lib/rancher/k3s"
                   "/srv/secrets"
                   credentialDirectory
+                  policyRuntime
+                  brokerRuntime
                 ];
                 LoadCredential = [
                   "api-key:${apiKeyPath}"
@@ -454,16 +838,27 @@
               };
             };
           };
-        systemd.timers = lib.optionalAttrs (cfg.onCalendar != null) {
-          ${name} = {
-            wantedBy = [ "timers.target" ];
-            timerConfig = {
-              OnCalendar = cfg.onCalendar;
-              OnBootSec = lib.mkIf computeGuest "2min";
-              Persistent = true;
+        systemd.timers =
+          lib.optionalAttrs (cfg.onCalendar != null) {
+            ${name} = {
+              wantedBy = [ "timers.target" ];
+              timerConfig = {
+                OnCalendar = cfg.onCalendar;
+                OnBootSec = lib.mkIf computeGuest "2min";
+                Persistent = true;
+              };
+            };
+          }
+          // lib.optionalAttrs privateAccess {
+            dependency-track-access-policy = {
+              wantedBy = [ "timers.target" ];
+              timerConfig = {
+                OnBootSec = "30s";
+                OnUnitInactiveSec = "1min";
+                AccuracySec = "5s";
+              };
             };
           };
-        };
       }
       // lib.optionalAttrs (!computeGuest) {
         secretRequests = {

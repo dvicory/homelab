@@ -32,6 +32,7 @@
             den.clusters.prod-home.settings.kubernetes.services.dependency-track = {
               databasePhase = "bootstrap";
               automaticInventory = true;
+              privateAccess = true;
             };
             den.aspects.compute-1.includes = [
               den.aspects.workloads.dependency-track-sync.compute-guest
@@ -47,6 +48,10 @@
         selected.config.flake.nixosConfigurations.compute-1.config.systemd.services.dependency-track-sync-api-tunnel.serviceConfig.ExecStartPre;
       failureNotifier =
         selected.config.flake.nixosConfigurations.compute-1.config.systemd.services.dependency-track-sync-failure.serviceConfig.ExecStart;
+      accessPolicy =
+        selected.config.flake.nixosConfigurations.compute-1.config.systemd.services.dependency-track-access-policy.serviceConfig.ExecStart;
+      accessBroker =
+        selected.config.flake.nixosConfigurations.compute-1.config.systemd.services.dependency-track-sync-api-tunnel.serviceConfig.ExecStart;
       monitoring =
         (import ../den/aspects/kubernetes/services/monitoring/alerting.nix {
           inherit config inputs lib;
@@ -102,15 +107,49 @@
             cluster.settings.kubernetes.services.dependency-track.databasePhase = "bootstrap";
             cluster.settings.kubernetes.services.dependency-track.automaticInventory = false;
           }).retainedPaths;
+      routeStage = lib.recursiveUpdate selected.config.den.clusters.prod-home {
+        settings.kubernetes.services = {
+          dependency-track.databasePhase = "restore";
+          identity.phase = "normal";
+        };
+      };
+      sourceRoutes =
+        (import ../den/clusters/home.nix {
+          inherit inputs lib;
+          den = selected.config.den;
+          config = selected.config // {
+            den = selected.config.den // {
+              clusters = selected.config.den.clusters // {
+                prod-home = routeStage;
+              };
+            };
+          };
+        }).den.clusters.prod-home.routes;
+      # Apply the real route schema without pretending recovered credentials exist.
+      routeSelected = selected.extendModules {
+        modules = [ { den.clusters.prod-home.routes = lib.mkForce sourceRoutes; } ];
+      };
+      fixtureCluster = lib.recursiveUpdate routeSelected.config.den.clusters.prod-home {
+        routes = {
+          idm.hostnames = [ "idm.dt-fixture.invalid" ];
+          idm.backendHostname = "idm.dt-fixture.invalid";
+          dependency-track.hostnames = [ "dt.dt-fixture.invalid" ];
+          dependency-track-api.hostnames = [ "api.dt-fixture.invalid" ];
+        };
+        settings.kubernetes.services.identity.phase = "normal";
+      };
       render =
         databasePhase:
         service.k8s-manifests {
-          cluster.settings.kubernetes.services.dependency-track = {
-            inherit databasePhase;
-            apiBaseUrl = "http://127.0.0.1:18080";
-            advisoryRefresh = false;
-            initialMirror = false;
-            automaticInventory = false;
+          cluster = lib.recursiveUpdate fixtureCluster {
+            settings.kubernetes.services.dependency-track = {
+              inherit databasePhase;
+              privateAccess = true;
+              apiBaseUrl = "http://127.0.0.1:18080";
+              advisoryRefresh = false;
+              initialMirror = false;
+              automaticInventory = false;
+            };
           };
           computeResources = {
             inherit retainedPaths;
@@ -118,6 +157,46 @@
           };
         };
       bootstrap = render "bootstrap";
+      identityService =
+        (import ../den/aspects/kubernetes/services/identity.nix { inherit config inputs lib; })
+        .den.aspects.kubernetes.services.identity;
+      identityRender =
+        phase:
+        identityService.k8s-manifests {
+          cluster = lib.recursiveUpdate fixtureCluster {
+            settings.kubernetes.services.identity.phase = phase;
+            settings.kubernetes.services.dependency-track = {
+              privateAccess = true;
+              databasePhase = "restore";
+            };
+          };
+          computeResources = config.flake.clusterResources.prod-home // {
+            instance = "compute-1";
+          };
+          inherit lib;
+          config.applications = (render "restore").applications;
+        };
+      identityInitial =
+        lib.filter (
+          object:
+          builtins.elem object.kind [
+            "Deployment"
+            "Service"
+            "ConfigMap"
+          ]
+        ) (identityRender "initial").applications.identity.objects
+        ++
+          lib.filter (object: object.kind == "NetworkPolicy")
+            (identityRender "normal").applications.identity.objects;
+      # Read only desired data. Do not force the protected production Job image:
+      # this isolated fixture runs the genuine source-built public wrapper below.
+      identityDesired =
+        (lib.findSingle (object: object.kind == "ConfigMap" && object.metadata.name == "kanidm-provision")
+          (throw "Missing identity desired state")
+          (throw "Ambiguous identity desired state")
+          (identityRender "normal").applications.identity.objects
+        ).data;
+      provisionImage = self.packages.${system}.kanidm-provision-image;
       retained = bootstrap.applications.dependency-track-retained.resources;
       objects = [
         {
@@ -167,6 +246,18 @@
           credentialStage = toString credentialStage;
           brokerPortGuard = toString brokerPortGuard;
           failureNotifier = toString failureNotifier;
+          accessPolicy = toString accessPolicy;
+          accessBroker = toString accessBroker;
+          oidcGroup = fixtureCluster.settings.kubernetes.services.identity.adminGroup;
+          identityInitial = manifest "dependency-track-fixture-identity.json" identityInitial;
+          inherit identityDesired;
+          provisionImage = toString provisionImage;
+          provisionImageDrv = builtins.unsafeDiscardStringContext provisionImage.drvPath;
+          provisionImageRef = provisionImage.imageReference;
+          chromium = lib.getExe pkgs.chromium;
+          certutil = lib.getExe' pkgs.nssTools "certutil";
+          openssl = lib.getExe pkgs.openssl;
+          keytool = lib.getExe' pkgs.jdk_headless "keytool";
           failureHost = "compute-1";
           inherit alertmanager;
           cat = lib.getExe' pkgs.coreutils "cat";
@@ -208,7 +299,10 @@
           .applications.dependency-track.objects;
         }
       );
-      python = pkgs.python3.withPackages (p: [ p.pyyaml ]);
+      python = pkgs.python3.withPackages (p: [
+        p.pyyaml
+        p.playwright
+      ]);
       runner = pkgs.writeShellScriptBin "qualify-dependency-track" ''
         export PYTHONPATH=${syncPackage}/lib/dependency-track-sync
         exec ${python}/bin/python3 -B ${./_dependency-track/run.py} --settings ${settings} "$@"

@@ -54,11 +54,7 @@ in
     settings.kubernetes.services.identity.phase = "normal";
     settings.kubernetes.services.seerr.phase = "ready";
     settings.kubernetes.services.homarr.phase = "initial";
-    routes =
-      assert lib.assertMsg (
-        !dependencyTrack.privateAccess || dependencyTrackSelected
-      ) "Dependency-Track privateAccess requires explicitly selecting its service.";
-      {
+    routes = {
       home =
         (route "home" "portal" "homarr" 7575 "native" "public" {
           "app.kubernetes.io/controller" = "main";
@@ -166,26 +162,30 @@ in
           backendTLS = true;
           backendHostname = builtins.head cluster.routes.idm.hostnames;
         };
-      }
-      // lib.optionalAttrs dependencyTrackReady {
-        dependency-track =
-          (route "dependency-track" "dependency-track" "dependency-track-frontend" 8080 "native" "private" {
-            "app.kubernetes.io/name" = "dependency-track-frontend";
-          })
-          // {
-            displayName = "Dependency-Track";
-            sameNamespaceIngress = false;
-            manageBackendIngress = false;
-          };
-        dependency-track-api =
-          (route "dependency-track-api" "dependency-track" "dependency-track-api" 8080 "native" "private" {
-            "app.kubernetes.io/name" = "dependency-track-api";
-          })
-          // {
-            sameNamespaceIngress = false;
-            manageBackendIngress = false;
-          };
-      };
+    }
+    // lib.optionalAttrs dependencyTrackReady {
+      dependency-track =
+        assert lib.assertMsg dependencyTrackSelected
+          "Dependency-Track privateAccess requires explicitly selecting its service.";
+        (route "dependency-track" "dependency-track" "dependency-track-frontend" 8080 "native" "private" {
+          "app.kubernetes.io/name" = "dependency-track-frontend";
+        })
+        // {
+          displayName = "Dependency-Track";
+          sameNamespaceIngress = false;
+          manageBackendIngress = false;
+        };
+      dependency-track-api =
+        assert lib.assertMsg dependencyTrackSelected
+          "Dependency-Track privateAccess requires explicitly selecting its service.";
+        (route "dependency-track-api" "dependency-track" "dependency-track-api" 8080 "native" "private" {
+          "app.kubernetes.io/name" = "dependency-track-api";
+        })
+        // {
+          sameNamespaceIngress = false;
+          manageBackendIngress = false;
+        };
+    };
     # The existing Arr instances intentionally share the host-owned media
     # namespace. Private configuration remains on each instance's own claim.
     settings.kubernetes.services.media.radarr.radarr.sharedWritablePaths = [ "/data" ];
