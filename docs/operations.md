@@ -375,6 +375,8 @@ systemd gives non-login UID/GID705 private credential files; the importer
 has no root control files or trusted Nix-daemon access. A fixed root-owned
 loopback broker supplies the API transport without handing out Kubernetes
 credentials. Failed policy admission stops ingestion.
+Inclusion tracing does not require machine-wide Nix feature settings;
+the client requests its features without enabling builds or daemon trust.
 
 Original ZIPs, sealed inventories, source receipts, origin reports and
 the single-writer journal stay on the compute guest under
