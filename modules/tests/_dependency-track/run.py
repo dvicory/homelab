@@ -77,7 +77,7 @@ SAFE_ERROR_SIGNATURES = {
 SAFE_CONTAINER_REASONS = {
     "Completed", "Error", "OOMKilled", "CrashLoopBackOff", "ContainerCannotRun",
     "RunContainerError", "CreateContainerConfigError", "InvalidImageName", "ErrImagePull",
-    "ImagePullBackOff", "CreateContainerError", "PodInitializing", "ContainerCreating",
+    "ImagePullBackOff", "ErrImageNeverPull", "CreateContainerError", "PodInitializing", "ContainerCreating",
     "StartError", "DeadlineExceeded", "Unschedulable", "Evicted", "Shutdown", "NodeLost",
 }
 
@@ -182,6 +182,12 @@ def validate_report(report, settings, producer_branch="main"):
     expected_images = sorted(images | {node["reference"]})
     require(report.get("images") == expected_images)
     require(report.get("imageArchitectures") == {image: "amd64" for image in expected_images})
+    runtime_digests = report.get("runtimeManifestDigests", {})
+    require(set(runtime_digests) == images)
+    for image, digests in runtime_digests.items():
+        require(isinstance(digests, list) and all(
+            isinstance(value, str) and bool(re.fullmatch(r"sha256:[0-9a-f]{64}", value)) for value in digests))
+        require(image.rsplit("@", 1)[1] in digests)
     versions = report.get("versions", {})
     require(set(versions) == {"server", "embeddedClient", "sourceClient"})
     require(all(value == "v" + settings["k3sVersion"] for value in versions.values()))
@@ -1290,15 +1296,21 @@ def main():
             if versions["clientVersion"]["gitVersion"] != version or versions["serverVersion"]["gitVersion"] != version:
                 raise QualificationFailure("source-client-server-version-mismatch")
             receipt["versions"]["sourceClient"] = versions["clientVersion"]["gitVersion"]
-            for index, image in enumerate(sorted(images)):
-                archive = work / (str(index) + ".tar")
-                d("save", "-o", str(archive), image, timeout=600)
-                destination = "/tmp/fixture-image.tar"
-                d("cp", str(archive), name + ":" + destination, timeout=600)
-                native("ctr", "--address", "/run/k3s/containerd/containerd.sock", "--namespace", "k8s.io",
-                       "images", "import", destination, timeout=600)
-                native("rm", "-f", destination)
-                archive.unlink()
+            # Docker save reconstructs manifests and can lose the original pinned index reference.
+            # Pull through the actual CRI instead; never invent an alias for different manifest bytes.
+            phase = "runtime-image-fetch"
+            image_runtime = ("k3s", "crictl", "--runtime-endpoint=unix:///run/k3s/containerd/containerd.sock",
+                             "--image-endpoint=unix:///run/k3s/containerd/containerd.sock")
+            receipt["runtimeManifestDigests"] = {}
+            for image in sorted(images):
+                native(*image_runtime, "pull", image, timeout=600)
+                status = json.loads(native(*image_runtime, "inspecti", "-o", "json", image).stdout)["status"]
+                digests = sorted({reference.rsplit("@", 1)[-1] for reference in status.get("repoDigests", [])
+                                  if re.fullmatch(r"sha256:[0-9a-f]{64}", reference.rsplit("@", 1)[-1])})
+                if image.rsplit("@", 1)[1] not in digests:
+                    raise QualificationFailure("runtime-image-source-digest-mismatch")
+                receipt["runtimeManifestDigests"][image] = digests
+            phase = "cluster-setup"
             native("mkdir", "-p", "/var/run/netns")
             native("mount", "--rbind", "/var/run/netns", "/var/run/netns")
             native("mount", "--make-rshared", "/var/run/netns")
