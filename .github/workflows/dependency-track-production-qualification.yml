@@ -7,7 +7,7 @@ permissions:
   actions: read
   contents: read
 env:
-  QUALIFIED_SOURCE: 8c96beef6ba4073fd5cd438a379d1ff253074112
+  QUALIFIED_SOURCE: 82e313453836418452f28564bb3f613c8b508646
 jobs:
   stock-recovery:
     name: Stock DT private OIDC and recovery (frozen producer canary)
@@ -270,14 +270,16 @@ jobs:
         set -euo pipefail
         runtime=$(mktemp -d "$RUNNER_TEMP/dependency-track-systemd-live.XXXXXX")
         trap 'rm -rf -- "$runtime"' EXIT
-        mkdir "$runtime/tmp" "$runtime/output"
+        mkdir -m 700 "$runtime/tmp" "$runtime/output"
+        df -PT "$runtime"
         token_file="$runtime/github-token"
         (umask 077; printf '%s' "$GH_TOKEN" > "$token_file")
         chmod 400 "$token_file"
         unset GH_TOKEN
         set +e
         env -u GH_TOKEN -u GITHUB_TOKEN -u GH_ENTERPRISE_TOKEN \
-          HOMELAB_DT_SYSTEMD_TOKEN_FILE="$token_file" TMPDIR="$runtime/tmp" \
+          HOMELAB_DT_SYSTEMD_TOKEN_FILE="$token_file" \
+          XDG_RUNTIME_DIR="$runtime/tmp" TMPDIR="$runtime/tmp" \
           /usr/bin/timeout --signal=INT --kill-after=60s 5400s \
           "$RUNNER_TEMP/dependency-track-systemd-driver/bin/nixos-test-driver" \
           --output_directory "$runtime/output" \
