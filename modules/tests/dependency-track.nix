@@ -67,7 +67,8 @@
         ).data."alertmanager.yaml"
       );
       failureEventRoute =
-        lib.findSingle (route: builtins.elem "alertname=\"DependencyTrackInventoryRefreshFailed\"" (route.matchers or [ ]))
+        lib.findSingle
+          (route: builtins.elem "alertname=\"DependencyTrackInventoryRefreshFailed\"" (route.matchers or [ ]))
           (throw "Missing source inventory failure event route")
           (throw "Ambiguous source inventory failure event route")
           alertmanagerConfig.route.routes;
