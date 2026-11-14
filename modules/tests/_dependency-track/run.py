@@ -446,6 +446,10 @@ def validate_report(report, settings, producer_branch="main"):
     require(policy.get("defaultLoginRefusal") == "INVALID_CREDENTIALS")
     require(policy.get("healthyReconciliationPreserved") is True
             and policy.get("successAndFailureSessionLogout") is True)
+    bindings = policy.get("alternatePrivilegedBindings", {})
+    require(isinstance(bindings, dict) and set(bindings) == {
+        "ACCESS_MANAGEMENT", "ACCESS_MANAGEMENT_CREATE", "ACCESS_MANAGEMENT_UPDATE"})
+    require(all(type(status) is int and status in (502, 503, 504) for status in bindings.values()))
     for key in ("uid705PolicyExit", "uid705BrokerReadExit"):
         require(type(policy.get(key)) is int and 0 < policy[key] < 256)
     for key in ("bootstrapPodUID", "previousPodUID", "recreatedPodUID", "validatedPodUID", "finalPodUID"):
@@ -2461,19 +2465,23 @@ def main():
             try:
                 alternate = json.loads(api("/v1/team", method="PUT",
                     body={"name": "fixture-alternate-privileged-team"}, bearer=inspection_admin, record=False))
-                api("/v1/permission/ACCESS_MANAGEMENT/team/" + alternate["uuid"],
+                api("/v1/permission/VIEW_PORTFOLIO/team/" + alternate["uuid"],
                     method="POST", bearer=inspection_admin, record=False)
                 unexpected = json.loads(api("/v1/oidc/group", method="PUT",
                     body={"name": "fixture-unapproved-administrators"}, bearer=inspection_admin, record=False))
                 api("/v1/oidc/mapping", method="PUT",
                     body={"team": alternate["uuid"], "group": unexpected["uuid"]},
                     bearer=inspection_admin, record=False)
-                reconcile_access(succeeds=False)
-                policy_proof["alternatePrivilegedBindingGateway"] = gateway_closed()
-                api("/v1/oidc/group/" + unexpected["uuid"] + "/team/" + alternate["uuid"] + "/mapping",
-                    method="DELETE", bearer=inspection_admin, record=False)
                 reconcile_access()
-                policy_proof["alternatePrivilegedBindingRefused"] = True
+                refused_bindings = {}
+                for permission in ("ACCESS_MANAGEMENT", "ACCESS_MANAGEMENT_CREATE", "ACCESS_MANAGEMENT_UPDATE"):
+                    permission_path = "/v1/permission/" + permission + "/team/" + alternate["uuid"]
+                    api(permission_path, method="POST", bearer=inspection_admin, record=False)
+                    reconcile_access(succeeds=False)
+                    refused_bindings[permission] = gateway_closed()
+                    api(permission_path, method="DELETE", bearer=inspection_admin, record=False)
+                    reconcile_access()
+                policy_proof["alternatePrivilegedBindings"] = refused_bindings
             finally:
                 api("/v1/user/logout", method="POST", bearer=inspection_admin, record=False)
             # Exercise the CLI's actual managed-session owner against stock DT,
