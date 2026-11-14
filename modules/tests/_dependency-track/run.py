@@ -182,7 +182,8 @@ def validate_report(report, settings, producer_branch="main"):
     section = "authenticated-http-contract"
     require(report.get("http") == [
         ["GET", "/v1/project", 401], ["GET", "/v1/project", 401],
-        ["POST", "/v1/user/forceChangePassword", 200], ["GET", "/v1/team", 200],
+        ["POST", "/v1/user/forceChangePassword", 200],
+        ["POST", "/v1/user/login", 401], ["POST", "/v1/user/login", 200], ["GET", "/v1/team", 200],
         ["PUT", "/v1/team/{uuid}/key", 201], ["PUT", "/v1/project", 201],
         ["GET", "/v1/project/{uuid}", 200], ["GET", "/v1/project/{uuid}", 200],
         ["GET", "/v1/project", 401], ["POST", "/v1/user/login", 200],
@@ -1151,9 +1152,13 @@ def main():
             api("/v1/project", expected=401)
             api("/v1/project", key="fixture-invalid-key", expected=401)
             new_password = secrets.token_urlsafe(36)
-            bearer = api("/v1/user/forceChangePassword", method="POST", form=True,
-                         body={"username": "admin", "password": "admin", "newPassword": new_password,
-                               "confirmPassword": new_password}).decode()
+            api("/v1/user/forceChangePassword", method="POST", form=True,
+                body={"username": "admin", "password": "admin", "newPassword": new_password,
+                      "confirmPassword": new_password})
+            api("/v1/user/login", method="POST", form=True,
+                body={"username": "admin", "password": "admin"}, expected=401)
+            bearer = api("/v1/user/login", method="POST", form=True,
+                         body={"username": "admin", "password": new_password}).decode()
             teams = json.loads(api("/v1/team", bearer=bearer))
             if not any(team["name"] == "Administrators" for team in teams):
                 raise QualificationFailure("stock-administrator-team-absent")
