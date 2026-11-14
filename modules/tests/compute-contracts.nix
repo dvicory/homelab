@@ -23,8 +23,8 @@ let
     ) (builtins.attrNames firewall.interfaces);
   hostEntity = config.den.hosts.x86_64-linux.hvn-hyp1;
   compute = hostEntity.settings.virtualization.compute;
-  # The host's compute aspect, evaluated with a changed declaration.
-  computeAspect =
+  # The host's compute aspect and typed settings, evaluated with changed declarations.
+  computeDefinition =
     (import ../den/aspects/virtualization/compute.nix {
       inherit
         den
@@ -32,7 +32,29 @@ let
         inputs
         config
         ;
-    }).den.aspects.virtualization.compute.nixos;
+    }).den.aspects.virtualization.compute;
+  computeAspect = computeDefinition.nixos;
+  rejectedSettings =
+    change:
+    let
+      evaluate =
+        overrides:
+        (lib.evalModules {
+          modules = [
+            {
+              imports = computeDefinition.settings.imports;
+              options = removeAttrs computeDefinition.settings [ "imports" ];
+            }
+            {
+              config = {
+                inherit (compute) instance;
+              }
+              // overrides;
+            }
+          ];
+        }).config.backend;
+    in
+    builtins.deepSeq (evaluate { }) (!(builtins.tryEval (evaluate change)).success);
   evaluateWith =
     change:
     computeAspect {
@@ -91,6 +113,15 @@ let
   );
   assertions = {
     intended-host-owns-compute = owners == [ "hvn-hyp1" ];
+    backend-is-not-an-independent-host-choice = rejectedSettings { backend = compute.backend; };
+    undeclared-guest-is-rejected = rejectedSettings { instance = "undeclared-compute-guest"; };
+    mismatched-guest-boot-mode-is-rejected = builtins.deepSeq guest.system.build.computeBundle.drvPath (
+      !(builtins.tryEval (
+        (self.nixosConfigurations.compute-1.extendModules {
+          modules = [ { boot.isContainer = lib.mkForce (!guest.boot.isContainer); } ];
+        }).config.system.build.computeBundle.drvPath
+      )).success
+    );
     unprivileged-confinement =
       project.restricted == "true"
       && project."restricted.containers.lowlevel" == "block"

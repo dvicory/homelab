@@ -432,6 +432,8 @@ def create_guest(lib, args, workspace: Path):
     # disposable backing directory with the declared owner and mode.
     for entry in descriptor["requiredPaths"]:
         target = Path(entry["path"])
+        if target == Path(descriptor["devices"]["secrets"]["source"]):
+            continue  # The real staging service owns this read-only tmpfs.
         backing = workspace / "persist" / str(target).lstrip("/")
         backing.mkdir(parents=True)
         target.mkdir(parents=True, exist_ok=True)
@@ -578,7 +580,7 @@ def capture_enforcer_failure(guest: Guest, label: str) -> dict | None:
 
 
 def capture_enforce_failure(guest: Guest, label: str) -> None:
-    """Read live failure state without another traffic probe or table replay."""
+    """Capture the failed state first, then dump the identified enforcer's Go stacks."""
     pod = capture_enforcer_failure(guest, label)
 
     def capture(name: str, *command: str, limit: int = 16384) -> None:
@@ -597,6 +599,7 @@ def capture_enforce_failure(guest: Guest, label: str) -> None:
     # CRI supplies the PID in the guest's procfs, not the fixture host's PID.
     # Queue port IDs are netlink port IDs: correlate them with socket inodes
     # and this exact container's fd links rather than assuming port == PID.
+    enforcer = None
     try:
         status = next(s for s in pod["status"]["containerStatuses"] if s["name"] == ENFORCER[1])
         container_id = status["containerID"].removeprefix("containerd://")
@@ -613,6 +616,7 @@ def capture_enforce_failure(guest: Guest, label: str) -> None:
             "container_id": container_id, "pid": pid,
             "status": {key: container["status"].get(key) for key in ("id", "state", "createdAt", "startedAt", "finishedAt")},
         })
+        enforcer = (container_id, pid)
         capture("netfilter", "sh", "-c",
                 'date -u +%Y-%m-%dT%H:%M:%SZ; '
                 'for p in 1 $$ "$1"; do printf "process=%s\\n" "$p"; '
@@ -660,6 +664,13 @@ def capture_enforce_failure(guest: Guest, label: str) -> None:
     capture("nft.enforcer", "sh", "-c", tools + "nft -j list table inet kube-network-policies", limit=32768)
     capture("nfqueue", "cat", "/proc/net/netfilter/nfnetlink_queue")
     capture("iptables.filter", "sh", "-c", tools + "iptables-save -t filter")
+    if enforcer is not None:
+        container_id, pid = enforcer
+        # The captured container runs netpol as PID 1 in its own PID namespace.
+        # Signal only that namespace after all unmodified failure evidence.
+        capture("goroutines.signal", "nsenter", "--target", str(pid), "--pid", "--",
+                "sh", "-c", "kill -QUIT 1")
+        capture("goroutines", "k3s", "crictl", "logs", "--follow", container_id, limit=262144)
 
 
 def crash(lib, guest: Guest) -> None:

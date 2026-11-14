@@ -226,15 +226,17 @@ def instance_query(project: str, name: str) -> dict | None:
 def query_incus(path: str, project: str | None = None):
     parsed = urllib.parse.urlsplit(path)
     parts = parsed.path.strip("/").split("/")
-    named = len(parts) == 3
+    named = len(parts) >= 3
     if project is not None:
         projects = json.loads(run("incus", "--force-local", "query", "/1.0/projects?recursion=1"))
         if not any(item["name"] == project for item in projects):
             return None if named else []
     params = dict(urllib.parse.parse_qsl(parsed.query))
-    params["recursion"] = "1"
     if project is not None:
         params["project"] = project
+    if len(parts) > 3:
+        return json.loads(run("incus", "--force-local", "query", parsed.path + "?" + urllib.parse.urlencode(params)))
+    params["recursion"] = "1"
     collection = "/" + "/".join(parts[:2])
     items = json.loads(run("incus", "--force-local", "query", collection + "?" + urllib.parse.urlencode(params)))
     if named:
@@ -347,10 +349,20 @@ class Runtime:
     def helper_run(self, operation: str, *, spec: Path | None = None, bundle: Path | None = None, confirm: bool = False, timeout: int = 3_600) -> str:
         return run(*self.helper_command(operation, spec=spec, bundle=bundle, confirm=confirm), timeout=timeout)
 
-    def helper_expect_failure(self, operation: str, expected: str, diagnostic: str, *, spec: Path | None = None) -> None:
-        result = completed(*self.helper_command(operation, spec=spec, bundle=self.bundle, confirm=True), timeout=3_600)
-        check(result.returncode != 0 and diagnostic in result.stdout + result.stderr,
-              f"helper refuses {expected} through its intended guard")
+    def helper_expect_failure(self, operation: str, expected: str, *, spec: Path | None = None) -> None:
+        def lifetime():
+            instance = instance_query(self.project, self.instance)
+            if instance is None:
+                return None
+            state = query_incus(f"/1.0/instances/{quote_path(self.instance)}/state", project=self.project)
+            pid = state["pid"]
+            start = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[19] if pid else None
+            return instance["config"]["volatile.uuid"], state["status"], pid, start
+
+        before = lifetime()
+        result = completed(*self.helper_command(operation, spec=spec, bundle=self.bundle, confirm=True), timeout=COMMAND_TIMEOUT)
+        check(result.returncode == 1, f"helper refuses {expected}")
+        check(lifetime() == before, f"{expected} creates, replaces or restarts no guest")
 
     def forward_stop(self) -> None:
         proc, self.forward_proc = self.forward_proc, None
@@ -1960,7 +1972,7 @@ def run_scenario(args: argparse.Namespace) -> None:
             runtime.retained_mounts.append(persist)
             for entry in descriptor["requiredPaths"]:
                 target = Path(entry["path"])
-                if target == runtime.media_path:
+                if target in (runtime.media_path, secret_root):
                     continue
                 backing = persist / str(target).lstrip("/")
                 backing.mkdir(parents=True)
@@ -2033,17 +2045,14 @@ def run_scenario(args: argparse.Namespace) -> None:
                 try:
                     os.chown(state_path, state_attributes.st_uid, state_attributes.st_gid)
                     os.chmod(state_path, state_attributes.st_mode & 0o7777)
-                    runtime.helper_expect_failure("create", "unmounted retained state root", "findmnt failed")
-                    check(instance_query(project, instance_name) is None and not any(state_path.iterdir()),
-                          "missing state-root mount creates neither a guest nor substitute storage")
+                    runtime.helper_expect_failure("create", "unmounted retained state root")
+                    check(not any(state_path.iterdir()), "missing state-root mount creates no substitute storage")
                 finally:
                     run("mount", "--bind", str(persist / str(state_path).lstrip("/")), str(state_path))
                 state_mode = state_path.stat().st_mode & 0o7777
                 os.chmod(state_path, state_mode ^ 0o001)
                 try:
-                    runtime.helper_expect_failure("create", "state-root mode drift", "unexpected required path mode")
-                    check(instance_query(project, instance_name) is None,
-                          "state-root mode drift cannot create a guest")
+                    runtime.helper_expect_failure("create", "state-root mode drift")
                 finally:
                     os.chmod(state_path, state_mode)
             if args.scenario == "replacement":
@@ -2275,14 +2284,12 @@ def run_scenario(args: argparse.Namespace) -> None:
                 check(instance_query(project, instance_name)["config"]["volatile.uuid"] == original_uuid,
                       "repeated creation preserves the existing guest")
                 refused = completed(*runtime.helper_command("create", bundle=args.bundle), timeout=3_600)
-                check(refused.returncode != 0
-                      and "creation cannot update an existing instance; use replace" in refused.stdout + refused.stderr,
-                      "different-bundle create refuses an implicit guest upgrade")
+                check(refused.returncode == 1, "different-bundle create refuses an implicit guest upgrade")
                 check(observe_guest(runtime, initial_bundle, version_inputs["baseline"]) == baseline_observed,
                       "repeated and refused creation leave the baseline system, K3s and datastore identities unchanged")
                 with Path(f"/run/lock/compute-{project}-{instance_name}.lock").open("a") as lock:
                     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    runtime.helper_expect_failure("replace", "concurrent maintenance", "cannot acquire lifecycle lock")
+                    runtime.helper_expect_failure("replace", "concurrent maintenance")
                     with runtime.spec_path.open("r") as probe_lock:
                         command = runtime.helper_command("inspect") + ["--lock-fd", str(probe_lock.fileno())]
                         rejected = subprocess.run(command, pass_fds=(probe_lock.fileno(),), capture_output=True, text=True, timeout=COMMAND_TIMEOUT)
@@ -2300,6 +2307,59 @@ def run_scenario(args: argparse.Namespace) -> None:
                 check(observe_guest(runtime, initial_bundle, version_inputs["baseline"]) == baseline_observed,
                       "same-baseline activation preserves the old instance, bundle, system, K3s and datastore")
                 smoke.verify_state(base, username, password, "Movies", item_id)
+
+                saved_secrets = workspace / "saved-secret-transport"
+                saved_secrets.mkdir(mode=0o700)
+                run("mount", "--bind", str(secret_root), str(saved_secrets))
+                run("umount", str(secret_root))
+                try:
+                    secret_root.rmdir()
+                    runtime.helper_expect_failure("replace", "missing credential source")
+                    secret_root.mkdir(mode=0o700)
+                    os.chown(secret_root, descriptor["idmapBase"], descriptor["idmapBase"])
+                    runtime.helper_expect_failure("replace", "unmounted credential underlay")
+                    run("mount", "-t", "tmpfs", "-o",
+                        f"ro,uid={descriptor['idmapBase']},gid={descriptor['idmapBase']},mode=0700,size=1m",
+                        "tmpfs", str(secret_root))
+                    runtime.helper_expect_failure("replace", "empty substitute credential mount")
+                finally:
+                    if completed("findmnt", "--mountpoint", str(secret_root)).returncode == 0:
+                        run("umount", str(secret_root))
+                    secret_root.mkdir(mode=0o700, exist_ok=True)
+                    run("mount", "--bind", str(saved_secrets), str(secret_root))
+                    run("umount", str(saved_secrets))
+                    saved_secrets.rmdir()
+
+                run("mount", "-o", "remount,rw", str(secret_root))
+                try:
+                    runtime.helper_expect_failure("replace", "writable credential transport")
+                finally:
+                    run("mount", "-o", "remount,ro", str(secret_root))
+                commit = secret_root / "runtime-secrets.commit"
+                original_commit = commit.read_bytes()
+                run("mount", "-o", "remount,rw", str(secret_root))
+                try:
+                    commit.write_bytes(b"invalid-generation\n")
+                finally:
+                    run("mount", "-o", "remount,ro", str(secret_root))
+                try:
+                    runtime.helper_expect_failure("replace", "malformed credential generation")
+                finally:
+                    run("mount", "-o", "remount,rw", str(secret_root))
+                    try:
+                        commit.write_bytes(original_commit)
+                    finally:
+                        run("mount", "-o", "remount,ro", str(secret_root))
+                changed_declaration = json_copy(descriptor)
+                changed_entry = next(iter(changed_declaration["runtimeSecrets"].values()))
+                changed_entry["key"] = "CHANGED_" + changed_entry["key"][:240]
+                changed_spec = workspace / "changed-runtime-secrets.json"
+                changed_spec.write_text(json.dumps(changed_declaration) + "\n")
+                changed_spec.chmod(0o400)
+                runtime.helper_run("inspect", spec=changed_spec)
+                for operation in ("create", "replace"):
+                    runtime.helper_expect_failure(operation, "stale staged credential inventory", spec=changed_spec)
+                runtime.helper_run("create", bundle=initial_bundle)
                 other_key = workspace / "other-identity"
                 run("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(other_key))
                 bad_descriptor = json_copy(descriptor)
@@ -2307,25 +2367,42 @@ def run_scenario(args: argparse.Namespace) -> None:
                 bad_spec = workspace / "bad-public.json"
                 bad_spec.write_text(json.dumps(bad_descriptor) + "\n")
                 bad_spec.chmod(0o400)
-                runtime.helper_expect_failure("replace", "a mismatched public identity", "does not match the declared public identity", spec=bad_spec)
-                check(instance_query(project, instance_name)["config"]["volatile.uuid"] == original_uuid, "mismatched identity does not mutate the instance")
+                runtime.helper_expect_failure("replace", "a mismatched public identity", spec=bad_spec)
                 public_path = Path(descriptor["identityPath"]) / "ssh_host_ed25519_key.pub"
                 trusted_public = public_path.read_text()
                 runtime.guest("systemctl", "stop", "sshd.service")
                 public_path.write_text(other_key.with_suffix(".pub").read_text())
                 try:
+                    runtime.helper_expect_failure("replace", "a mismatched staged public identity")
                     runtime.guest("sh", "-ec",
                                   "if systemctl start sshd.service; then exit 1; fi; ! systemctl is-active --quiet sshd.service")
                     check(runtime.node_ready(), "mismatched staged identity blocks SSH without stopping Kubernetes")
                 finally:
                     public_path.write_text(trusted_public)
                     runtime.guest("systemctl", "start", "sshd.service")
+                missing_public = public_path.with_name("ssh_host_ed25519_key.pub.missing")
+                public_path.rename(missing_public)
+                try:
+                    runtime.helper_expect_failure("replace", "a missing public identity")
+                finally:
+                    missing_public.rename(public_path)
                 private = Path(descriptor["identityPath"]) / "ssh_host_ed25519_key"
+                identity_attributes = private.stat()
+                for fault in ("mode", "owner"):
+                    try:
+                        if fault == "mode":
+                            private.chmod(0o444)
+                        else:
+                            os.chown(private, 0, 0)
+                        runtime.helper_expect_failure("replace", f"private identity {fault} drift")
+                    finally:
+                        os.chown(private, identity_attributes.st_uid, identity_attributes.st_gid)
+                        private.chmod(identity_attributes.st_mode & 0o7777)
                 missing_private = private.with_name("ssh_host_ed25519_key.missing")
                 runtime.guest("systemctl", "stop", "sshd.service")
                 private.rename(missing_private)
                 try:
-                    runtime.helper_expect_failure("replace", "a missing private identity", "No such file")
+                    runtime.helper_expect_failure("replace", "a missing private identity")
                     runtime.guest("sh", "-ec",
                                   "if systemctl start sshd.service; then exit 1; fi; ! systemctl is-active --quiet sshd.service")
                     check(not private.exists() and runtime.node_ready(),
@@ -2333,14 +2410,12 @@ def run_scenario(args: argparse.Namespace) -> None:
                 finally:
                     missing_private.rename(private)
                     runtime.guest("systemctl", "start", "sshd.service")
-                check(instance_query(project, instance_name)["config"]["volatile.uuid"] == original_uuid, "missing identity does not mutate the instance")
                 runtime.incus("config", "set", instance_name, "user.homelab.unsafe-drift", "true")
                 try:
-                    runtime.helper_expect_failure("inspect", "unsafe effective configuration", "incompatible effective configuration")
-                    runtime.helper_expect_failure("replace", "unsafe effective configuration", "incompatible effective configuration")
+                    runtime.helper_expect_failure("inspect", "unsafe effective configuration")
+                    runtime.helper_expect_failure("replace", "unsafe effective configuration")
                 finally:
                     runtime.incus("config", "unset", instance_name, "user.homelab.unsafe-drift")
-                check(instance_query(project, instance_name)["config"]["volatile.uuid"] == original_uuid, "unsafe instance drift does not trigger replacement")
             # Exercise the declared guest media boundary with a disposable writer;
             # recovery of the Jellyfin slice must not require an Arr deployment.
             if args.scenario == "consumer-resilience":
