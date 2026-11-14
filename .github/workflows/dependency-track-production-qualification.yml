@@ -7,7 +7,7 @@ permissions:
   actions: read
   contents: read
 env:
-  QUALIFIED_SOURCE: 82e313453836418452f28564bb3f613c8b508646
+  QUALIFIED_SOURCE: a8259cdd5894db1971c2189c84cfc2a7093e9da9
 jobs:
   stock-recovery:
     name: Stock DT private OIDC and recovery (frozen producer canary)
