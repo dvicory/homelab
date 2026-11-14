@@ -124,6 +124,14 @@ def basic_secret(client):
     return get(f"/v1/oauth2/{client}/_basic_secret")
 
 
+def public_client(client):
+    attrs = get(f"/v1/oauth2/{client}")["attrs"]
+    assert "oauth2_resource_server_public" in attrs["class"], "client is not public"
+    assert not attrs.get("oauth2_rs_basic_secret"), "public client has a basic secret"
+    assert basic_secret(client) is None, "public client exposes a basic secret"
+    return {"public": True, "basic_secret": None}
+
+
 def secret_matches(client, namespace, name, key):
     secret = json.loads(
         subprocess.run(
@@ -171,7 +179,8 @@ def oidc_groups(person, client, requests):
     return [authorise(user, client, **request) for request in requests]
 
 
-def authorise(user, client, redirect, scopes, allowed=True, published=None):
+def authorise(user, client, redirect, scopes, allowed=True, published=None,
+              public=False, pkce=True, denied_status=403):
     verifier = secrets.token_urlsafe(48)
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=")
     request = {
@@ -184,8 +193,11 @@ def authorise(user, client, redirect, scopes, allowed=True, published=None):
         "scope": " ".join(scopes),
         "nonce": secrets.token_urlsafe(24),
     }
+    if not pkce:
+        del request["code_challenge"]
+        del request["code_challenge_method"]
     reply, payload = call("POST", "/oauth2/authorise", request, user,
-                          expect=(200, 302) if allowed else (403,))
+                          expect=(200, 302) if allowed else (denied_status,))
     if not allowed:
         return {"denied": True}
     answer = json.loads(payload)
@@ -197,34 +209,39 @@ def authorise(user, client, redirect, scopes, allowed=True, published=None):
     query = urllib.parse.parse_qs(urllib.parse.urlparse(location).query)
     assert query["state"] == [request["state"]], "OAuth state mismatch"
     code = query["code"][0]
-    if published is None:
-        client_secret = basic_secret(client)
+    token_request = {
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": redirect,
+        "code_verifier": verifier,
+    }
+    token_headers = {}
+    if public:
+        # Real unauthenticated token exchange: neither Basic nor client_secret.
+        assert published is None, "public client must not use a published Secret"
+        token_request["client_id"] = client
     else:
-        secret = json.loads(subprocess.run(
-            KUBECTL + ["get", "secret", "--namespace", published["namespace"],
-                       published["name"], "--output", "json"],
-            check=True, capture_output=True,
-        ).stdout)
-        client_secret = base64.b64decode(secret["data"][published["key"]]).decode()
-    basic = base64.b64encode(f"{client}:{client_secret}".encode()).decode()
-    _, payload = call(
-        "POST",
-        "/oauth2/token",
-        {
-            "grant_type": "authorization_code",
-            "code": code,
-            "redirect_uri": redirect,
-            "code_verifier": verifier,
-        },
-        {"Authorization": "Basic " + basic},
-        form=True,
-    )
+        if published is None:
+            client_secret = basic_secret(client)
+        else:
+            secret = json.loads(subprocess.run(
+                KUBECTL + ["get", "secret", "--namespace", published["namespace"],
+                           published["name"], "--output", "json"],
+                check=True, capture_output=True,
+            ).stdout)
+            client_secret = base64.b64decode(secret["data"][published["key"]]).decode()
+        basic = base64.b64encode(f"{client}:{client_secret}".encode()).decode()
+        token_headers["Authorization"] = "Basic " + basic
+    _, payload = call("POST", "/oauth2/token", token_request, token_headers, form=True)
     body = json.loads(payload)["id_token"].split(".")[1]
     claims = json.loads(base64.urlsafe_b64decode(body + "=" * (-len(body) % 4)))
     assert claims["nonce"] == request["nonce"], "ID token nonce mismatch"
     assert claims["iss"] == BASE + "/oauth2/openid/" + client, "ID token issuer mismatch"
     assert claims["aud"] in (client, [client]), "ID token audience mismatch"
-    return {key: claims.get(key) for key in ("iss", "aud", "groups", "sub")}
+    result = {key: claims.get(key) for key in ("iss", "aud", "groups", "sub")}
+    if public:
+        result["token_authentication"] = "none"
+    return result
 
 
 CREDENTIALS = "/root/private-identity-credentials.json"
@@ -322,6 +339,8 @@ if command == "state":
     print(json.dumps(state(**arguments)))
 elif command == "secret-matches":
     print(json.dumps(secret_matches(**arguments)))
+elif command == "public-client":
+    print(json.dumps(public_client(**arguments)))
 elif command == "registered":
     print(json.dumps(registered()))
 elif command == "create-client":

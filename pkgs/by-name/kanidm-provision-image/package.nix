@@ -129,18 +129,26 @@ let
         fi
       done
 
-      # clients.json declares the sole eligible group for each client's scopes
-      # and the name-scoped Secrets that receive its generated credential.
+      # clients.json declares the sole eligible group for each client's scopes.
+      # Only confidential clients have name-scoped Secret publication targets.
       client_count=$(jq -er 'length' /desired/clients.json)
       for ((index = 0; index < client_count; index++)); do
         jq -e --argjson index "$index" '.[$index]' /desired/clients.json > client-spec.json
         client=$(jq -er '.name | select(test("^[a-z0-9_-]+$"))' client-spec.json)
         eligible_group=$(jq -er '.eligibleGroup | select(test("^[a-z][a-z0-9_-]*$"))' client-spec.json)
+        public=$(jq -er 'if has("public") then .public | select(type == "boolean") | tostring else "false" end' client-spec.json)
+        if [[ "$public" == true ]]; then
+          jq -e '.secrets == []' client-spec.json > /dev/null
+        fi
         printf '%s' '{"attrs":{"oauth2_strict_redirect_uri":["true"]}}' > request.json
         api PATCH "/v1/oauth2/$client" --data-binary @request.json
 
         jq -ce '.scopes | select(type == "array" and length > 0)' client-spec.json > request.json
         api POST "/v1/oauth2/$client/_scopemap/$eligible_group" --data-binary @request.json
+        # Native public clients enforce PKCE and have no basic secret.
+        if [[ "$public" == true ]]; then
+          continue
+        fi
 
         # Unpatched Kanidm generates this secret; the Job is its only Kubernetes
         # publisher. Never put a configured basicSecretFile into the state.

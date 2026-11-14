@@ -124,9 +124,7 @@ in
               image = {
                 registry = "docker.io";
                 repository = "grafana/grafana";
-                tag = "13.2.3-distroless";
-                # The chart prefixes the algorithm itself.
-                sha = "202e5d5b3f8499e70ccac7991eea6d7da72d2790eb2e0597e7987acf724e7180";
+                tag = "13.2.3-distroless@sha256:202e5d5b3f8499e70ccac7991eea6d7da72d2790eb2e0597e7987acf724e7180";
               };
               testFramework.enabled = false;
               rbac.create = false;
