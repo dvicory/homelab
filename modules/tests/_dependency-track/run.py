@@ -49,6 +49,7 @@ REQUIRED_CHECKS = [
     "real-producer-restricted-refresh-repeat-and-refusals-retain-last-good",
     "restore-phase-restart-retains-project-key-and-keyset",
     "offline-backup-destroy-restore-retains-auth-uuid-keyset-and-evidence",
+    "retained-secret-ciphertext-cold-restore-same-id-wrong-key-refusal-and-exact-recovery",
     "restore-refuses-missing-keyset-and-privileged-role-then-recovers",
     "restore-refuses-malformed-nonempty-keyset-without-rewrite-then-recovers",
     "restore-refuses-missing-database-version-without-reinitializing",
@@ -157,7 +158,14 @@ def safe_failure(error, phase):
         if isinstance(error, kind):
             reason = category
             break
-    return {"phase": phase, "operation": "fixture-observation", "reason": reason}
+    result = {"phase": phase, "operation": "fixture-observation", "reason": reason,
+              "exceptionType": type(error).__name__}
+    trace = error.__traceback__
+    while trace is not None:
+        if trace.tb_frame.f_code.co_filename == __file__:
+            result["origin"] = {"line": trace.tb_lineno, "function": trace.tb_frame.f_code.co_name}
+        trace = trace.tb_next
+    return result
 
 
 def image_refs(value):
@@ -262,6 +270,24 @@ def validate_report(report, settings, producer_branch="main"):
                 "canonicalEvidenceMatches", "missingKeysetUnchanged", "missingPostgresUnchanged",
                 "refreshRetainedAcrossRestart", "refreshRetainedAcrossBackupRestore"):
         require(observed.get(key) is True)
+    section = "retained-secret-ciphertext-recovery"
+    ciphertext = observed.get("retainedCiphertext", {})
+    require(type(ciphertext.get("createStatus")) is int and ciphertext["createStatus"] == 201)
+    for name in ("beforeBackup", "afterColdRestore", "afterOriginalKeyRestore"):
+        consumer = ciphertext.get(name, {})
+        require(type(consumer.get("status")) is int and consumer["status"] == 200)
+        require(consumer.get("connection") == "SKIPPED")
+        require(consumer.get("referenceExists") is True and consumer.get("recordUnchanged") is True)
+    wrong = ciphertext.get("validWrongKey", {})
+    for field in ("keyIdsUnchanged", "keyMaterialChanged", "wrongBytesUnchanged", "podReady",
+                  "authenticatedProjectMatches", "referenceExists", "recordUnchanged"):
+        require(wrong.get(field) is True)
+    for field in ("initGuardExit", "startupProbeExit", "readinessProbeExit"):
+        require(type(wrong.get(field)) is int and wrong[field] == 0)
+    require(type(wrong.get("apiVersionStatus")) is int and wrong["apiVersionStatus"] == 200)
+    require(type(wrong.get("status")) is int and 500 <= wrong["status"] < 600)
+    require(ciphertext.get("exactOriginalBytesRestored") is True)
+    require(ciphertext.get("authenticatedProjectRecovered") is True)
     section = "malformed-nonempty-keyset-restore"
     malformed = observed.get("malformedKeyset", {})
     require(malformed.get("nonemptyGuardExit") == 0 and type(malformed.get("nonemptyGuardExit")) is int)
@@ -582,6 +608,7 @@ def main():
     receipt["limitations"].append("Disposable source-built helper is not a verified production helper release or release-authority bypass")
     receipt["limitations"].append("Native trusted fixture HTTPS only; no production Gateway, enrollment, instantaneous IdP revocation or systemd lifecycle claim")
     receipt["limitations"].append("Wrong issuer uses another real client's discovery/keys; refusal does not isolate issuer versus signature validation order")
+    receipt["limitations"].append("One synthetic retained managed SECRET consumed by disabled stock email test; no SMTP, all-secret or production readiness claim")
     receipt.update(sourceDigest=source_inputs(settings)[0], http=[], observed={"forbiddenSqlStates": [], "refusedExits": {}},
                    cleanupWitness={"containerRemoved": False, "networkRemoved": False, "volumesRemoved": False, "credentialsRemoved": False},
                    host={"architecture": platform.machine().lower(), "ubuntu": release["VERSION_ID"].strip('"'),
@@ -1290,6 +1317,8 @@ def main():
                                         urllib.parse.parse_qs(request.post_data).items()}
 
             def observe_response(response):
+                if response.request.is_navigation_request() and response.frame.parent_frame is None:
+                    captured["documentStatus"] = response.status
                 if urllib.parse.urlsplit(response.url).path == "/api/v1/user/oidc/login":
                     captured["loginStatus"] = response.status
                     if response.status == 200:
@@ -1300,21 +1329,24 @@ def main():
                 page.goto(ui + "/login")
                 page.evaluate("() => { localStorage.clear(); sessionStorage.clear(); }")
                 page.reload()
-                page.get_by_role("button", name="Kanidm", exact=True).click()
+                page.get_by_role("button", name="Kanidm").click()
                 deadline = time.monotonic() + 60
                 while "authorization" not in captured:
                     if time.monotonic() >= deadline:
                         raise QualificationFailure("native-browser-authorization-absent")
                     page.wait_for_timeout(50)
-                page.wait_for_function("() => (location.hostname === 'idm.dt-fixture.invalid' && (document.querySelector('#username') !== null || document.querySelector(\"form[action='/ui/oauth2/consent']\") !== null || location.pathname === '/ui/oauth2/resume')) || document.querySelector('.app-header') !== null || document.querySelector('.modal.show') !== null")
+                page.wait_for_function("() => (location.hostname === 'idm.dt-fixture.invalid' && (document.querySelector('#username') !== null || document.querySelector(\"form[action='/ui/oauth2/consent']\") !== null || location.pathname === '/ui/oauth2/resume' || Array.from(document.querySelectorAll('h2')).some(node => node.textContent === 'Access Denied'))) || document.querySelector('.app-header') !== null || document.querySelector('.modal.show') !== null")
                 if (urllib.parse.urlsplit(page.url).hostname == "idm.dt-fixture.invalid"
                         and page.locator("#username").is_visible()):
                     page.locator("#username").fill(person)
                     page.locator("form[action='/ui/login/begin'] button[type=submit]").click()
-                page.wait_for_function("() => location.hostname === 'dt.dt-fixture.invalid' || document.querySelector(\"form[action='/ui/oauth2/consent']\") !== null || location.pathname === '/ui/oauth2/resume'")
                 if denied:
-                    page.wait_for_url("**/ui/oauth2/resume")
+                    page.wait_for_function("""() => location.hostname === 'idm.dt-fixture.invalid'
+                      && Array.from(document.querySelectorAll('h2')).some(node => node.textContent === 'Access Denied')""")
+                    if captured.get("callback") or captured.get("session") or captured.get("loginStatus") == 200:
+                        raise QualificationFailure("native-ineligible-user-admitted")
                     return
+                page.wait_for_function("() => location.hostname === 'dt.dt-fixture.invalid' || document.querySelector(\"form[action='/ui/oauth2/consent']\") !== null || location.pathname === '/ui/oauth2/resume'")
                 consent = page.locator("form[action='/ui/oauth2/consent'] button[type=submit]")
                 if consent.count():
                     consent.click()
@@ -1406,6 +1438,39 @@ def main():
                             proof["removedGroupReloginStatus"] = 403
                             idm_api("PUT", "/v1/group/" + settings["oidcGroup"] + "/_attr/member",
                                     ["fixture-administrator"], bearer=idm_admin)
+                        except Exception:
+                            # Only fixed origin/path labels and state booleans; never
+                            # publish URLs, query values, page text or browser errors.
+                            diagnostic = {"documentStatus": captured.get("documentStatus"), "completed": sorted(proof)}
+                            observed["nativeOidcFailure"] = diagnostic
+                            try:
+                                diagnostic["page"] = page.evaluate("""() => {
+                                  const origins = ['https://idm.dt-fixture.invalid',
+                                    'https://dt.dt-fixture.invalid', 'https://api.dt-fixture.invalid'];
+                                  const paths = ['/ui/login', '/ui/login/begin', '/ui/login/passkey',
+                                    '/ui/oauth2', '/ui/oauth2/resume', '/ui/oauth2/consent',
+                                    '/login', '/static/oidc-callback.html', '/', '/dashboard'];
+                                  const origin = origins.includes(location.origin) ? location.origin : 'other';
+                                  if (origin === 'other') return {origin};
+                                  return {
+                                    origin, path: paths.includes(location.pathname) ? location.pathname : 'other',
+                                    ready: ['loading', 'interactive', 'complete'].includes(document.readyState)
+                                      ? document.readyState : 'other',
+                                    username: document.querySelector('#username') !== null,
+                                    login: document.querySelector("form[action='/ui/login/begin']") !== null,
+                                    passkey: document.querySelector("form[action='/ui/login/passkey']") !== null,
+                                    consent: document.querySelector("form[action='/ui/oauth2/consent']") !== null,
+                                    appHeader: document.querySelector('.app-header') !== null,
+                                    modal: document.querySelector('.modal.show') !== null,
+                                    identityError: origin === origins[0] && Array.from(document.querySelectorAll('h2'))
+                                      .some(node => node.textContent === 'Error'),
+                                    identityDenied: origin === origins[0] && Array.from(document.querySelectorAll('h2'))
+                                      .some(node => node.textContent === 'Access Denied')
+                                  };
+                                }""")
+                            except Exception as error:
+                                diagnostic["collectionError"] = safe_failure(error, "native-browser-diagnostic")
+                            raise
                         finally:
                             context.close()
                 finally:
@@ -1584,7 +1649,7 @@ def main():
             apply({"apiVersion": "v1", "kind": "Secret",
                    "metadata": {"namespace": "dependency-track", "name": "dependency-track-sync"},
                    "stringData": {"api-key": api_key, "github-token": github_value}})
-            if not owned_host_paths:
+            if credential_directory not in owned_host_paths:
                 for path in (credential_directory, staged_directory):
                     path.mkdir(mode=0o700)
                     owned_host_paths.append(path)
@@ -2282,6 +2347,58 @@ def main():
             observed["refreshRetainedAcrossRestart"] = restarted_snapshot["stableIdentity"] == first_snapshot["stableIdentity"]
             if not observed["refreshRetainedAcrossRestart"]:
                 raise QualificationFailure("real-refresh-identities-changed-on-restart")
+            # Stock 5.2.1 e6c887c: ExtensionsResource resolves x-secret-ref before
+            # EmailNotificationPublisherFactory.test returns for enabled=false.
+            # API-key authentication alone only exercises SECRET_HASH, not Crypto.
+            witness_name = "restore_ciphertext_witness"
+            ciphertext = {}
+            observed["retainedCiphertext"] = ciphertext
+
+            def witness_record():
+                # Private comparison only: never publish ciphertext, DEK, or hashes.
+                record = pg("""SELECT json_build_array("NAME", encode("VALUE", 'hex'),
+                    encode("DEK", 'hex'), "CREATED_AT", "UPDATED_AT")
+                    FROM "SECRET" WHERE "NAME" = 'restore_ciphertext_witness'
+                    AND octet_length("VALUE") > 0 AND octet_length("DEK") > 0;""").stdout.strip()
+                if not record:
+                    raise QualificationFailure("retained-secret-record-missing")
+                return hashlib.sha256(record).digest()
+
+
+            def consume_witness(admin_session, *, wrong_key=False):
+                reference_exists = json.loads(api("/v2/secrets/" + witness_name, bearer=admin_session,
+                    expected=(200,), record=False)).get("name") == witness_name
+                record_unchanged = witness_record() == original_witness
+                if not reference_exists or not record_unchanged:
+                    raise QualificationFailure("retained-secret-reference-or-ciphertext-changed")
+                result = api("/v2/extension-points/notification-publisher/extensions/email/test",
+                    method="POST", bearer=admin_session,
+                    body={"config": {"enabled": False, "password": witness_name}},
+                    expected=tuple(range(500, 600)) if wrong_key else (200,), record=False)
+                proof = {"status": observed["lastHttpStatus"], "referenceExists": reference_exists,
+                         "recordUnchanged": record_unchanged}
+                if not wrong_key:
+                    checks = json.loads(result).get("checks")
+                    if (not isinstance(checks, list) or len(checks) != 1
+                            or checks[0].get("name") != "connection"
+                            or checks[0].get("status") != "SKIPPED"):
+                        raise QualificationFailure("disabled-retained-secret-consumer-result-mismatch")
+                    proof["connection"] = "SKIPPED"
+                if witness_record() != original_witness:
+                    raise QualificationFailure("retained-secret-consumer-mutated-ciphertext")
+                return proof
+
+            bearer = api("/v1/user/login", method="POST", form=True,
+                body={"username": "admin", "password": new_password}, record=False).decode()
+            try:
+                api("/v2/secrets", method="POST", bearer=bearer,
+                    body={"name": witness_name, "value": "synthetic-noncredential-restore-witness"},
+                    expected=(201,), record=False)
+                ciphertext["createStatus"] = observed["lastHttpStatus"]
+                original_witness = witness_record()
+                ciphertext["beforeBackup"] = consume_witness(bearer)
+            finally:
+                api("/v1/user/logout", method="POST", bearer=bearer, record=False)
             phase = "offline-backup-restore"
             stop_forward()
             deployment("api", 0)
@@ -2334,8 +2451,12 @@ def main():
             if not observed["canonicalEvidenceMatches"]:
                 raise QualificationFailure("canonical-evidence-not-restored")
             api("/v1/project", expected=(401, 403))
-            api("/v1/user/login", method="POST", form=True,
-                body={"username": "admin", "password": new_password})
+            bearer = api("/v1/user/login", method="POST", form=True,
+                body={"username": "admin", "password": new_password}, record=False).decode()
+            try:
+                ciphertext["afterColdRestore"] = consume_witness(bearer)
+            finally:
+                api("/v1/user/logout", method="POST", bearer=bearer, record=False)
             check("offline-backup-destroy-restore-retains-auth-uuid-keyset-and-evidence")
             restored_refresh = call_refresh()
             if restored_refresh.returncode:
@@ -2347,6 +2468,104 @@ def main():
             observed["refreshRetainedAcrossBackupRestore"] = restored_snapshot["stableIdentity"] == first_snapshot["stableIdentity"]
             if not observed["refreshRetainedAcrossBackupRestore"]:
                 raise QualificationFailure("real-refresh-identities-changed-on-backup-restore")
+            phase = "same-id-wrong-key-ciphertext-recovery"
+            stop_forward()
+            deployment("api", 0)  # No API writers may retain the original in-memory KEK.
+            original_keyset_bytes = native("cat", key_path).stdout
+            if hashlib.sha256(original_keyset_bytes).digest() != original_keyset:
+                raise QualificationFailure("wrong-key-original-keyset-changed")
+            wrong_keyset = json.loads(original_keyset_bytes)
+            entries = wrong_keyset.get("key", [])
+            if len(entries) != 1:
+                raise QualificationFailure("wrong-key-fixture-requires-stock-single-key")
+            entry = entries[0]
+            key_data = entry.get("keyData", {})
+            if (entry.get("keyId") != wrong_keyset.get("primaryKeyId")
+                    or entry.get("status") != "ENABLED" or entry.get("outputPrefixType") != "TINK"
+                    or key_data.get("typeUrl") != "type.googleapis.com/google.crypto.tink.AesGcmKey"
+                    or key_data.get("keyMaterialType") != "SYMMETRIC"):
+                raise QualificationFailure("wrong-key-fixture-requires-stock-aes256-gcm")
+            encoded_key = base64.b64decode(key_data["value"], validate=True)
+            # Crypto.loadKek generates AES256_GCM. Tink's proto3 AesGcmKey
+            # omits version=0 and encodes key_value (field 3) as 1a 20 + 32 bytes:
+            # https://github.com/tink-crypto/tink-java/blob/main/proto/aes_gcm.proto
+            # This is a deliberately narrow fixture edit, NOT a Tink validator.
+            # Actual stock startup/getPrimitive plus real servlet/probes below
+            # must accept it; unknown shapes fail, never fall back or skip.
+            if len(encoded_key) != 34 or encoded_key[:2] != b"\x1a\x20":
+                raise QualificationFailure("wrong-key-fixture-unexpected-stock-key-encoding")
+            key_data["value"] = base64.b64encode(encoded_key[:-1] + bytes([encoded_key[-1] ^ 1])).decode()
+            wrong_keyset_bytes = json.dumps(wrong_keyset).encode()
+            wrong = {
+                "keyIdsUnchanged": (wrong_keyset["primaryKeyId"] == json.loads(original_keyset_bytes)["primaryKeyId"]
+                    and [item["keyId"] for item in entries]
+                    == [item["keyId"] for item in json.loads(original_keyset_bytes)["key"]]),
+                "keyMaterialChanged": key_data["value"] != json.loads(original_keyset_bytes)["key"][0]["keyData"]["value"],
+            }
+            ciphertext["validWrongKey"] = wrong
+            if not wrong["keyIdsUnchanged"] or not wrong["keyMaterialChanged"]:
+                raise QualificationFailure("wrong-key-fixture-did-not-preserve-ids-and-change-material")
+            native("mv", key_path, key_path + ".saved")
+            try:
+                native("cp", "-p", key_path + ".saved", key_path)
+                d("exec", "-i", name, "sh", "-ec", 'cat > "$1"', "fixture-keyset", key_path,
+                  data=wrong_keyset_bytes, operation="write-fixture-same-id-wrong-keyset")
+                deployment("api", 1)  # Stock parses keyset and constructs its Tink AEAD primitive.
+                start_forward()
+                pod = api_pod()
+                wrong["podReady"] = any(condition.get("type") == "Ready" and condition.get("status") == "True"
+                                        for condition in pod["status"].get("conditions", []))
+                guard = next(item for item in pod["status"]["initContainerStatuses"]
+                             if item["name"] == "require-restored-api-keyset")
+                wrong["initGuardExit"] = guard["state"]["terminated"]["exitCode"]
+                container = next(item for item in pod["spec"]["containers"] if item["name"] == "api")
+                for probe in ("startupProbe", "readinessProbe"):
+                    wrong[probe + "Exit"] = k("-n", "dependency-track", "exec", pod["metadata"]["name"],
+                        "-c", "api", "--", *container[probe]["exec"]["command"], check=False).returncode
+                api("/version", expected=(200,), record=False)
+                wrong["apiVersionStatus"] = observed["lastHttpStatus"]
+                wrong["authenticatedProjectMatches"] = (
+                    json.loads(api("/v1/project/" + project_uuid, key=key, expected=(200,), record=False))["uuid"]
+                    == project_uuid
+                )
+                if (not wrong["podReady"] or wrong["initGuardExit"] != 0
+                        or wrong["startupProbeExit"] != 0 or wrong["readinessProbeExit"] != 0
+                        or not wrong["authenticatedProjectMatches"]):
+                    raise QualificationFailure("valid-wrong-key-stock-initialization-or-project-failed")
+                bearer = api("/v1/user/login", method="POST", form=True,
+                    body={"username": "admin", "password": new_password}, record=False).decode()
+                try:
+                    wrong.update(consume_witness(bearer, wrong_key=True))
+                finally:
+                    api("/v1/user/logout", method="POST", bearer=bearer, record=False)
+                wrong["wrongBytesUnchanged"] = native("cat", key_path).stdout == wrong_keyset_bytes
+                if not wrong["wrongBytesUnchanged"]:
+                    raise QualificationFailure("valid-wrong-key-bytes-rewritten")
+            finally:
+                stop_forward()
+                deployment("api", 0)
+                native("mv", key_path + ".saved", key_path)
+                ciphertext["exactOriginalBytesRestored"] = native("cat", key_path).stdout == original_keyset_bytes
+                if not ciphertext["exactOriginalBytesRestored"]:
+                    raise QualificationFailure("wrong-key-exact-original-not-restored")
+                deployment("api", 1)
+                start_forward()
+                ciphertext["authenticatedProjectRecovered"] = (
+                    json.loads(api("/v1/project/" + project_uuid, key=key, expected=(200,), record=False))["uuid"]
+                    == project_uuid
+                )
+                if not ciphertext["authenticatedProjectRecovered"]:
+                    raise QualificationFailure("wrong-key-original-project-not-recovered")
+                bearer = api("/v1/user/login", method="POST", form=True,
+                    body={"username": "admin", "password": new_password}, record=False).decode()
+                try:
+                    ciphertext["afterOriginalKeyRestore"] = consume_witness(bearer)
+                finally:
+                    api("/v1/user/logout", method="POST", bearer=bearer, record=False)
+                ciphertext["exactOriginalBytesRestored"] = native("cat", key_path).stdout == original_keyset_bytes
+                if not ciphertext["exactOriginalBytesRestored"]:
+                    raise QualificationFailure("recovered-original-keyset-bytes-rewritten")
+            check("retained-secret-ciphertext-cold-restore-same-id-wrong-key-refusal-and-exact-recovery")
             phase = "restore-refusal"
             stop_forward()
             deployment("api", 0)

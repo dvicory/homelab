@@ -1,5 +1,9 @@
-# This VM qualifies the source units, not another live-inventory import. Its
-# credentials are generated inside the disposable VM; no token enters a derivation.
+# The default check is secretless. Standalone checks.x86_64-linux.
+# dependency-track-systemd.driver also accepts HOMELAB_DT_SYSTEMD_TOKEN_FILE:
+# an absolute private regular token-file PATH, never a token-valued input.
+# Run its bin/nixos-test-driver --output_directory PRIVATE_EXISTING_DIRECTORY
+# with private TMPDIR and no --keep-machine-state. The caller owns the input.
+# Live imports use a disposable security-branch canary, not main/deployed authority.
 {
   config,
   inputs,
@@ -32,8 +36,16 @@
               automaticInventory = true;
             };
             den.aspects.compute-1.includes = [ den.aspects.workloads.dependency-track-sync.compute-guest ];
-            den.hosts.x86_64-linux.compute-1.settings.workloads.dependency-track-sync.apiUrl =
-              "http://127.0.0.1:1022";
+            den.hosts.x86_64-linux.compute-1.settings.workloads.dependency-track-sync = {
+              apiUrl = "http://127.0.0.1:1022";
+              branch = "security/software-vulnerability-management";
+              # Use a 30-second fixture schedule; leave production defaults unchanged.
+              onCalendar = "*-*-* *:*:00/30";
+              targetIds = [
+                "3ca171bb4d06a0d2584c981f"
+                "cc64e08c1afb4776b4d587d4"
+              ];
+            };
           })
         ];
       };
@@ -228,18 +240,70 @@
         import json
         import os
         from pathlib import Path
+        import stat
         import subprocess
+        import sys
         import time
+
+        sys.path.insert(0, "${syncPackage}/lib/dependency-track-sync")
+        import dependency_track_sync as sync
 
         assert os.getuid() == os.getgid() == 705
         assert "NoNewPrivs:\t1" in Path("/proc/self/status").read_text()
         state = Path("/srv/state/dependency-track-evidence")
         credentials = Path(os.environ["CREDENTIALS_DIRECTORY"])
+        # systemd 261 write_credential() grants UID705 an ACL, not group access:
+        # https://github.com/systemd/systemd/blob/v261.2/src/core/exec-credential.c
+        # The POSIX ACL mask occupies st_mode's group bits (typically 0440).
+        # Prove the actual ACL/consumer/mount boundary, not incidental mode alone.
+        def metadata(path):
+            info = path.lstat()
+            acl = subprocess.run(["${pkgs.acl}/bin/getfacl", "-cpnE", str(path)],
+                                 check=True, capture_output=True, text=True, timeout=10).stdout
+            return {"mode": oct(stat.S_IMODE(info.st_mode)), "uid": info.st_uid, "gid": info.st_gid,
+                    "regular": stat.S_ISREG(info.st_mode), "directory": stat.S_ISDIR(info.st_mode),
+                    "acl": sorted(line for line in acl.splitlines() if line)}
+
+        mounts = []
+        for line in Path("/proc/self/mountinfo").read_text().splitlines():
+            fields = line.split()
+            if fields[4] == str(credentials):
+                split = fields.index("-")
+                mounts.append({"target": fields[4], "options": fields[5].split(","),
+                               "type": fields[split + 1], "superOptions": fields[split + 3].split(",")})
+        credential_metadata = {"directory": metadata(credentials), "mounts": mounts,
+                               "files": {key: metadata(credentials / key) for key in ("api-key", "github-token")}}
+        # Safe diagnostics precede every credential assertion, including on failure.
+        print(json.dumps({"systemdCredentialBoundary": credential_metadata}), flush=True)
+        assert len(mounts) == 1 and mounts[0]["type"] in ("tmpfs", "ramfs")
+        assert "ro" in mounts[0]["options"]
         hashes = {}
-        for key in ("api-key", "github-token"):
+        for key, info in credential_metadata["files"].items():
             path = credentials / key
-            assert path.stat().st_mode & 0o777 == 0o400
-            hashes[key] = hashlib.sha256(path.read_bytes()).hexdigest()
+            assert info["regular"]
+            hashes[key] = hashlib.sha256(sync.credential(path).encode()).hexdigest()
+            assert not os.access(path, os.W_OK)
+        rejected = {}
+        for name, gid, acl in (
+                ("owning-group", 705, ["group::r--", "other::---", "user::r--"]),
+                ("extra-reader", 0, ["group::---", "mask::r--", "other::---",
+                                     "user:705:r--", "user:706:r--", "user::r--"])):
+            path = Path("/run/dt-unit-credential-boundary") / name
+            info = metadata(path)
+            print(json.dumps({"readableNonCredentialBoundary": {name: info}}), flush=True)
+            assert info["regular"] and info["uid"] == 0 and info["gid"] == gid
+            assert info["mode"] == "0o440" and info["acl"] == sorted(acl)
+            # Actual UID705 kernel open succeeds; the shared getter must still
+            # reject group access and an ACL that admits another named reader.
+            path.read_bytes()
+            try:
+                sync.credential(path)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("credential getter admitted an additional reader")
+            rejected[name] = info
+        credential_metadata["rejectedReadableFiles"] = rejected
         for path in ("/etc/rancher/k3s/k3s.yaml",
                      "/run/dependency-track-sync-credentials/api-key",
                      "/srv/secrets/runtime-secrets.yaml",
@@ -268,7 +332,8 @@
                                "eval", "--impure", "--json", "--expr",
                                'builtins.storePath "${syncPackage}"'])) == "${syncPackage}"
         result = {"uid": os.getuid(), "gid": os.getgid(), "hashes": hashes,
-                  "nixDaemonTrusted": ping["trusted"], "pid": os.getpid()}
+                  "nixDaemonTrusted": ping["trusted"], "pid": os.getpid(),
+                  "credentialBoundary": credential_metadata}
         (state / "unit-probe.json").write_text(json.dumps(result))
         # A runtime-only hold permits stop/cleanup observation; it grants no root action.
         deadline = time.monotonic() + 90
@@ -290,6 +355,9 @@
         import urllib.parse
         import urllib.request
         import uuid
+
+        sys.path.insert(0, "${syncPackage}/lib/dependency-track-sync")
+        import dependency_track_sync as sync
 
         os.umask(0o077)
         root = Path("/run/dt-unit-fixture")
@@ -330,6 +398,9 @@
                 for key in ("api-key", "github-token"):
                     values[key] = secrets.token_hex(32)
                 secret_file.write_text(json.dumps(values))
+            if mode == "live":
+                values["github-token"] = sync.credential(root / "github-token")
+                secret_file.write_text(json.dumps(values))
             resources = []
             def secret(name, data):
                 resources.append({"apiVersion": "v1", "kind": "Secret", "type": "Opaque",
@@ -364,7 +435,20 @@
                 temporary.chmod(0o400)
                 temporary.replace(directory / ("runtime-secrets." + name))
         command = sys.argv[1]
-        if command == "stage":
+        if command == "credential-boundary":
+            boundary = Path("/run/dt-unit-credential-boundary")
+            boundary.mkdir(mode=0o711)
+            boundary.chmod(0o711)
+            for name, gid in (("owning-group", 705), ("extra-reader", 0)):
+                path = boundary / name
+                path.write_text("nonsecret credential boundary fixture")
+                os.chown(path, 0, gid)
+                path.chmod(0o440)
+                subprocess.run(["${pkgs.acl}/bin/setfacl", "-b", str(path)], check=True)
+            subprocess.run(["${pkgs.acl}/bin/setfacl", "--set",
+                            "u::r--,u:705:r--,u:706:r--,g::---,m::r--,o::---",
+                            str(boundary / "extra-reader")], check=True)
+        elif command == "stage":
             stage(sys.argv[2])
         elif command == "gate":
             admitted = sys.argv[2] == "true"
@@ -401,6 +485,273 @@
                 req = urllib.request.Request(url + "logout", method="POST", headers={"Authorization": "Bearer " + token})
                 with urllib.request.urlopen(req, timeout=5) as response:
                     assert response.status == 204
+        elif command == "enroll":
+            stock = sync.Client("http://127.0.0.1:1022", anonymous=True)
+            bearer = stock.request("POST", "user/login",
+                                  {"username": "admin", "password": values["admin"]}, form=True, text=True)
+            bearer_file = root / "admin-bearer"
+            bearer_file.write_text(bearer)
+            bearer_file.chmod(0o400)
+            history_file = root / "credential-history.json"
+            history_file.write_text(json.dumps(json.loads(history_file.read_text()) + [bearer]))
+            admin = sync.Client(stock.url, bearer_file, bearer=True)
+            try:
+                team = admin.request("PUT", "team", {"name": "systemd-canary-ingestor"})
+                permissions = ["BOM_UPLOAD", "PORTFOLIO_MANAGEMENT", "VIEW_PORTFOLIO"]
+                for permission in permissions:
+                    admin.request("POST", "permission/" + permission + "/team/" + team["uuid"])
+                assigned = admin.request("GET", "team/" + team["uuid"])
+                assert sorted(item["name"] for item in assigned["permissions"]) == permissions
+                values["api-key"] = admin.request("PUT", "team/" + team["uuid"] + "/key")["key"]
+                history_file.write_text(json.dumps(json.loads(history_file.read_text()) + [values["api-key"]]))
+                secret_file.write_text(json.dumps(values))
+                key_file = root / "enrolled-key"
+                key_file.write_text(values["api-key"])
+                key_file.chmod(0o400)
+                restricted = sync.Client(stock.url, key_file)
+                try:
+                    restricted.request("GET", "team")
+                except sync.ApiError as error:
+                    assert error.status in (401, 403)
+                else:
+                    raise AssertionError("ingestor has administrative access")
+                (root / "enrollment.json").write_text(json.dumps({"permissions": permissions,
+                                                                "restrictedAdminRefused": True}))
+            finally:
+                try:
+                    admin.request("POST", "user/logout", expected_status=204)
+                finally:
+                    bearer_file.unlink()
+        elif command == "live-readback":
+            state_directory = Path("/srv/state/dependency-track-evidence")
+            database = sync.load(state_directory / "state.json")
+            policy = {"repository": "dvicory/homelab", "branch": "security/software-vulnerability-management"}
+            wanted = {"3ca171bb4d06a0d2584c981f": "nix", "cc64e08c1afb4776b4d587d4": "oci"}
+            assert database["sourcePolicy"] == policy
+            assert database["selectionPolicy"] == {"states": [], "targetIds": sorted(wanted)}
+            refresh = database["refresh"]
+            assert refresh["status"] == refresh["operation"] == "complete"
+            selected = {key: item for key, item in database["expected"].items() if item["selected"]}
+            assert {item["source"]["id"] for item in selected.values()} == set(wanted)
+            assert set(database["targets"]) == set(refresh["targets"]) == set(selected)
+            stock = sync.Client("http://127.0.0.1:1022", root / "enrolled-key")
+
+            def inside(value):
+                path = Path(value)
+                assert not path.is_symlink()
+                assert path.resolve(strict=True).is_relative_to(state_directory.resolve())
+                return path
+
+            def properties(project):
+                return {item["propertyName"]: item["propertyValue"]
+                        for item in stock.request("GET", "project/" + project + "/property")
+                        if item["groupName"] == sync.GROUP}
+
+            def pages(path):
+                seen = {}
+                for page in range(1, 501):
+                    items = stock.request("GET", path + "?" + urllib.parse.urlencode(
+                        {"pageSize": 100, "pageNumber": page}))
+                    assert isinstance(items, list) and len(items) <= 100
+                    for item in items:
+                        identifier = str(uuid.UUID(item["uuid"]))
+                        assert identifier not in seen
+                        seen[identifier] = item
+                    if len(items) < 100:
+                        return seen
+                raise AssertionError("API pagination bound exceeded")
+
+            summaries = {}
+            project_ids = set()
+            source_identity = None
+            for target, expected in selected.items():
+                record = database["targets"][target]
+                planned = expected["source"]
+                declaration = record["source"]
+                for key in ("id", "kind", "system", "target", "source", "pointer", "state",
+                            "location", "update", "image", "resolvedImage", "ociPlatform"):
+                    assert declaration.get(key) == planned.get(key)
+                assert declaration["kind"] == wanted[declaration["id"]]
+                assert target == sync.target_key(declaration)
+                assert expected["coverage"] == "complete-inventory"
+                assert refresh["targets"][target]["status"] == "complete"
+                assert record["lastAttempt"]["status"] == "complete"
+                assert not record.get("pending") and not record.get("retiring")
+                assert record["statusPublishFailed"] is False
+                assert record["selection"]["selected"] is True
+                current = record["current"]
+                required = {"native", "language"} if declaration["kind"] == "nix" else {"image"}
+                assert required <= set(current["projects"])
+                assert set(current["complete"]) == set(current["projects"]) == set(current["hashes"])
+                acquisition = record["acquisition"]
+                evidence = inside(acquisition["evidence"])
+                receipt = sync.load(evidence / "source.json")
+                run = receipt["run"]
+                producer = sync.security_artifacts.trusted_run(run, policy["repository"], policy["branch"])
+                assert receipt["producer"] == producer and run["status"] == "completed"
+                assert acquisition["run"] == refresh["run"] == run["id"]
+                assert acquisition["sha"] == run["head_sha"]
+                assert {key: acquisition[key] for key in policy} == policy
+                identity = {key: run[key] for key in
+                            ("id", "head_sha", "head_branch", "path", "event", "conclusion", "updated_at")}
+                assert source_identity is None or source_identity == identity
+                source_identity = identity
+                artifact = acquisition["artifact"]
+                assert sync.load(evidence / (target + "-artifact.json")) == artifact
+                assert artifact["workflow_run"]["id"] == run["id"]
+                assert artifact["workflow_run"]["head_sha"] == run["head_sha"]
+                assert artifact["workflow_run"]["head_branch"] == policy["branch"]
+                for item in (receipt["planArtifact"], artifact):
+                    archive_zip = inside(state_directory / "artifacts" / (str(item["id"]) + ".zip"))
+                    assert item["digest"] == "sha256:" + sync.security_artifacts.digest(archive_zip)
+                    assert item["size_in_bytes"] == archive_zip.stat().st_size
+                for archive in record["receipts"]:
+                    archive = inside(archive)
+                    manifest = sync.load(archive / "complete.json")
+                    sync.security_artifacts.verify(archive, manifest["inventoryKey"], producer)
+                    assert sync.security_artifacts.digest(archive / "complete.json") == archive.name
+                archive = inside(current["archive"])
+                manifest = sync.load(archive / "complete.json")
+                description = sync.describe(declaration, manifest, archive)
+                assert all(current[key] == description[key] for key in
+                           ("revision", "revisionId", "hashes", "contentHashes"))
+                assert sync.load(archive / "provenance.json") == declaration
+                collection = record["collection"]
+                stock.project(sync.project_name(declaration), "collection", collection=True, cached=collection,
+                              identity=sync.project_identity(declaration))
+                assert stock.request("GET", "project/" + collection)["active"] is True
+                project_ids.add(collection)
+                collection_properties = properties(collection)
+                assert collection_properties["collection_status"] == "complete"
+                assert collection_properties["selection_status"] == "selected"
+                published_run = json.loads(collection_properties["source_run"])
+                assert published_run["run"] == run["id"] and published_run["sha"] == run["head_sha"]
+                component_counts = {}
+                native_components = {}
+                identity_fields = ("group", "name", "version", "purl")
+                for stream, project in current["projects"].items():
+                    stock.project(sync.project_name(declaration, current["revisionId"], stream), "inventory",
+                                  collection, cached=project,
+                                  identity=sync.project_identity(declaration, current["revisionId"], stream))
+                    leaf = stock.request("GET", "project/" + project)
+                    assert leaf["active"] is True and leaf["isLatest"] is True
+                    project_ids.add(project)
+                    metadata = properties(project)
+                    for key, value in {"deployment": "unobserved", "source_scope": declaration["state"],
+                                       "inventory_key": manifest["inventoryKey"],
+                                       "import_sha256": current["hashes"][stream],
+                                       "archive_seal_sha256": archive.name}.items():
+                        assert metadata[key] == value
+                    components = pages("component/project/" + project)
+                    if stream in ("native", "image"):
+                        document = sync.load(archive / description["streams"][stream])
+                        witness = next(item for item in document["components"] if item.get("purl"))
+                        # Stock bomRef is transient, not a component API field.
+                        # ModelConverter trims empty group/version to null; keep
+                        # the full PURL (including nix_drv / image qualifiers).
+                        expected_identity = {key: (witness.get(key) or "").strip() or None
+                                             for key in identity_fields}
+                        matches = [item for item in components.values()
+                                   if {key: item.get(key) for key in identity_fields} == expected_identity]
+                        assert len(matches) == 1, (stream, "component identity readback mismatch", len(matches))
+                        if stream == "native":
+                            expected_nix = {(item["name"].split(":", 1)[1], item["value"])
+                                            for item in witness["properties"]
+                                            if item["name"].startswith("nix:")}
+                            assert any(name == "output_path" for name, value in expected_nix)
+                            assert (("drv_path", witness["bom-ref"]) in expected_nix
+                                    if witness["bom-ref"].endswith(".drv")
+                                    else ("output_path", witness["bom-ref"]) in expected_nix)
+                            actual_nix = {(item["propertyName"], item["propertyValue"]) for item in
+                                          stock.request("GET", "component/" + matches[0]["uuid"] + "/property")
+                                          if item.get("groupName") == "nix"}
+                            assert actual_nix == expected_nix
+                    component_counts[stream] = len(components)
+                    if stream == "native":
+                        native_components = components
+                origin_summary = None
+                if declaration["kind"] == "nix":
+                    assert record["origins"]["lastAttempt"]["status"] == "complete"
+                    origin = record["origins"]["current"]
+                    directory = inside(origin["directory"])
+                    report = sync.load(directory / "origins.json")
+                    assert origin["project"] == current["projects"]["native"]
+                    assert origin["originalArchive"] == current["archive"]
+                    assert origin["inventoryKey"] == manifest["inventoryKey"]
+                    assert origin["source"]["revision"] == run["head_sha"]
+                    assert origin["source"]["flake"] == "github:dvicory/homelab/" + run["head_sha"]
+                    assert report["root"] == {key: declaration[key] for key in ("drvPath", "outPath")}
+                    assert report["source"] == origin["source"]
+                    assert sync.security_artifacts.digest(directory / "origins.json") == origin["reportSha256"]
+                    assert sync.security_artifacts.digest(directory / "native-origins.cdx.json") == origin["bomSha256"]
+                    metadata = properties(origin["project"])
+                    assert metadata["origin_report_sha256"] == origin["reportSha256"]
+                    assert metadata["origin_bom_sha256"] == origin["bomSha256"]
+                    assert json.loads(metadata["origin_source"]) == origin["source"]
+                    # In addition to the full origin receipt, read one actual
+                    # attributed component's properties and source links back
+                    # through the stock API (not merely our local journal).
+                    enriched = sync.load(directory / "native-origins.cdx.json")
+                    for component in enriched["components"]:
+                        wanted_properties = {(item["name"].split(":", 1)[1], item["value"])
+                                             for item in component.get("properties", [])
+                                             if item["name"].startswith("homelab:")}
+                        if not any(name == "declarations" for name, value in wanted_properties):
+                            continue
+                        expected_links = {(item["url"], item.get("comment")) for item in
+                                          component.get("externalReferences", [])
+                                          if item.get("comment", "").startswith("homelab:origin:v1 ")}
+                        if not expected_links:
+                            continue
+                        assert component.get("purl")
+                        expected_identity = {key: (component.get(key) or "").strip() or None
+                                             for key in identity_fields}
+                        matches = [item for item in native_components.values()
+                                   if {key: item.get(key) for key in identity_fields} == expected_identity]
+                        assert len(matches) == 1
+                        component_id = matches[0]["uuid"]
+                        component_properties = stock.request("GET", "component/" + component_id + "/property")
+                        actual_properties = {(item["propertyName"], item["propertyValue"])
+                                             for item in component_properties if item.get("groupName") == "homelab"}
+                        assert actual_properties == wanted_properties
+                        expected_nix = {(item["name"].split(":", 1)[1], item["value"])
+                                        for item in component["properties"] if item["name"].startswith("nix:")}
+                        assert any(name == "output_path" for name, value in expected_nix)
+                        assert (("drv_path", component["bom-ref"]) in expected_nix
+                                if component["bom-ref"].endswith(".drv")
+                                else ("output_path", component["bom-ref"]) in expected_nix)
+                        actual_nix = {(item["propertyName"], item["propertyValue"])
+                                      for item in component_properties if item.get("groupName") == "nix"}
+                        assert actual_nix == expected_nix
+                        detail = stock.request("GET", "component/" + component_id)
+                        actual_links = {(item["url"], item.get("comment")) for item in
+                                        detail.get("externalReferences", [])}
+                        assert expected_links <= actual_links
+                        break
+                    else:
+                        raise AssertionError("no attributed native component read back")
+                    origin_summary = {"counts": report["counts"], "completeCoverage": report["coverage"]["complete"],
+                                      "sourceRevision": origin["source"]["revision"],
+                                      "attributedComponentReadbackCount": 1, "component": component_id}
+                else:
+                    assert record["origins"]["lastAttempt"]["status"] == "unsupported"
+                summaries[declaration["id"]] = {"target": target, "kind": declaration["kind"],
+                    "collection": collection, "projects": current["projects"], "components": component_counts,
+                    "artifactId": artifact["id"], "inventoryKey": manifest["inventoryKey"], "origins": origin_summary}
+            projects = pages("project")
+            assert set(projects) == project_ids
+            unit = subprocess.run(["systemctl", "show", "dependency-track-sync.service",
+                "--property=Id,User,Group,InvocationID,Result,ExecMainStatus,NoNewPrivileges,ProtectSystem,ProtectHome,PrivateTmp,MemoryMax,MemoryPeak,CPUQuotaPerSecUSec"],
+                check=True, capture_output=True, text=True, timeout=10).stdout
+            unit = dict(line.split("=", 1) for line in unit.splitlines())
+            assert unit["Result"] == "success" and unit["ExecMainStatus"] == "0"
+            observation = {"scope": "isolated-security-branch-canary", "deployment": "unobserved",
+                           "sourcePolicy": policy, "source": source_identity, "targets": summaries,
+                           "enrollment": sync.load(root / "enrollment.json"), "unit": unit,
+                           "journalSha256": sync.security_artifacts.digest(state_directory / "state.json"),
+                           "credentialBoundary": sync.load(state_directory / "unit-probe.json")["credentialBoundary"]}
+            (state_directory / "systemd-live-observation.json").write_text(json.dumps(observation))
+            print(json.dumps(observation))
         elif command == "projection":
             for key in ("api-key", "github-token"):
                 path = Path("/run/dependency-track-sync-credentials") / key
@@ -411,6 +762,7 @@
             observed = json.loads(Path("/srv/state/dependency-track-evidence/unit-probe.json").read_text())
             assert observed["uid"] == observed["gid"] == 705
             assert observed["nixDaemonTrusted"] is False
+            assert set(observed["credentialBoundary"]["rejectedReadableFiles"]) == {"owning-group", "extra-reader"}
             assert observed["hashes"] == {key: hashlib.sha256(values[key].encode()).hexdigest()
                                           for key in ("api-key", "github-token")}
         elif command == "acquisition-failed":
@@ -463,6 +815,7 @@
               cores = 4;
               memorySize = 6144;
               diskSize = 32768;
+              writableStoreUseTmpfs = false;
               restrictNetwork = false;
             };
             services.k3s.package = self.nixosConfigurations.compute-1.config.services.k3s.package;
@@ -479,6 +832,11 @@
             ++ lib.mapAttrsToList (
               _: path: "d ${path.guestPath} ${path.mode} ${toString path.uid} ${toString path.gid} -"
             ) retainedPaths;
+            # Start source timers only after fixture Secrets and Alertmanager exist.
+            systemd.timers = {
+              dependency-track-sync.wantedBy = lib.mkForce [ ];
+              dependency-track-access-policy.wantedBy = lib.mkForce [ ];
+            };
             systemd.services.dependency-track-sync.serviceConfig.ExecStartPre = lib.mkAfter [
               "${pkgs.python3}/bin/python3 -B ${probe}"
             ];
@@ -496,7 +854,12 @@
           };
           testScript = ''
             import json
+            import os
+            from pathlib import Path
             import shlex
+            import stat
+            import tempfile
+            import uuid
 
             k = "${self.nixosConfigurations.compute-1.config.services.k3s.package}/bin/k3s kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml"
             fixture = "${pkgs.python3}/bin/python3 -B ${fixture}"
@@ -506,6 +869,31 @@
             broker = "dependency-track-sync-api-tunnel.service"
             notifier = "dependency-track-sync-failure.service"
             evidence = "/srv/state/dependency-track-evidence"
+            # Read only this explicit runtime PATH. No gh profile or inherited token
+            # values are consulted. Nix builds never supply the variable.
+            token_file = os.environ.pop("HOMELAB_DT_SYSTEMD_TOKEN_FILE", None)
+
+            def copy_live_token():
+                assert token_file is not None
+                path = Path(token_file)
+                assert path.is_absolute() and not path.resolve().is_relative_to("/nix/store")
+                descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                with os.fdopen(descriptor, "rb") as source:
+                    info = os.fstat(source.fileno())
+                    assert stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid()
+                    assert stat.S_IMODE(info.st_mode) in (0o400, 0o600)
+                    assert 0 < info.st_size <= 65536
+                    value = source.read(65537)
+                    assert 0 < len(value) <= 65536 and len(value) == info.st_size
+                    text = value.decode().strip()
+                    assert text and "\n" not in text and "\r" not in text
+                    with tempfile.TemporaryDirectory(prefix="dt-unit-runtime-") as directory:
+                        snapshot = Path(directory) / "github-token"
+                        snapshot.write_bytes(text.encode())
+                        snapshot.chmod(0o400)
+                        # This driver transport copies a private file through a
+                        # temporary shared directory, never shell echo/base64/argv.
+                        machine.copy_from_host(str(snapshot), "/run/dt-unit-fixture/github-token")
 
             def f(operation):
                 return machine.succeed(f"{fixture} {operation}")
@@ -517,8 +905,13 @@
             def gate(admitted):
                 machine.wait_until_succeeds(f"{fixture} gate {'true' if admitted else 'false'}", timeout=180)
 
+            def reset_failed(*units):
+                for unit in units:
+                    if machine.succeed(f"systemctl show -p ActiveState --value {unit}").strip() == "failed":
+                        machine.succeed(f"systemctl reset-failed {unit}")
+
             def run_failed():
-                machine.succeed(f"systemctl reset-failed {importer} {policy} {credentials} {notifier}")
+                reset_failed(importer, policy, credentials, notifier)
                 machine.fail(f"systemctl start --wait {importer}")
                 machine.wait_until_succeeds(f"test $(systemctl show -p ActiveState --value {notifier}) = inactive", timeout=90)
                 assert machine.succeed(f"systemctl show -p Result --value {notifier}").strip() == "success"
@@ -527,11 +920,11 @@
             def events():
                 return set(json.loads(f("events")))
 
-            def fresh_event(previous):
+            def fresh_event(previous, timeout=90):
                 machine.wait_until_succeeds(
                     f"{fixture} events | ${pkgs.python3}/bin/python3 -c " + shlex.quote(
                         "import json,sys; assert len(set(json.load(sys.stdin)) - " + repr(previous) + ") == 1"),
-                    timeout=90)
+                    timeout=timeout)
                 return events()
 
             start_all()
@@ -542,6 +935,7 @@
                 machine.wait_until_succeeds(f"{k} wait --for=condition=Ready nodes --all --timeout=10s", timeout=300)
                 machine.succeed(f"{k} create namespace dependency-track")
                 stage("bootstrap")
+                f("credential-boundary")
                 machine.succeed(f"{k} apply -f /etc/dt-unit/enforcer.json")
                 machine.wait_until_succeeds(f"{k} -n kube-system rollout status daemonset/kube-network-policies --timeout=10s", timeout=600)
                 machine.succeed(f"{k} apply -f /etc/dt-unit/bootstrap.json -f /etc/dt-unit/alertmanager.json")
@@ -553,7 +947,8 @@
                 with subtest("source root bootstrap admits only the current Pod without an ingestor key"):
                     machine.fail(f"{k} -n dependency-track get secret dependency-track-sync")
                     gate(False)
-                    machine.succeed(f"systemctl reset-failed {policy}; systemctl start --wait {policy}")
+                    reset_failed(policy)
+                    machine.succeed(f"systemctl start --wait {policy}")
                     gate(True)
                     f("auth")
                     machine.succeed("test ! -e /run/dependency-track-access-policy/admin-password")
@@ -584,12 +979,13 @@
                     f("auth")
                     machine.succeed(f"test ! -e {evidence}/state.json; test ! -e {evidence}/unit-probe.json")
                     stage("missing-admin")
-                    machine.succeed(f"systemctl reset-failed {policy}")
+                    reset_failed(policy)
                     machine.fail(f"systemctl start --wait {policy}")
                     gate(False)
                     f("auth")
                     stage("valid")
-                    machine.succeed(f"systemctl reset-failed {policy}; systemctl start --wait {policy}")
+                    reset_failed(policy)
+                    machine.succeed(f"systemctl start --wait {policy}")
                     gate(True)
                     f("auth")
 
@@ -622,41 +1018,103 @@
                     assert previous == machine.succeed(f"cat {evidence}/unit-probe.json")
                     assert state == machine.succeed(f"sha256sum {evidence}/state.json")
 
-                with subtest("stop clears real unit credentials and processes; normal timers invoke source lifecycle"):
+                with subtest("stop clears real unit credentials and processes; timers invoke fresh source lifecycle"):
                     stage("valid")
                     machine.succeed(f"touch {evidence}/unit-probe-hold; chown 705:705 {evidence}/unit-probe-hold; rm {evidence}/unit-probe.json")
-                    machine.succeed(f"systemctl reset-failed {importer} {credentials}; systemctl start --no-block {importer}")
+                    reset_failed(importer, credentials)
+                    machine.succeed(f"systemctl start --no-block {importer}")
                     machine.wait_until_succeeds(f"test -s {evidence}/unit-probe.json", timeout=180)
                     pid = json.loads(machine.succeed(f"cat {evidence}/unit-probe.json"))["pid"]
+                    # Root observation joins the held probe's actual mount namespace;
+                    # no source service setting changes and no secret bytes are read.
+                    for uid, gid in ((65534, 65534), (65534, 705)):
+                        observer = (
+                            f"${pkgs.util-linux}/bin/nsenter --mount=/proc/{pid}/ns/mnt -- "
+                            f"${pkgs.util-linux}/bin/setpriv --reuid={uid} --regid={gid} --clear-groups -- ")
+                        assert machine.succeed(observer + "${pkgs.coreutils}/bin/id -u").strip() == str(uid)
+                        for key in ("api-key", "github-token"):
+                            machine.fail(observer + f"${pkgs.coreutils}/bin/test -r /run/credentials/{importer}/{key}")
                     machine.succeed(f"systemctl stop {importer}")
                     machine.fail(f"kill -0 {pid}")
                     machine.succeed(f"rm {evidence}/unit-probe-hold; test ! -e /run/credentials/{importer}")
-                    machine.succeed(f"systemctl reset-failed {importer} {policy}; systemctl start dependency-track-sync.timer dependency-track-access-policy.timer")
-                    machine.wait_until_succeeds("test $(systemctl show -p LastTriggerUSecMonotonic --value dependency-track-sync.timer) -gt 0", timeout=180)
-                    machine.wait_until_succeeds("test $(systemctl show -p LastTriggerUSecMonotonic --value dependency-track-access-policy.timer) -gt 0", timeout=180)
-                    machine.wait_until_succeeds(f"test $(systemctl show -p ActiveState --value {importer}) = failed", timeout=180)
+                    # A killed pre-start also invokes OnFailure; settle it before
+                    # capturing the timer's event baseline, so it cannot pass stale.
+                    machine.wait_until_succeeds(f"test $(systemctl show -p ActiveState --value {notifier}) = inactive", timeout=90)
+                    assert machine.succeed(f"systemctl show -p Result --value {notifier}").strip() == "success"
+                    reset_failed(importer, policy)
+                    policy_invocation = machine.succeed(f"systemctl show -p InvocationID --value {policy}").strip()
+                    # Observe this timer alone: the importer's root pre-start
+                    # must not masquerade as a policy-timer invocation.
+                    machine.succeed("systemctl start dependency-track-access-policy.timer")
+                    machine.wait_until_succeeds(
+                        f'test "$(systemctl show -p InvocationID --value {policy})" != {shlex.quote(policy_invocation)}', timeout=180)
+                    machine.wait_until_succeeds(f"test $(systemctl show -p ActiveState --value {policy}) = inactive", timeout=180)
+                    assert machine.succeed(f"systemctl show -p Result --value {policy}").strip() == "success"
+                    assert uuid.UUID(machine.succeed(f"systemctl show -p InvocationID --value {policy}").strip()).hex != policy_invocation
+                    machine.succeed("systemctl stop dependency-track-access-policy.timer")
+                    before = events()
+                    importer_invocation = machine.succeed(f"systemctl show -p InvocationID --value {importer}").strip()
+                    machine.succeed(f"rm {evidence}/unit-probe.json; systemctl start dependency-track-sync.timer")
+                    # Disarm after the timer starts a fresh invocation, not after
+                    # event readback: another calendar tick may already restart a
+                    # failed oneshot while its first failure event is observed.
+                    machine.wait_until_succeeds(
+                        f'invocation="$(systemctl show -p InvocationID --value {importer})"; test -n "$invocation" && test "$invocation" != {shlex.quote(importer_invocation)}', timeout=180)
+                    machine.succeed("systemctl stop dependency-track-sync.timer")
+                    # Stopping the timer does not stop its service. Require that
+                    # invocation to finish, emit OnFailure and run the UID705 probe.
+                    fresh_event(before, timeout=180)
+                    assert uuid.UUID(machine.succeed(f"systemctl show -p InvocationID --value {importer}").strip()).hex != importer_invocation
+                    assert machine.succeed(f"systemctl show -p ActiveState --value {importer}").strip() == "failed"
+                    machine.wait_until_succeeds(f"test $(systemctl show -p ActiveState --value {notifier}) = inactive", timeout=90)
+                    assert machine.succeed(f"systemctl show -p Result --value {notifier}").strip() == "success"
                     f("probe")
                     f("acquisition-failed")
                     f("no-leaks")
                     machine.succeed("systemctl stop dependency-track-sync.timer dependency-track-access-policy.timer")
+
+                if token_file is not None:
+                    with subtest("actual source systemd unit completes restricted two-target security canary refresh"):
+                        copy_live_token()
+                        machine.fail("runuser -u dependency-track-sync -- test -r /run/dt-unit-fixture/github-token")
+                        f("enroll")
+                        stage("live")
+                        reset_failed(importer, policy, credentials, notifier)
+                        machine.succeed(f"systemctl start --wait {importer}", timeout=2 * 60 * 60 + 180)
+                        gate(True)
+                        f("projection")
+                        f("probe")
+                        f("live-readback")
+                        f("no-leaks")
+                        machine.succeed(f"test ! -e /run/credentials/{importer}")
+                        machine.copy_from_machine(f"{evidence}/systemd-live-observation.json")
+                else:
+                    print("Secretless check: live success requires explicit runtime token-file PATH.")
+
+                with subtest("all source runtime units and listeners stop"):
                     machine.succeed(f"systemctl stop {importer} {policy} {credentials} {broker} {notifier}")
                     machine.succeed("test ! -e /run/dependency-track-sync-api-tunnel; test ! -e /run/dependency-track-access-policy; test ! -e /run/dependency-track-sync-failure")
                     machine.fail("ss -H -ltn 'sport = :1022' | ${pkgs.gnugrep}/bin/grep .")
             finally:
                 for unit in (importer, policy, credentials, broker, notifier):
                     print(json.dumps({"unit": unit, "state": machine.execute(
-                        "systemctl show --property=Id,Result,ExecMainStatus,ExecStartPre " + unit)[1]}))
+                        "systemctl show --property=Id,Result,ExecMainStatus,MemoryCurrent,MemoryPeak,ExecStartPre " + unit)[1]}))
+                leak_status = 0
+                if machine.execute("test -f /run/dt-unit-fixture/credential-history.json")[0] == 0:
+                    leak_status = machine.execute(f"{fixture} no-leaks")[0]
                 # Every resource belongs to this VM. No shared daemon/context/host cleanup.
                 machine.execute("systemctl stop dependency-track-sync.timer dependency-track-access-policy.timer dependency-track-sync.service dependency-track-access-policy.service dependency-track-sync-api-tunnel.service dependency-track-sync-credentials.service dependency-track-sync-failure.service kubernetes-runtime-secrets.path")
                 machine.execute(f"{k} delete namespace dependency-track monitoring --wait=true --timeout=180s")
                 machine.execute("systemctl stop kubernetes-runtime-secrets.service k3s.service")
-                machine.execute("rm -rf /run/dt-unit-fixture /run/dependency-track-sync-credentials /srv/secrets /srv/state/dependency-track-api /srv/state/dependency-track-postgres /srv/state/dependency-track-evidence")
+                machine.execute("rm -rf /run/dt-unit-fixture /run/dt-unit-credential-boundary /run/dependency-track-sync-credentials /srv/secrets /srv/state/dependency-track-api /srv/state/dependency-track-postgres /srv/state/dependency-track-evidence")
                 machine.shutdown()
+                assert leak_status == 0, "unit journal contains a private credential"
           '';
         }).overrideTestDerivation
           (_: {
-            # Like existing real-K3s checks: pull stock pinned images and exercise a
-            # rejected GitHub API acquisition. No real credential or provider delivery.
+            # The builder path exercises only a rejected GitHub acquisition with
+            # throwaway credentials. Live credentials enter the standalone driver
+            # after building, never this derivation or its environment.
             __noChroot = true;
           });
     in
