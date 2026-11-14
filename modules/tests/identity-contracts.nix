@@ -37,7 +37,6 @@ let
     identity.k8s-manifests {
       cluster = inventory;
       inherit computeResources lib;
-    } {
       config.applications = { };
     };
   gateway =

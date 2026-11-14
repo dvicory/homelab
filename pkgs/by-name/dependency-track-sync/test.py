@@ -131,7 +131,7 @@ def regression():
             raise AssertionError("partial snapshot promoted")
         assert record == before
         # A cached UUID that an administrator reparented must not be promoted.
-        client = sync.Client.__new__(sync.Client)
+        client = sync.Client("https://example.invalid", key)
         def transport(method, path, data=None):
             assert method == "GET", "mutated a cached project before ownership validation"
             return {"uuid": "new-image", "name": sync.project_name(provenance, description["revisionId"], "image"),
@@ -149,7 +149,7 @@ def regression():
             raise AssertionError("reparented cached project promoted")
         assert record == before
         # Stock name lookup omits parents; full hierarchy decides safe adoption.
-        client = sync.Client.__new__(sync.Client)
+        client = sync.Client("https://example.invalid", key)
         full = {"uuid": "existing", "name": "owned-project", "version": "inventory",
                 "parent": {"uuid": "owned-parent"}, "description": sync.OWNER + ":" + "d" * 64}
         def projected(method, path, data=None):
@@ -176,9 +176,7 @@ def regression():
         else:
             raise AssertionError("adopted an existing collection under another root")
         # A stock no-op project PATCH succeeds; a bodyless GET/BOM response does not.
-        client = sync.Client.__new__(sync.Client)
-        client.url, client.key = "https://example.invalid", "not-transmitted"
-        client.bearer = False
+        client = sync.Client("https://example.invalid", key)
         class Unchanged:
             def open(self, request, timeout):
                 raise sync.HTTPError(request.full_url, 304, "Not Modified", {}, None)

@@ -4,6 +4,9 @@
   lib,
   ...
 }:
+let
+  fleetConfig = config;
+in
 {
   den.aspects.kubernetes.services.identity.settings.phase = lib.mkOption {
     type = lib.types.enum [
@@ -66,15 +69,12 @@
     };
   den.aspects.kubernetes.services.identity.k8s-manifests =
     {
+      config,
       cluster,
       computeResources,
       lib,
       ...
     }:
-    let
-      fleetConfig = config;
-    in
-    { config, ... }:
     let
       nixidyConfig = config;
       namespace = "identity";
@@ -103,7 +103,9 @@
       dependencyTrackRouteMatches =
         name: route:
         let
-          selector = { "app.kubernetes.io/name" = "dependency-track-${name}"; };
+          selector = {
+            "app.kubernetes.io/name" = "dependency-track-${name}";
+          };
           service = dependencyTrackObject "Service" name;
           deployment = dependencyTrackObject "Deployment" name;
         in
@@ -136,27 +138,48 @@
           !dependencyTrackRequested || dependencyTrackSelected
         ) "Dependency-Track private access requires the service to be selected, not only settings";
         if dependencyTrackRequested && dependencyTrackSettings.databasePhase == "restore" && normal then
-          assert lib.assertMsg (
-            nixidyConfig.applications.dependency-track.namespace == "dependency-track"
-            && dependencyTrackRouteMatches "frontend" dependencyTrackRoute
-            && dependencyTrackRouteMatches "api" dependencyTrackApiRoute
-            && dependencyTrackFrontendConfig.API_BASE_URL == builtins.head (routeUrls dependencyTrackApiRoute)
-            && dependencyTrackFrontendConfig.OIDC_CLIENT_ID == "dependency-track"
-            && dependencyTrackFrontendConfig.OIDC_FLOW == "code"
-            && dependencyTrackFrontendConfig.OIDC_ISSUER == dependencyTrackIssuer
-            && dependencyTrackFrontendConfig.OIDC_SCOPE == "openid profile email groups_name"
-            && lib.all (
-              entry: builtins.elem entry dependencyTrackApi.env
-            ) [
-              { name = "DT_OIDC_ENABLED"; value = "true"; }
-              { name = "DT_OIDC_ISSUER"; value = dependencyTrackIssuer; }
-              { name = "DT_OIDC_CLIENT_ID"; value = "dependency-track"; }
-              { name = "DT_OIDC_USERNAME_CLAIM"; value = "preferred_username"; }
-              { name = "DT_OIDC_USER_PROVISIONING"; value = "true"; }
-              { name = "DT_OIDC_TEAM_SYNCHRONIZATION"; value = "true"; }
-              { name = "DT_OIDC_TEAMS_CLAIM"; value = "groups"; }
-            ]
-          ) "Dependency-Track native registration requires matching selected private routes and OIDC configuration";
+          assert lib.assertMsg
+            (
+              nixidyConfig.applications.dependency-track.namespace == "dependency-track"
+              && dependencyTrackRouteMatches "frontend" dependencyTrackRoute
+              && dependencyTrackRouteMatches "api" dependencyTrackApiRoute
+              && dependencyTrackFrontendConfig.API_BASE_URL == builtins.head (routeUrls dependencyTrackApiRoute)
+              && dependencyTrackFrontendConfig.OIDC_CLIENT_ID == "dependency-track"
+              && dependencyTrackFrontendConfig.OIDC_FLOW == "code"
+              && dependencyTrackFrontendConfig.OIDC_ISSUER == dependencyTrackIssuer
+              && dependencyTrackFrontendConfig.OIDC_SCOPE == "openid profile email groups_name"
+              && lib.all (entry: builtins.elem entry dependencyTrackApi.env) [
+                {
+                  name = "DT_OIDC_ENABLED";
+                  value = "true";
+                }
+                {
+                  name = "DT_OIDC_ISSUER";
+                  value = dependencyTrackIssuer;
+                }
+                {
+                  name = "DT_OIDC_CLIENT_ID";
+                  value = "dependency-track";
+                }
+                {
+                  name = "DT_OIDC_USERNAME_CLAIM";
+                  value = "preferred_username";
+                }
+                {
+                  name = "DT_OIDC_USER_PROVISIONING";
+                  value = "true";
+                }
+                {
+                  name = "DT_OIDC_TEAM_SYNCHRONIZATION";
+                  value = "true";
+                }
+                {
+                  name = "DT_OIDC_TEAMS_CLAIM";
+                  value = "groups";
+                }
+              ]
+            )
+            "Dependency-Track native registration requires matching selected private routes and OIDC configuration";
           true
         else
           false;
@@ -423,10 +446,12 @@
       provisioning = selected.artifacts.kanidm-provision-image;
       provisioningImage = "${provisioning.repository}@${provisioning.digest}";
       provisioningSourceMatches =
-        assert lib.assertMsg (
-          builtins.match "[0-9a-f]{40}" (selected.sourceSha or "") != null
-          && builtins.match "sha256-[A-Za-z0-9+/]{43}=" (selected.sourceNarHash or "") != null
-        ) "Private Dependency-Track requires a verified helper receipt with full sourceSha and sourceNarHash";
+        assert lib.assertMsg
+          (
+            builtins.match "[0-9a-f]{40}" (selected.sourceSha or "") != null
+            && builtins.match "sha256-[A-Za-z0-9+/]{43}=" (selected.sourceNarHash or "") != null
+          )
+          "Private Dependency-Track requires a verified helper receipt with full sourceSha and sourceNarHash";
         let
           source = builtins.fetchTree {
             type = "github";
@@ -1018,9 +1043,8 @@
                       {
                         name = "provision";
                         image =
-                          assert lib.assertMsg (
-                            !dependencyTrackActive || provisioningSourceMatches
-                          ) "Private Dependency-Track requires a verified release of the current public-client provisioning wrapper";
+                          assert lib.assertMsg (!dependencyTrackActive || provisioningSourceMatches)
+                            "Private Dependency-Track requires a verified release of the current public-client provisioning wrapper";
                           provisioningImage;
                         imagePullPolicy = "IfNotPresent";
                         resources = {
