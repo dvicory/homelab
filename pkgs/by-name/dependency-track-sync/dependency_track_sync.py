@@ -812,7 +812,8 @@ def oidc_admin_group(client, name, team_uuid, *, require_mapping=False):
                     raise ValueError("unauthorized OIDC administrator binding; refusing to delete unrelated mappings")
                 team = client.request("GET", "team/" + mapped_uuid)
                 if (access_uuid(team) != mapped_uuid
-                        or "ACCESS_MANAGEMENT" in permission_names(team.get("permissions"))):
+                        or {"ACCESS_MANAGEMENT", "ACCESS_MANAGEMENT_CREATE", "ACCESS_MANAGEMENT_UPDATE"}
+                        & permission_names(team.get("permissions"))):
                     raise ValueError("unauthorized OIDC access-management binding; refusing to delete unrelated mappings")
         if group_name == name:
             wanted = {"name": name, "uuid": uuid}
