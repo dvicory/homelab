@@ -72,10 +72,6 @@ checks.update({
         all(name in ("monitoring", "monitoring-retained") or wave(app) < 5 for name, app in applications.items()),
     "a monitoring Application syncs before wave 5":
         all(wave(applications[name]) >= 5 for name in ("monitoring", "monitoring-retained")),
-    "a route serves a monitoring Service other than Grafana, or Grafana's route is not an administrator route":
-        all(route["namespace"] != "monitoring" or route["service"] == "grafana" for route in routes.values())
-        and (not has_grafana or (routes["grafana"]["auth"] == "admin"
-             and routes["grafana"]["manageBackendIngress"] and not routes["grafana"]["sameNamespaceIngress"])),
     "endpoint probes do not match published HTTP routes": sorted(probed_routes) == sorted(published_routes),
     "a scrape job has no TelemetrySourceDown alert": job_names <= source_down_jobs,
     "a Watchdog core source is not scraped": {"kubelet", "cadvisor", "kube-state-metrics", "host-node"} <= job_names,

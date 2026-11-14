@@ -1,7 +1,6 @@
 # Identity operations
 
-Kanidm runs in the `identity` namespace. The Gateway protects administrator
-routes with OIDC from Kanidm. Argo CD and Grafana also sign users in through Kanidm.
+Kanidm runs in the `identity` namespace.
 
 ## Canonical name and certificate renewal
 
@@ -24,52 +23,49 @@ ReferenceGrant. Each independent public edge needs its own
 canonical identity name. Application wildcard certificates are not a
 substitute. Cert-manager remains the only writer of cluster TLS Secrets.
 
-## Administrator applications in Kanidm
+## Configure application sign-in
 
-Each administrator route has its own Kanidm OAuth2 client, named after the
-route. Kanidm lists the clients a person may use as applications on its
-home page, so members of `homelab-admin` see one entry per administrator
-application, under the route's `displayName`. Each entry opens its
-application. People outside `homelab-admin` see none of them.
+Set the route's [Gateway sign-in policy](../operations.md#declared-routes)
+in [`home.nix`](../../modules/den/clusters/home.nix). If the app itself uses
+Kanidm OIDC, declare its `native-oidc` settings beside the service.
 
-The Gateway's sign-in for a route uses that route's client and the Secret
-`gateway/oidc-<route>`. Argo CD's own sign-in shares the `argocd` client,
-so Argo CD appears once; its entry starts Argo CD's Kanidm sign-in. The
-`kanidm-provision` Job also publishes that client's secret to
-`argocd/argocd-kanidm-oidc`.
+Administrator routes use one Kanidm client per route, available only to
+`homelab-admin`. Eligible users see each application's `displayName` on
+Kanidm's home page. The Gateway uses `gateway/oidc-<route>`.
+Argo CD and Grafana share their route clients with their native logins:
+provisioning also writes `argocd/argocd-kanidm-oidc` and
+`monitoring/grafana-oidc`, respectively.
 
-Grafana likewise shares its route's `grafana` client. Its entry starts Grafana's
-native sign-in, and provisioning publishes the same secret to
-`monitoring/grafana-oidc`. Both native callbacks coexist with the Gateway callback;
-neither application's entrance sign-in alone grants application access.
+Argo CD and Grafana require **both** Gateway and application sign-in.
+Both request the same permissions, so approval is reused until those
+permissions change. Argo CD may still show its own login button; its
+Kanidm tile starts the application's sign-in directly.
 
-The declaration owns every Kanidm OAuth2 client. On each run the Job
-deletes clients it does not declare, including any created by hand.
-Declare a new client in Nix instead.
+### Client and Secret safety
 
-The selected helper accepts an explicit `eligibleGroup` per client and owns
-both normal and supplemental scope maps. Administrator applications select
-`homelab-admin`; Homarr selects `homarr-users`, whose nested members are
-`homelab-admin` and `jellyfin-users`. Provisioning owns that aggregate, not
-household membership or person credentials. Homarr grants board permissions
-separately; portal eligibility does not confer administration.
+Provisioning owns every Kanidm OAuth2 client and deletes undeclared
+clients, including manually created ones. Declare new clients in Nix.
 
-Before entity reconciliation or Secret publication, the helper revokes all
-existing client scope maps, including undeclared clients. Administrator
-membership is restored only after successful reconciliation. A failed run
-can leave access revoked until it succeeds; revocation requires a reachable
-Kanidm API and is sequential, not an atomic cross-client transaction.
+Use separate Secrets for different clients until the fixed image is
+selected through the [helper release procedure](jellyfin.md#deliver-helper-images).
+Even then, every client needs its own key.
 
-Select registry upgrades through the
-[verified helper release workflow](jellyfin.md#deliver-helper-images), using
-the unmodified receipt at `assets/helper-release/verified.json`.
-The `identity-provision-runtime` check exercises that selected image,
-then imports the actual current-source producer archive into its disposable
-K3s VM and proves synthetic per-client eligibility with native sign-ins.
-It does not publish an image or change production selection.
+Administrator clients must use `homelab-admin` as their `eligibleGroup`.
+See [Homarr operations](homarr.md#prerequisites) for portal eligibility and
+board permissions.
 
-See [Homarr operations](homarr.md) for private onboarding, board ACLs,
-group-sync limitations, and portal recovery.
+Provisioning revokes and restores client grants one client at a time. If
+the Job fails, access may be revoked for some apps but not others. Check
+the `kanidm-provision` Job logs, fix the failure, and rerun provisioning.
+
+### Verify application upgrades
+
+After upgrading Argo CD or Grafana:
+
+1. After sync, confirm `kanidm-provision` completed.
+2. Open the app through the Gateway as an administrator and complete the
+   app's sign-in. Kanidm should not ask you to approve the same permissions twice.
+3. Confirm a non-administrator cannot sign in to the app.
 
 ## Bootstrap
 
@@ -112,8 +108,7 @@ the host instead.
    Expect `["client-secret"]` and `["clientSecret"]`. If either is empty,
    check the Job's logs.
 2. Open the Argo CD entry on Kanidm's home page, or open the canonical
-   Argo CD URL and choose **Log in via Kanidm**. Approve the one-time
-   Kanidm consent.
+   Argo CD URL and choose **Log in via Kanidm**. Approve if prompted.
 3. Open **User Info** and confirm that the groups include
    `homelab-admin`. Confirm admin rights by refreshing or syncing an
    Application.
@@ -228,6 +223,11 @@ migrations cannot be downgraded. Match the CLI version to the server.
 Start with the Gateway access logs. Find the request by timestamp and
 `request_id`; check `status`, `response_flags`, and `upstream`. Check
 Kanidm's pod health and logs for the same time window.
+
+If sign-in fails or approval repeats, inspect the authorization requests in
+the browser. Check that the callback is registered in Kanidm and, for
+Argo CD or Grafana, that the Gateway and app request the same scopes. Do
+not copy tokens, authorization codes, or cookies into logs or reports.
 
 Inspect the OAuth success and failure counters on the private
 `/stats/prometheus` endpoint. Counters show OAuth outcomes, not the cause

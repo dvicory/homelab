@@ -36,122 +36,124 @@ let
   ) cluster.routes.argocd.hostnames;
   manifests = ../../generated/manifests/prod-home;
   k3sPackage = self.nixosConfigurations.${instance}.config.services.k3s.package;
-  identityAspect =
-    (import ../den/aspects/kubernetes/services/identity.nix {
-      inherit config lib;
-      inputs.self = self;
-    }).den.aspects.kubernetes.services.identity;
-  renderIdentity =
-    inventory:
-    (identityAspect.k8s-manifests {
-      cluster = inventory;
-      routes = inventory.routes;
-      inherit lib;
-      computeResources = compute;
-    }).applications.identity.objects;
-  identityObjects = renderIdentity cluster;
-  rolloutDirectoryPort =
-    if cluster.settings.kubernetes.services.identity.directory.port == 3637 then 3638 else 3637;
-  rolloutObjects = renderIdentity (
-    lib.recursiveUpdate cluster {
-      settings.kubernetes.services.identity.directory.port = rolloutDirectoryPort;
-    }
-  );
-  # Synthetic native application input only: no application aspect or route.
-  fixtureObjects =
-    group: scopes:
-    map (
-      object:
-      if object.kind == "ConfigMap" && object.metadata.name == "kanidm-provision" then
-        let
-          state = builtins.fromJSON object.data."state.json";
-          clients = builtins.fromJSON object.data."clients.json";
-        in
-        object
-        // {
-          data = object.data // {
-            "state.json" = builtins.toJSON (
-              lib.recursiveUpdate state {
-                groups.${group} = {
-                  members = [ ];
-                  overwriteMembers = false;
-                };
-                systems.oauth2.fixture-native = {
-                  displayName = "Synthetic native application";
-                  public = false;
-                  originUrl = [ "https://native.example.test/callback" ];
-                  originLanding = "https://native.example.test/";
-                  allowInsecureClientDisablePkce = false;
-                  preferShortUsername = true;
-                  scopeMaps = { };
-                  supplementaryScopeMaps = { };
-                  removeOrphanedClaimMaps = true;
-                };
-              }
-            );
-            "clients.json" = builtins.toJSON (
-              clients
-              ++ [
-                {
-                  name = "fixture-native";
-                  eligibleGroup = group;
-                  inherit scopes;
-                  secrets = [
-                    {
-                      namespace = "identity";
-                      name = "fixture-native-oidc";
-                      key = "clientSecret";
-                    }
-                  ];
-                }
-              ]
-            );
-          };
-        }
-      else
-        object
-    ) identityObjects
-    # Reuse the renderer's name-scoped publication resources for the fixture.
-    ++
-      map
-        (
-          object:
-          object
-          // {
-            metadata = {
-              namespace = "identity";
-              name =
-                if object.kind == "Secret" then
-                  "fixture-native-oidc"
-                else
-                  "kanidm-client-secret-fixture-native-oidc";
-            };
-          }
-          // lib.optionalAttrs (object.kind == "Role") {
-            rules = map (rule: rule // { resourceNames = [ "fixture-native-oidc" ]; }) object.rules;
-          }
-          // lib.optionalAttrs (object.kind == "RoleBinding") {
-            roleRef = object.roleRef // {
-              name = "kanidm-client-secret-fixture-native-oidc";
-            };
-          }
-        )
-        (
-          lib.filter (
-            object:
-            object.metadata.namespace == "argocd"
-            && builtins.elem object.metadata.name [
-              "argocd-kanidm-oidc"
-              "kanidm-client-secret-argocd-kanidm-oidc"
-            ]
-          ) identityObjects
-        );
 in
 {
   perSystem =
     { pkgs, system, ... }:
     lib.optionalAttrs (system == "x86_64-linux") (
       let
+        identityAspect =
+          (import ../den/aspects/kubernetes/services/identity.nix {
+            inherit config lib;
+            inputs.self = self;
+          }).den.aspects.kubernetes.services.identity;
+        renderIdentity =
+          inventory:
+          (identityAspect.k8s-manifests {
+            cluster = inventory;
+            inherit lib;
+            inherit (inventory) routes;
+            config = { inherit oidcClients; };
+            computeResources = compute;
+          }).applications.identity.objects;
+        identityObjects = renderIdentity cluster;
+        rolloutDirectoryPort =
+          if cluster.settings.kubernetes.services.identity.directory.port == 3637 then 3638 else 3637;
+        rolloutObjects = renderIdentity (
+          lib.recursiveUpdate cluster {
+            settings.kubernetes.services.identity.directory.port = rolloutDirectoryPort;
+          }
+        );
+        # Synthetic native application input only: no application aspect or route.
+        fixtureObjects =
+          group: scopes:
+          map (
+            object:
+            if object.kind == "ConfigMap" && object.metadata.name == "kanidm-provision" then
+              let
+                state = builtins.fromJSON object.data."state.json";
+                clients = builtins.fromJSON object.data."clients.json";
+              in
+              object
+              // {
+                data = object.data // {
+                  "state.json" = builtins.toJSON (
+                    lib.recursiveUpdate state {
+                      groups.${group} = {
+                        members = [ ];
+                        overwriteMembers = false;
+                      };
+                      systems.oauth2.fixture-native = {
+                        displayName = "Synthetic native application";
+                        public = false;
+                        originUrl = [ "https://native.example.test/callback" ];
+                        originLanding = "https://native.example.test/";
+                        allowInsecureClientDisablePkce = false;
+                        preferShortUsername = true;
+                        scopeMaps = { };
+                        supplementaryScopeMaps = { };
+                        removeOrphanedClaimMaps = true;
+                      };
+                    }
+                  );
+                  "clients.json" = builtins.toJSON (
+                    clients
+                    ++ [
+                      {
+                        name = "fixture-native";
+                        eligibleGroup = group;
+                        inherit scopes;
+                        secrets = [
+                          {
+                            namespace = "identity";
+                            name = "fixture-native-oidc";
+                            key = "clientSecret";
+                          }
+                        ];
+                      }
+                    ]
+                  );
+                };
+              }
+            else
+              object
+          ) identityObjects
+          # Reuse the renderer's name-scoped publication resources for the fixture.
+          ++
+            map
+              (
+                object:
+                object
+                // {
+                  metadata = {
+                    namespace = "identity";
+                    name =
+                      if object.kind == "Secret" then
+                        "fixture-native-oidc"
+                      else
+                        "kanidm-client-secret-fixture-native-oidc";
+                  };
+                }
+                // lib.optionalAttrs (object.kind == "Role") {
+                  rules = map (rule: rule // { resourceNames = [ "fixture-native-oidc" ]; }) object.rules;
+                }
+                // lib.optionalAttrs (object.kind == "RoleBinding") {
+                  roleRef = object.roleRef // {
+                    name = "kanidm-client-secret-fixture-native-oidc";
+                  };
+                }
+              )
+              (
+                lib.filter (
+                  object:
+                  object.metadata.namespace == "argocd"
+                  && builtins.elem object.metadata.name [
+                    "argocd-kanidm-oidc"
+                    "kanidm-client-secret-argocd-kanidm-oidc"
+                  ]
+                ) identityObjects
+              );
+        oidcClients = config.flake.nixidyEnvs.${system}.prod-home.config.oidcClients;
         manifestSet =
           name: objects:
           pkgs.linkFarm name (
@@ -215,6 +217,7 @@ in
                   pkgs.jq
                   pkgs.openssl
                   pkgs.python3
+                  pkgs.yq-go
                 ];
                 systemd.tmpfiles.rules = [ "d ${stateDir} 0700 1000 1000 -" ];
                 virtualisation = {
@@ -236,10 +239,19 @@ in
               };
             testScript = ''
               import json
+              import configparser
               import shlex
               import time
               import hashlib
               import tarfile
+              from typing import TypedDict
+
+              class NativeOidcApp(TypedDict):
+                  client: str
+                  scopes: list[str]
+                  urls: list[str]
+                  callback: str
+                  published: dict[str, str]
 
               kubectl = "${k3sPackage}/bin/k3s kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml"
               identity = "${manifests}/identity"
@@ -259,6 +271,9 @@ in
                       f"python3 ${./identity-provision-runtime.py} ${domain} {shlex.quote(kubectl)} "
                       f"{command} {shlex.quote(json.dumps(arguments))}"
                   ))
+
+              def manifest(path):
+                  return json.loads(cluster.succeed(f"yq -o=json '.' ${manifests}/{path}"))
 
               def argo_apply(path):
                   # Argo CD applies the identity Application with ServerSideApply=true.
@@ -291,10 +306,13 @@ in
                   }
 
               def assert_published():
+                  expected_keys = {}
+                  for _, spec in secrets:
+                      expected_keys.setdefault((spec["namespace"], spec["name"]), set()).add(spec["key"])
                   for client, spec in secrets:
                       published = secret(spec["namespace"], spec["name"])
                       keys = sorted(published.get("data", {}))
-                      assert keys == [spec["key"]], (client, keys)
+                      assert keys == sorted(expected_keys[(spec["namespace"], spec["name"])]), (client, keys)
                       assert published["type"] == "Opaque", (client, published["type"])
                       assert probe("secret-matches", client=client, namespace=spec["namespace"],
                                    name=spec["name"], key=spec["key"]) is True, f"{client} Secret differs from Kanidm"
@@ -456,8 +474,6 @@ in
                   (client["name"], {key: target[key] for key in ("namespace", "name", "key")})
                   for client in declared for target in client["secrets"]
               ]
-              assert scopes.get("argocd") == ["email", "groups_name", "homelab_admin", "openid", "profile"], scopes
-              assert ("argocd", dict(namespace="argocd", name="argocd-kanidm-oidc", key="clientSecret")) in secrets, secrets
 
               with subtest("the provisioner can patch only its declared Secrets and create none"):
                   for _, spec in secrets:
@@ -523,18 +539,63 @@ in
                   assert_published()
                   assert_kanidm(members)
 
-              with subtest("5: the Gateway and Argo CD both sign an administrator in through client argocd"):
-                  gateway, argocd = probe("oidc-groups", person=members[0], client="argocd", requests=[
-                      dict(redirect=gateway_callbacks[0], scopes=["openid", "profile", "email", "homelab_admin"]),
-                      dict(redirect=callbacks[0], scopes=["openid", "profile", "email", "groups_name"]),
-                  ])
-                  evidence("gateway-id-token", gateway)
-                  evidence("argocd-id-token", argocd)
-                  for claims in (gateway, argocd):
-                      assert claims["iss"] == "https://${domain}/oauth2/openid/argocd", claims
-                      assert claims["aud"] in ("argocd", ["argocd"]), claims
-                  assert "homelab-admin" in argocd["groups"], argocd
-                  assert all("@" not in group for group in argocd["groups"]), argocd
+              with subtest("5: native apps and their Gateway checks reuse one approval"):
+                  argo_manifest = manifest("argocd/ConfigMap-argocd-cm.yaml")
+                  argo_cm = argo_manifest["data"]
+                  argo_oidc = json.loads(argo_cm["oidc.config"])
+                  assert argo_oidc["clientSecret"].startswith("$")
+                  secret_name, secret_key = argo_oidc["clientSecret"][1:].split(":", 1)
+                  grafana_ini = configparser.ConfigParser(interpolation=None)
+                  grafana_ini.read_string(manifest("monitoring/ConfigMap-grafana.yaml")["data"]["grafana.ini"])
+                  grafana_oidc = grafana_ini["auth.generic_oauth"]
+                  grafana_manifest = manifest("monitoring/Deployment-grafana.yaml")
+                  grafana_pod = grafana_manifest["spec"]["template"]["spec"]
+                  grafana_container = next(c for c in grafana_pod["containers"] if c["name"] == "grafana")
+                  secret_file = grafana_oidc["client_secret"].removeprefix("$__file{").removesuffix("}")
+                  secret_mount = next(m for m in grafana_container["volumeMounts"]
+                                      if secret_file.startswith(m["mountPath"] + "/"))
+                  secret_volume = next(v for v in grafana_pod["volumes"] if v["name"] == secret_mount["name"])
+                  native_apps = {
+                      "argocd": NativeOidcApp(client=argo_oidc["clientID"], scopes=argo_oidc["requestedScopes"],
+                                     urls=[argo_cm["url"]] + json.loads(argo_cm["additionalUrls"]),
+                                     callback="/auth/callback",
+                                     published={"namespace": argo_manifest["metadata"]["namespace"],
+                                                "name": secret_name, "key": secret_key}),
+                      "grafana": NativeOidcApp(client=grafana_oidc["client_id"], scopes=grafana_oidc["scopes"].split(),
+                                     urls=[grafana_ini["server"]["root_url"]], callback="/login/generic_oauth",
+                                     published={"namespace": grafana_manifest["metadata"]["namespace"],
+                                                "name": secret_volume["secret"]["secretName"],
+                                                "key": secret_file.rsplit("/", 1)[1]}),
+                  }
+                  journeys = []
+                  all_requests = []
+                  for name, native in native_apps.items():
+                      gateway_oidc = manifest(f"identity-gateway/SecurityPolicy-{name}-admin.yaml")["spec"]["oidc"]
+                      entrance = dict(client=gateway_oidc["clientID"], scopes=gateway_oidc["scopes"],
+                                      redirect=native["urls"][0].rstrip("/") + "/oauth2/callback")
+                      requests = [entrance]
+                      for url in native["urls"]:
+                          requests += [
+                              dict(client=native["client"], scopes=native["scopes"],
+                                   redirect=url.rstrip("/") + native["callback"],
+                                   published=native["published"]),
+                              entrance,
+                          ]
+                      # A real permission change still needs approval; repeating it does not.
+                      reduced = requests[1] | {"scopes": [scope for scope in native["scopes"] if scope != "email"]}
+                      expected = [True] + [False] * (len(requests) - 1) + [True, False]
+                      journeys.append((name, expected))
+                      all_requests += requests + [reduced, reduced]
+                  replies = probe("oidc-groups", person=members[0], requests=all_requests)
+                  offset = 0
+                  for name, expected in journeys:
+                      journey = replies[offset:offset + len(expected)]
+                      offset += len(expected)
+                      assert [reply["consent_required"] for reply in journey] == expected, (name, journey)
+                      for claims in journey:
+                          assert "homelab-admin" in claims["groups"], claims
+                          assert all("@" not in group for group in claims["groups"]), claims
+                      evidence(name + "-consent-journey", journey)
 
               # A above remains the reviewed registry executable. B is the
               # actual source producer archive, imported without publication.

@@ -103,12 +103,13 @@ in
 
         ## Declared routes
 
-        | Service | Exposure | Canonical URL | Secondary URL | Backend | Auth |
+        | Service | Exposure | Canonical URL | Secondary URL | Backend | Gateway sign-in |
         | --- | --- | --- | --- | --- | --- |
         ${lib.concatStringsSep "\n" routeRows}
 
-        `admin` requires Gateway administrator sign-in; `native` uses the
-        application's own sign-in.
+        `app-managed` adds no Gateway sign-in. The app can still use OIDC or
+        another sign-in method. `admin-gateway` requires Kanidm administrator
+        sign-in in addition to any checks the app makes.
 
         Public edges publish only `public` routes. The `idm` canonical hostname
         remains the identity issuer across direct and secondary-edge access;
