@@ -93,6 +93,34 @@
       normalOidc = builtins.fromJSON normalArgocd.cm."oidc.config";
       argocdRoute = cluster.routes.argocd;
       clientSecrets = clients: lib.concatMap (client: client.secrets) clients;
+      sharedSecretObjects =
+        key: labels:
+        (config.flake.nixidyEnvs.${system}.prod-home.override (args: {
+          modules = args.modules ++ [
+            {
+              applications.identity.objects = lib.mkForce (
+                (identity.k8s-manifests {
+                  cluster = withPhase "normal";
+                  routes = cluster.routes // {
+                    collision-peer = argocdRoute // {
+                      hostnames = [ "collision-peer.test" ];
+                    };
+                  };
+                  config.oidcClients = oidcClients // {
+                    collision-peer = oidcClients.argocd // {
+                      clientID = "collision-peer";
+                      routeKey = "collision-peer";
+                      secret = oidcClients.argocd.secret // {
+                        inherit key labels;
+                      };
+                    };
+                  };
+                  inherit computeResources lib;
+                }).applications.identity.objects
+              );
+            }
+          ];
+        })).config.applications.identity.objects;
       kanidmIngress =
         objects: (findObject objects "NetworkPolicy" namespace "kanidm-private").spec.ingress;
       namespace = "identity";
@@ -390,6 +418,19 @@
           lib.sort builtins.lessThan (map (client: client.name) normalClients)
           == builtins.attrNames normalState.systems.oauth2
           && lib.all (publicationIntact normalObjects) (clientSecrets normalClients);
+        client-secret-destinations-distinct =
+          publicationIntact (sharedSecretObjects "other-client-secret" { }) (
+            oidcClients.argocd.secret // { namespace = argocdRoute.namespace; }
+          )
+          && !(builtins.tryEval (
+            builtins.deepSeq (sharedSecretObjects oidcClients.argocd.secret.key { }) true
+          )).success;
+        client-secret-labels-consistent =
+          !(builtins.tryEval (
+            builtins.deepSeq (sharedSecretObjects "other-client-secret" {
+              "app.kubernetes.io/part-of" = "collision-peer";
+            }) true
+          )).success;
         administrator-eligibility-restricted =
           !(builtins.tryEval (
             builtins.deepSeq (provisionClients
