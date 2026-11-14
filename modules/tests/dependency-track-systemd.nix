@@ -628,6 +628,7 @@
                 assert published_run["run"] == run["id"] and published_run["sha"] == run["head_sha"]
                 component_counts = {}
                 native_components = {}
+                identity_fields = ("group", "name", "version", "purl")
                 for stream, project in current["projects"].items():
                     stock.project(sync.project_name(declaration, current["revisionId"], stream), "inventory",
                                   collection, cached=project,
@@ -643,11 +644,28 @@
                         assert metadata[key] == value
                     components = pages("component/project/" + project)
                     if stream in ("native", "image"):
-                        witness = sync.load(archive / description["streams"][stream])["components"][0]
-                        assert any(item.get("bomRef") == witness["bom-ref"]
-                                   and item["name"] == witness["name"]
-                                   and item.get("version") == witness.get("version")
-                                   for item in components.values())
+                        document = sync.load(archive / description["streams"][stream])
+                        witness = next(item for item in document["components"] if item.get("purl"))
+                        # Stock bomRef is transient, not a component API field.
+                        # ModelConverter trims empty group/version to null; keep
+                        # the full PURL (including nix_drv / image qualifiers).
+                        expected_identity = {key: (witness.get(key) or "").strip() or None
+                                             for key in identity_fields}
+                        matches = [item for item in components.values()
+                                   if {key: item.get(key) for key in identity_fields} == expected_identity]
+                        assert len(matches) == 1, (stream, "component identity readback mismatch", len(matches))
+                        if stream == "native":
+                            expected_nix = {(item["name"].split(":", 1)[1], item["value"])
+                                            for item in witness["properties"]
+                                            if item["name"].startswith("nix:")}
+                            assert any(name == "output_path" for name, value in expected_nix)
+                            assert (("drv_path", witness["bom-ref"]) in expected_nix
+                                    if witness["bom-ref"].endswith(".drv")
+                                    else ("output_path", witness["bom-ref"]) in expected_nix)
+                            actual_nix = {(item["propertyName"], item["propertyValue"]) for item in
+                                          stock.request("GET", "component/" + matches[0]["uuid"] + "/property")
+                                          if item.get("groupName") == "nix"}
+                            assert actual_nix == expected_nix
                     component_counts[stream] = len(components)
                     if stream == "native":
                         native_components = components
@@ -685,14 +703,26 @@
                                           if item.get("comment", "").startswith("homelab:origin:v1 ")}
                         if not expected_links:
                             continue
+                        assert component.get("purl")
+                        expected_identity = {key: (component.get(key) or "").strip() or None
+                                             for key in identity_fields}
                         matches = [item for item in native_components.values()
-                                   if item.get("bomRef") == component["bom-ref"]]
+                                   if {key: item.get(key) for key in identity_fields} == expected_identity]
                         assert len(matches) == 1
                         component_id = matches[0]["uuid"]
+                        component_properties = stock.request("GET", "component/" + component_id + "/property")
                         actual_properties = {(item["propertyName"], item["propertyValue"])
-                                             for item in stock.request("GET", "component/" + component_id + "/property")
-                                             if item.get("groupName") == "homelab"}
+                                             for item in component_properties if item.get("groupName") == "homelab"}
                         assert actual_properties == wanted_properties
+                        expected_nix = {(item["name"].split(":", 1)[1], item["value"])
+                                        for item in component["properties"] if item["name"].startswith("nix:")}
+                        assert any(name == "output_path" for name, value in expected_nix)
+                        assert (("drv_path", component["bom-ref"]) in expected_nix
+                                if component["bom-ref"].endswith(".drv")
+                                else ("output_path", component["bom-ref"]) in expected_nix)
+                        actual_nix = {(item["propertyName"], item["propertyValue"])
+                                      for item in component_properties if item.get("groupName") == "nix"}
+                        assert actual_nix == expected_nix
                         detail = stock.request("GET", "component/" + component_id)
                         actual_links = {(item["url"], item.get("comment")) for item in
                                         detail.get("externalReferences", [])}
