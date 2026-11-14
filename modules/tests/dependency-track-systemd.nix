@@ -711,7 +711,7 @@
             projects = pages("project")
             assert set(projects) == project_ids
             unit = subprocess.run(["systemctl", "show", "dependency-track-sync.service",
-                "--property=Id,User,Group,InvocationID,Result,ExecMainStatus,NoNewPrivileges,ProtectSystem,ProtectHome,PrivateTmp,MemoryMax,CPUQuotaPerSecUSec"],
+                "--property=Id,User,Group,InvocationID,Result,ExecMainStatus,NoNewPrivileges,ProtectSystem,ProtectHome,PrivateTmp,MemoryMax,MemoryPeak,CPUQuotaPerSecUSec"],
                 check=True, capture_output=True, text=True, timeout=10).stdout
             unit = dict(line.split("=", 1) for line in unit.splitlines())
             assert unit["Result"] == "success" and unit["ExecMainStatus"] == "0"
@@ -785,6 +785,7 @@
               cores = 4;
               memorySize = 6144;
               diskSize = 32768;
+              writableStoreUseTmpfs = false;
               restrictNetwork = false;
             };
             services.k3s.package = self.nixosConfigurations.compute-1.config.services.k3s.package;
@@ -1067,7 +1068,7 @@
             finally:
                 for unit in (importer, policy, credentials, broker, notifier):
                     print(json.dumps({"unit": unit, "state": machine.execute(
-                        "systemctl show --property=Id,Result,ExecMainStatus,ExecStartPre " + unit)[1]}))
+                        "systemctl show --property=Id,Result,ExecMainStatus,MemoryCurrent,MemoryPeak,ExecStartPre " + unit)[1]}))
                 leak_status = 0
                 if machine.execute("test -f /run/dt-unit-fixture/credential-history.json")[0] == 0:
                     leak_status = machine.execute(f"{fixture} no-leaks")[0]
