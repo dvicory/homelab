@@ -39,6 +39,8 @@
             den.hosts.x86_64-linux.compute-1.settings.workloads.dependency-track-sync = {
               apiUrl = "http://127.0.0.1:1022";
               branch = "security/software-vulnerability-management";
+              # Use a 30-second fixture schedule; leave production defaults unchanged.
+              onCalendar = "*-*-* *:*:00/30";
               targetIds = [
                 "3ca171bb4d06a0d2584c981f"
                 "cc64e08c1afb4776b4d587d4"
@@ -281,6 +283,27 @@
             assert info["regular"]
             hashes[key] = hashlib.sha256(sync.credential(path).encode()).hexdigest()
             assert not os.access(path, os.W_OK)
+        rejected = {}
+        for name, gid, acl in (
+                ("owning-group", 705, ["group::r--", "other::---", "user::r--"]),
+                ("extra-reader", 0, ["group::---", "mask::r--", "other::---",
+                                     "user:705:r--", "user:706:r--", "user::r--"])):
+            path = Path("/run/dt-unit-credential-boundary") / name
+            info = metadata(path)
+            print(json.dumps({"readableNonCredentialBoundary": {name: info}}), flush=True)
+            assert info["regular"] and info["uid"] == 0 and info["gid"] == gid
+            assert info["mode"] == "0o440" and info["acl"] == sorted(acl)
+            # Actual UID705 kernel open succeeds; the shared getter must still
+            # reject group access and an ACL that admits another named reader.
+            path.read_bytes()
+            try:
+                sync.credential(path)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("credential getter admitted an additional reader")
+            rejected[name] = info
+        credential_metadata["rejectedReadableFiles"] = rejected
         for path in ("/etc/rancher/k3s/k3s.yaml",
                      "/run/dependency-track-sync-credentials/api-key",
                      "/srv/secrets/runtime-secrets.yaml",
@@ -412,7 +435,20 @@
                 temporary.chmod(0o400)
                 temporary.replace(directory / ("runtime-secrets." + name))
         command = sys.argv[1]
-        if command == "stage":
+        if command == "credential-boundary":
+            boundary = Path("/run/dt-unit-credential-boundary")
+            boundary.mkdir(mode=0o711)
+            boundary.chmod(0o711)
+            for name, gid in (("owning-group", 705), ("extra-reader", 0)):
+                path = boundary / name
+                path.write_text("nonsecret credential boundary fixture")
+                os.chown(path, 0, gid)
+                path.chmod(0o440)
+                subprocess.run(["${pkgs.acl}/bin/setfacl", "-b", str(path)], check=True)
+            subprocess.run(["${pkgs.acl}/bin/setfacl", "--set",
+                            "u::r--,u:705:r--,u:706:r--,g::---,m::r--,o::---",
+                            str(boundary / "extra-reader")], check=True)
+        elif command == "stage":
             stage(sys.argv[2])
         elif command == "gate":
             admitted = sys.argv[2] == "true"
@@ -696,6 +732,7 @@
             observed = json.loads(Path("/srv/state/dependency-track-evidence/unit-probe.json").read_text())
             assert observed["uid"] == observed["gid"] == 705
             assert observed["nixDaemonTrusted"] is False
+            assert set(observed["credentialBoundary"]["rejectedReadableFiles"]) == {"owning-group", "extra-reader"}
             assert observed["hashes"] == {key: hashlib.sha256(values[key].encode()).hexdigest()
                                           for key in ("api-key", "github-token")}
         elif command == "acquisition-failed":
@@ -764,6 +801,11 @@
             ++ lib.mapAttrsToList (
               _: path: "d ${path.guestPath} ${path.mode} ${toString path.uid} ${toString path.gid} -"
             ) retainedPaths;
+            # Start source timers only after fixture Secrets and Alertmanager exist.
+            systemd.timers = {
+              dependency-track-sync.wantedBy = lib.mkForce [ ];
+              dependency-track-access-policy.wantedBy = lib.mkForce [ ];
+            };
             systemd.services.dependency-track-sync.serviceConfig.ExecStartPre = lib.mkAfter [
               "${pkgs.python3}/bin/python3 -B ${probe}"
             ];
@@ -786,6 +828,7 @@
             import shlex
             import stat
             import tempfile
+            import uuid
 
             k = "${self.nixosConfigurations.compute-1.config.services.k3s.package}/bin/k3s kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml"
             fixture = "${pkgs.python3}/bin/python3 -B ${fixture}"
@@ -841,11 +884,11 @@
             def events():
                 return set(json.loads(f("events")))
 
-            def fresh_event(previous):
+            def fresh_event(previous, timeout=90):
                 machine.wait_until_succeeds(
                     f"{fixture} events | ${pkgs.python3}/bin/python3 -c " + shlex.quote(
                         "import json,sys; assert len(set(json.load(sys.stdin)) - " + repr(previous) + ") == 1"),
-                    timeout=90)
+                    timeout=timeout)
                 return events()
 
             start_all()
@@ -856,6 +899,7 @@
                 machine.wait_until_succeeds(f"{k} wait --for=condition=Ready nodes --all --timeout=10s", timeout=300)
                 machine.succeed(f"{k} create namespace dependency-track")
                 stage("bootstrap")
+                f("credential-boundary")
                 machine.succeed(f"{k} apply -f /etc/dt-unit/enforcer.json")
                 machine.wait_until_succeeds(f"{k} -n kube-system rollout status daemonset/kube-network-policies --timeout=10s", timeout=600)
                 machine.succeed(f"{k} apply -f /etc/dt-unit/bootstrap.json -f /etc/dt-unit/alertmanager.json")
@@ -936,7 +980,7 @@
                     assert previous == machine.succeed(f"cat {evidence}/unit-probe.json")
                     assert state == machine.succeed(f"sha256sum {evidence}/state.json")
 
-                with subtest("stop clears real unit credentials and processes; normal timers invoke source lifecycle"):
+                with subtest("stop clears real unit credentials and processes; timers invoke fresh source lifecycle"):
                     stage("valid")
                     machine.succeed(f"touch {evidence}/unit-probe-hold; chown 705:705 {evidence}/unit-probe-hold; rm {evidence}/unit-probe.json")
                     machine.succeed(f"systemctl reset-failed {importer} {credentials}; systemctl start --no-block {importer}")
@@ -954,10 +998,32 @@
                     machine.succeed(f"systemctl stop {importer}")
                     machine.fail(f"kill -0 {pid}")
                     machine.succeed(f"rm {evidence}/unit-probe-hold; test ! -e /run/credentials/{importer}")
-                    machine.succeed(f"systemctl reset-failed {importer} {policy}; systemctl start dependency-track-sync.timer dependency-track-access-policy.timer")
-                    machine.wait_until_succeeds("test $(systemctl show -p LastTriggerUSecMonotonic --value dependency-track-sync.timer) -gt 0", timeout=180)
-                    machine.wait_until_succeeds("test $(systemctl show -p LastTriggerUSecMonotonic --value dependency-track-access-policy.timer) -gt 0", timeout=180)
-                    machine.wait_until_succeeds(f"test $(systemctl show -p ActiveState --value {importer}) = failed", timeout=180)
+                    # A killed pre-start also invokes OnFailure; settle it before
+                    # capturing the timer's event baseline, so it cannot pass stale.
+                    machine.wait_until_succeeds(f"test $(systemctl show -p ActiveState --value {notifier}) = inactive", timeout=90)
+                    assert machine.succeed(f"systemctl show -p Result --value {notifier}").strip() == "success"
+                    machine.succeed(f"systemctl reset-failed {importer} {policy}")
+                    policy_invocation = machine.succeed(f"systemctl show -p InvocationID --value {policy}").strip()
+                    # Observe this timer alone: the importer's root pre-start
+                    # must not masquerade as a policy-timer invocation.
+                    machine.succeed("systemctl start dependency-track-access-policy.timer")
+                    machine.wait_until_succeeds(
+                        f'test "$(systemctl show -p InvocationID --value {policy})" != {shlex.quote(policy_invocation)}', timeout=180)
+                    machine.succeed("systemctl stop dependency-track-access-policy.timer")
+                    machine.wait_until_succeeds(f"test $(systemctl show -p ActiveState --value {policy}) = inactive", timeout=180)
+                    assert machine.succeed(f"systemctl show -p Result --value {policy}").strip() == "success"
+                    assert uuid.UUID(machine.succeed(f"systemctl show -p InvocationID --value {policy}").strip()).hex != policy_invocation
+                    before = events()
+                    importer_invocation = machine.succeed(f"systemctl show -p InvocationID --value {importer}").strip()
+                    machine.succeed(f"rm {evidence}/unit-probe.json; systemctl start dependency-track-sync.timer")
+                    # No manual service start: a new semantic OnFailure event,
+                    # invocation and UID705 probe must all come from the timer.
+                    fresh_event(before, timeout=180)
+                    machine.succeed("systemctl stop dependency-track-sync.timer")
+                    assert uuid.UUID(machine.succeed(f"systemctl show -p InvocationID --value {importer}").strip()).hex != importer_invocation
+                    assert machine.succeed(f"systemctl show -p ActiveState --value {importer}").strip() == "failed"
+                    machine.wait_until_succeeds(f"test $(systemctl show -p ActiveState --value {notifier}) = inactive", timeout=90)
+                    assert machine.succeed(f"systemctl show -p Result --value {notifier}").strip() == "success"
                     f("probe")
                     f("acquisition-failed")
                     f("no-leaks")
@@ -996,7 +1062,7 @@
                 machine.execute("systemctl stop dependency-track-sync.timer dependency-track-access-policy.timer dependency-track-sync.service dependency-track-access-policy.service dependency-track-sync-api-tunnel.service dependency-track-sync-credentials.service dependency-track-sync-failure.service kubernetes-runtime-secrets.path")
                 machine.execute(f"{k} delete namespace dependency-track monitoring --wait=true --timeout=180s")
                 machine.execute("systemctl stop kubernetes-runtime-secrets.service k3s.service")
-                machine.execute("rm -rf /run/dt-unit-fixture /run/dependency-track-sync-credentials /srv/secrets /srv/state/dependency-track-api /srv/state/dependency-track-postgres /srv/state/dependency-track-evidence")
+                machine.execute("rm -rf /run/dt-unit-fixture /run/dt-unit-credential-boundary /run/dependency-track-sync-credentials /srv/secrets /srv/state/dependency-track-api /srv/state/dependency-track-postgres /srv/state/dependency-track-evidence")
                 machine.shutdown()
                 assert leak_status == 0, "unit journal contains a private credential"
           '';
