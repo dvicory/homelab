@@ -246,7 +246,7 @@ jobs:
         export ACTUAL_SOURCE
         ACTUAL_SOURCE=$(git rev-parse HEAD)
         set +e
-        nix build -L --no-link --print-out-paths ".#${attr}" 2>&1 | tee "$RUNNER_TEMP/dependency-track-systemd-build.log"
+        nix build -L --option sandbox relaxed --no-link --print-out-paths ".#${attr}" 2>&1 | tee "$RUNNER_TEMP/dependency-track-systemd-build.log"
         status=${PIPESTATUS[0]}
         set -e
         export TEST_EXIT_CODE="$status"
