@@ -772,7 +772,8 @@ with open('/fixture/coordination/' + sys.argv[1] + '.lock', 'r') as lock:
                            *mount("config", "/app/config", True), *mount("coordination", "/coordination"),
                            *(("--network", source_network) if fetch else ()),
                            "--entrypoint", source["command"][0], argv=tuple(source["command"][1:]),
-                           environment=environment, failure=failure, detached=detached)
+                           environment=environment, failure=failure, detached=detached,
+                           diagnostic_secrets=(*runtime.values(), *(overrides or {}).values()))
 
             def verify_arr(app):
                 desired = policy["arr"][app]["standard"]

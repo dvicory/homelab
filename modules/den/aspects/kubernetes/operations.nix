@@ -101,6 +101,64 @@ in
         later-wave applications. It does not stop running workloads or pause
         independently syncing child Applications.
 
+        ## Software inventories and updates
+
+        `Software vulnerability inventory` collects declared host/compute roots,
+        exported packages and OCI images on source changes and twice weekly.
+        Host and image declarations are desired state; package exports are
+        exported state. Building or resolving an artifact does not make it deployed.
+        No live fleet dashboard or deployment discovery is installed by this workflow.
+
+        Download `security-plan` and the matching per-target inventory/report artifacts
+        from the workflow run. The plan lists unsupported targets and discovery
+        failures. Collection, provenance or report errors fail their jobs; a missing
+        report is not a successful scan. Artifacts are retained for 90 days.
+
+        Native inventories retain the original SBOM, closure/patch evidence and
+        opaque-path ledger. `native-identity.cdx.json` is a derived companion:
+        its `nix_drv` PURL qualifier carries the actual Nix derivation path without
+        changing package versions or CPEs. `native-identity.provenance.json` binds
+        the original, derived inventory and identity changes. Keep originals;
+        normalized dashboard exports need not preserve all source evidence.
+
+        Saved inventories can be rescanned with current advisory data without
+        rebuilding software or querying hosts/registries. Reuse verifies source,
+        producer, target identity and file hashes.
+        Reused image inventories keep the original software evidence; their
+        Homelab references come from the current plan, not the original scan.
+        Automated consumers use `.github/security_artifacts.py` to verify the trusted
+        producer and sealed files. Its `discover_plan(..., run_id=...)` recovery
+        option selects an exact run without bypassing source, event or artifact checks.
+        Scanner configuration and ignore files from the repository are not loaded. Raw portable reports
+        remain downloadable; this workflow does not submit Code Scanning alerts.
+
+        Version/CPE matches are candidates, not Nix backport or runtime-reachability
+        decisions. Missing versions/CPEs and opaque paths remain unknown coverage.
+        Referenced lockfiles and fixtures do not prove their software is deployed.
+        Complete artifact collection is not complete vulnerability coverage.
+
+        `Dependency update PRs` prepares ordinary Nix input and declared-source
+        updates with read authority. Candidate evaluation and generation run in a
+        disposable checkout/private store; package builds use unprivileged Nix
+        build users. A separate publisher accepts validated regular-file patches
+        with validated source revisions and exact updater-branch leases, not
+        executable candidate code. It never merges or activates software.
+        Unsupported source policies and incomplete coupled
+        releases remain explicit refusals, not guessed updates.
+        Publishers recheck main immediately before pushing and refuse already-stale
+        candidates. Main can still advance after that check; review against current
+        main before merging.
+
+        Read-only preparation does not require PR-creation permission. Publishing
+        requires GitHub's Settings → Actions → General → Workflow permissions →
+        Allow GitHub Actions to create and approve pull requests. Keep default
+        token permissions read-only and write authority confined to publisher jobs;
+        successful default-token publication still needs qualification.
+
+        Approve pending CI runs or dispatch Nix CI on an updater branch before
+        reviewing a merge. Merging generated manifests to main can roll out
+        services through Argo; host activation remains separate.
+
         ## Declared routes
 
         | Service | Exposure | Canonical URL | Secondary URL | Backend | Auth |

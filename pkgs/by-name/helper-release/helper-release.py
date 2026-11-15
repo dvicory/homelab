@@ -213,7 +213,7 @@ def verify(args):
             run("skopeo", "copy", "--src-no-creds", "--src-tls-verify=true", "--preserve-digests", f"docker://{identity['repository']}@{identity['digest']}", f"dir:{temporary}/image")
         selected[name] = identity
     # Explicit candidate output only: never commit, update a host or activate GitOps.
-    save(args.output, {"schema": 1, "sourceSha": args.source_sha, "sourceRun": args.source_run, "system": args.system, "artifacts": selected})
+    save(args.output, {"schema": 1, "sourceSha": args.source_sha, "sourceRun": args.source_run, "sourceNarHash": original["sourceNarHash"], "system": args.system, "artifacts": selected})
 
 
 def main():

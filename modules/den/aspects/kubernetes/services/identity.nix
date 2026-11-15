@@ -210,10 +210,17 @@
       # The provisioning Job grants each client's scopes to its eligibleGroup,
       # publishes each Kanidm-generated client secret to every listed Secret,
       # and deletes Kanidm clients that this list does not name.
-      oauth2Clients = lib.mapAttrsToList (name: client: {
-        inherit name;
-        inherit (client) eligibleGroup scopes secrets;
-      }) clients;
+      oauth2Clients = lib.mapAttrsToList (
+        name: client:
+        assert lib.assertMsg (
+          !(client.public or false) || client.secrets == [ ]
+        ) "Public Kanidm client ${name} must not have Secret publication targets";
+        {
+          inherit name;
+          inherit (client) eligibleGroup scopes secrets;
+        }
+        // lib.optionalAttrs (client.public or false) { public = true; }
+      ) clients;
       # This Application declares each client Secret without data, so the
       # Job never needs `create`, which Kubernetes cannot limit by name.
       # Argo's server-side apply owns only metadata and type; the Job's
@@ -363,7 +370,7 @@
         # Scope maps stay empty here; the Job replaces them after this state.
         systems.oauth2 = lib.mapAttrs (_: client: {
           inherit (client) displayName;
-          public = false;
+          public = client.public or false;
           originUrl = client.redirects;
           originLanding = client.landing;
           allowInsecureClientDisablePkce = false;
