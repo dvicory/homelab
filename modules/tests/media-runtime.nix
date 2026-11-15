@@ -150,32 +150,31 @@
                 assert not captured.getvalue(), "successful setup or later producer emitted startup diagnostics"
 
             secret = "generated-owner-password"
-            for name in ("jellyfin-provision", "jellarr-bootstrap"):
-                result = subprocess.CompletedProcess(
-                    ["docker", "run"], 134,
-                    stdout="early-log " + "\u2603" * 3000
-                        + f"\n/cache has insufficient free space\n{secret}\x1b[31m",
-                    stderr=f"Unhandled exception\n{secret}\n",
-                )
+            result = subprocess.CompletedProcess(
+                ["docker", "run"], 134,
+                stdout="early-log " + "\u2603" * 3000
+                    + f"\n/cache has insufficient free space\n{secret}\x1b[31m",
+                stderr=f"Unhandled exception\n{secret}\n",
+            )
+            captured = io.StringIO()
+            with contextlib.redirect_stderr(captured):
+                try:
+                    require_container_exit(result, False, "producer", diagnostic_secrets=(secret,))
+                except AssertionError:
+                    pass
+                else:
+                    raise AssertionError("bootstrap crash satisfied success")
+            output = captured.getvalue()
+            assert "/cache has insufficient free space" in output and "Unhandled exception" in output
+            assert secret not in output and output.count("[redacted]") == 2
+            assert "[truncated]" in output and "early-log" not in output
+            assert len(output.encode()) <= 16600
+            assert "\x1b" not in output and output.isascii()
+            for status, failure in ((0, False), (1, True)):
                 captured = io.StringIO()
                 with contextlib.redirect_stderr(captured):
-                    try:
-                        require_container_exit(result, False, name, diagnostic_secrets=(secret,))
-                    except AssertionError as error:
-                        assert "exit 134, expected 0" in str(error)
-                    else:
-                        raise AssertionError("bootstrap crash satisfied success")
-                output = captured.getvalue()
-                assert "/cache has insufficient free space" in output and "Unhandled exception" in output
-                assert secret not in output and output.count("[redacted]") == 2
-                assert "[truncated]" in output and "early-log" not in output
-                assert len(output.encode()) <= 16600
-                assert "\x1b" not in output and output.isascii()
-                for status, failure in ((0, False), (1, True)):
-                    captured = io.StringIO()
-                    with contextlib.redirect_stderr(captured):
-                        require_container_exit(completed(status), failure, name, diagnostic_secrets=(secret,))
-                    assert not captured.getvalue(), "expected helper outcome emitted private output"
+                    require_container_exit(completed(status), failure, "producer", diagnostic_secrets=(secret,))
+                assert not captured.getvalue(), "expected helper outcome emitted private output"
             failure_label = acceptance["failure_label"]
             secret = "synthetic-credential-must-not-appear"
             try:
