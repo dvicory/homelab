@@ -32,7 +32,7 @@ the error clears and the child is healthy. This can delay unrelated
 later-wave applications. It does not stop running workloads or pause
 independently syncing child Applications.
 
-## Software inventories
+## Software inventories and updates
 
 `Software vulnerability inventory` collects declared host/compute roots,
 exported packages and OCI images on source changes and twice weekly.
@@ -67,6 +67,28 @@ Version/CPE matches are candidates, not Nix backport or runtime-reachability
 decisions. Missing versions/CPEs and opaque paths remain unknown coverage.
 Referenced lockfiles and fixtures do not prove their software is deployed.
 Complete artifact collection is not complete vulnerability coverage.
+
+`Dependency update PRs` prepares ordinary Nix input and declared-source
+updates with read authority. Candidate evaluation and generation run in a
+disposable checkout/private store; package builds use unprivileged Nix
+build users. A separate publisher accepts validated regular-file patches
+with validated source revisions and exact updater-branch leases, not
+executable candidate code. It never merges or activates software.
+Unsupported source policies and incomplete coupled
+releases remain explicit refusals, not guessed updates.
+Publishers recheck main immediately before pushing and refuse already-stale
+candidates. Main can still advance after that check; review against current
+main before merging.
+
+Read-only preparation does not require PR-creation permission. Publishing
+requires GitHub's Settings → Actions → General → Workflow permissions →
+Allow GitHub Actions to create and approve pull requests. Keep default
+token permissions read-only and write authority confined to publisher jobs;
+successful default-token publication still needs qualification.
+
+Approve pending CI runs or dispatch Nix CI on an updater branch before
+reviewing a merge. Merging generated manifests to main can roll out
+services through Argo; host activation remains separate.
 
 ## Declared routes
 
