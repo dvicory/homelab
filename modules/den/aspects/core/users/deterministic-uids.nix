@@ -229,6 +229,7 @@
           authelia = uidGid 702;
           headscale = uidGid 703;
           atticd = uidGid 704;
+          dependency-track-sync = uidGid 705;
 
           # ── Media services (750-799) ────────────────────────────────
           grafana = uidGid 750;

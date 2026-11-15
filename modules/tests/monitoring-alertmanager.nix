@@ -35,6 +35,26 @@
           labels = "alertname=HostDiskSmartErrorsIncreasing severity=warning host=hvn-hyp1 disk=media4 signal=scsi-grown-defects";
         }
         {
+          receiver = "warning-events";
+          labels = "source=systemd alertname=DependencyTrackInventoryRefreshFailed severity=warning namespace=dependency-track host=hvn-hyp1 event_id=bf389cde-8772-4411-9804-12b563f3a139";
+        }
+        {
+          receiver = "warning";
+          labels = "alertname=DependencyTrackInventoryRefreshFailed severity=warning namespace=dependency-track host=hvn-hyp1";
+        }
+        {
+          receiver = "warning";
+          labels = "source=systemd alertname=HostSystemdUnitFailed severity=warning host=hvn-hyp1";
+        }
+        {
+          receiver = "critical";
+          labels = "source=systemd alertname=DependencyTrackInventoryRefreshFailed severity=critical namespace=dependency-track host=hvn-hyp1";
+        }
+        {
+          receiver = "warning";
+          labels = "alertname=UnclassifiedAlert host=hvn-hyp1";
+        }
+        {
           receiver = "heartbeat";
           labels = "alertname=Watchdog severity=none";
         }
@@ -113,8 +133,8 @@
                 for kind, configs in channels(name).items():
                     for c in configs:
                         assert c.get("send_resolved") is True, (name, kind)
-            # New-error events use the same warning channels/priority, but
-            # ending an observation window must not claim physical recovery.
+            # Events use the same warning channels/priority, but an observation
+            # window ending or an event expiring must not claim recovery.
             events = channels("warning-events")
             for kind, configs in events.items():
                 assert all(c.get("send_resolved") is False for c in configs), (kind, configs)
@@ -216,6 +236,38 @@
             assert not inhibited(alertname="HostFilesystemLowSpace", severity="critical")
             assert not inhibited(alertname="HostZpoolUnhealthy")
             print("alertmanager inhibition holds")
+            PY
+
+            # Keep these zero-wait events out of the missing-credential checks:
+            # those must still exercise the original condition-alert routes.
+            post '[
+              {"labels":{"source":"systemd","alertname":"DependencyTrackInventoryRefreshFailed","severity":"warning","namespace":"dependency-track","host":"hvn-hyp1","event_id":"bf389cde-8772-4411-9804-12b563f3a139"}},
+              {"labels":{"source":"systemd","alertname":"DependencyTrackInventoryRefreshFailed","severity":"warning","namespace":"dependency-track","host":"hvn-hyp1","event_id":"0949e5bc-546b-4857-a40e-0d5b033b88ac"}}
+            ]'
+            ${python.interpreter} - $url/api/v2/alerts/groups <<'PY'
+            import json, sys, time
+            from urllib.request import urlopen
+            for _ in range(60):
+                with urlopen(sys.argv[1], timeout=5) as response:
+                    groups = [
+                        group for group in json.load(response)
+                        if any(alert["labels"]["alertname"] == "DependencyTrackInventoryRefreshFailed"
+                               for alert in group["alerts"])
+                    ]
+                if len(groups) == 2:
+                    break
+                time.sleep(0.5)
+            # Two failures on the same guest must not collapse into one notice.
+            assert len(groups) == 2, groups
+            assert {group["labels"]["event_id"] for group in groups} == {
+                "bf389cde-8772-4411-9804-12b563f3a139",
+                "0949e5bc-546b-4857-a40e-0d5b033b88ac",
+            }, groups
+            for group in groups:
+                assert group["receiver"]["name"] == "warning-events", group
+                assert set(group["labels"]) == {"alertname", "event_id"}, group
+                assert len(group["alerts"]) == 1, group
+            print("alertmanager inventory failure events: distinct events stay separate")
             PY
             kill $pid
             touch $out

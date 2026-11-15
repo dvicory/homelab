@@ -37,6 +37,7 @@ let
     identity.k8s-manifests {
       cluster = inventory;
       inherit computeResources lib;
+      config.applications = { };
     };
   gateway =
     (import ../den/aspects/kubernetes/services/gateway.nix { }).den.aspects.kubernetes.services.gateway;

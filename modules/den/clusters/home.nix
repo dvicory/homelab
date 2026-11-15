@@ -28,6 +28,13 @@ let
     pathPrefix = "/";
     backendTLS = false;
   };
+  dependencyTrack = cluster.settings.kubernetes.services.dependency-track;
+  dependencyTrackSelected =
+    config.flake.nixidyEnvs.${cluster.hostSystem}.prod-home.config.applications ? dependency-track;
+  dependencyTrackReady =
+    dependencyTrack.privateAccess
+    && dependencyTrack.databasePhase == "restore"
+    && cluster.settings.kubernetes.services.identity.phase == "normal";
 in
 {
   den.clusters.prod-home = {
@@ -154,6 +161,29 @@ in
           manageBackendIngress = false;
           backendTLS = true;
           backendHostname = builtins.head cluster.routes.idm.hostnames;
+        };
+    }
+    // lib.optionalAttrs dependencyTrackReady {
+      dependency-track =
+        assert lib.assertMsg dependencyTrackSelected
+          "Dependency-Track privateAccess requires explicitly selecting its service.";
+        (route "dependency-track" "dependency-track" "dependency-track-frontend" 8080 "native" "private" {
+          "app.kubernetes.io/name" = "dependency-track-frontend";
+        })
+        // {
+          displayName = "Dependency-Track";
+          sameNamespaceIngress = false;
+          manageBackendIngress = false;
+        };
+      dependency-track-api =
+        assert lib.assertMsg dependencyTrackSelected
+          "Dependency-Track privateAccess requires explicitly selecting its service.";
+        (route "dependency-track-api" "dependency-track" "dependency-track-api" 8080 "native" "private" {
+          "app.kubernetes.io/name" = "dependency-track-api";
+        })
+        // {
+          sameNamespaceIngress = false;
+          manageBackendIngress = false;
         };
     };
     # The existing Arr instances intentionally share the host-owned media

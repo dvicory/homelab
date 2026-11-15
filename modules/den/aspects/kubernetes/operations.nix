@@ -301,6 +301,219 @@ in
         ./bootstrap-bundle/bin/household-bootstrap-host /etc/homelab/compute.json --confirm ${computeInstance}
         ```
 
+        ## Private Dependency-Track (available, not enrolled)
+
+        No fleet selects this service or its ingestor. Production enrollment
+        requires placement, storage, recovery and NetworkPolicy admission.
+        The declared resource limits are not full-feed capacity qualification.
+
+        Select `kubernetes.services.dependency-track` with `privateAccess=true`,
+        and select `workloads.dependency-track-sync.compute-guest` on the
+        corresponding compute guest. Set its `apiUrl` to
+        `http://127.0.0.1:1022`. Set the service's `automaticInventory=true` when
+        its operator-issued ingestion credentials are available. Keep the
+        workload's `onCalendar=null` until bootstrap and mirror admission finish.
+        Selecting the service alone enables no import schedule.
+
+        Private HTTPS uses the existing internal Gateway and native Kanidm
+        login for the existing administrators group. The UI and API hostnames
+        come from their Den routes. Routes remain absent until
+        `databasePhase=restore` and `identity.phase=normal`. The public OIDC
+        client has no client secret. Its provisioning Job requires a verified,
+        main-published `kanidm-provision` release with public-client support;
+        a PR image or an incomplete release receipt is not a substitute.
+
+        The separate root access-policy service requires the old default
+        password to fail and verifies the recovery administrator and allowed
+        group mapping before admitting each API Pod UID to Service endpoints.
+        The importer never receives that password or a kubeconfig.
+        Readiness controls routing, not direct Pod-IP access: bootstrap must
+        take place on a controlled, trusted node and network.
+        Group removal takes effect at a new login; it does not instantly revoke
+        existing browser sessions.
+
+        For controlled bootstrap or recovery, use the existing authenticated
+        Kubernetes administrative path with loopback-only forwards:
+
+        ```sh
+        kubectl -n dependency-track port-forward --address 127.0.0.1 service/dependency-track-api 18080:8080
+        kubectl -n dependency-track port-forward --address 127.0.0.1 service/dependency-track-frontend 18081:8080
+        ```
+
+        Normal operation uses private HTTPS, not these forwards. The separate
+        loopback-only profile defaults its browser API URL to
+        `http://127.0.0.1:18080`; both forwards must be on the browser's machine.
+
+        The task scheduler and telemetry default off. In the private profile,
+        only explicit bootstrap may rotate the stock password; restore must
+        authenticate the retained recovery administrator instead.
+        Before accepting inventories, disable remote analyzers, package
+        repositories, KEV and EPSS through the native administrative interface.
+        API egress allows PostgreSQL, cluster DNS and
+        public HTTPS; the stock outbound policy further restricts HTTP
+        destinations to `storage.googleapis.com` and `nvd.nist.gov`.
+
+        Apply the packaged, source-owned advisory policy using an existing
+        mode-0600 administrative session file, not the ingestion key:
+
+        ```sh
+        dependency-track-sync configure --api-url http://127.0.0.1:18080 --admin-session-file "$DT_ADMIN_SESSION_FILE"
+        ```
+
+        This idempotent command disables GitHub and JVN sources, enables
+        official NVD and OSV Go data, and verifies configuration readback.
+        It neither grants credentials nor starts an import. Other language
+        ecosystems remain outside this profile.
+        Admit the first mirrors separately. Select `initialMirror = true`
+        with scheduled refresh off to serialize mirror work and pause
+        analysis/import workers. Drain existing work first; a disabled worker
+        does not cancel queued activity. Keep a consistent DB/API-keyset
+        recovery point. A failed or uncertain NVD import requires recovery
+        disposition before any retry; do not edit upstream watermarks.
+        Require each native mirror workflow, including its metrics tail, to
+        reach `COMPLETED`. Then leave initial-mirror mode and require
+        successful sequential project analyses.
+        Refresh the initial portfolio metrics through the supported
+        `GET /api/v1/metrics/portfolio/refresh` and require its workflow to
+        complete before trusting the first dashboard. Findings may already
+        exist while the dashboard still shows stale zeros. Dashboard totals
+        deduplicate advisory aliases; raw finding rows need not match them.
+        Only after that admission, select `advisoryRefresh = true` with
+        `initialMirror = false` for stock scheduled refresh. Activity,
+        analysis, reconciliation and artifact-import concurrency are bounded
+        separately; portfolio-dispatch concurrency alone is insufficient.
+        Do not enable the scheduler before applying and qualifying the policy.
+        More sources need separate capacity, destination and freshness checks.
+
+        ### Automatic inventories and retained evidence
+
+        Routine operation requires no `dependency-track-sync sync` command:
+
+        1. GitHub Actions builds or reuses declared software inventories and
+           refreshes scanner reports. Downloadable original artifacts remain on
+           GitHub for 90 days. They describe public configuration, not observed
+           running software.
+        2. The compute guest's `dependency-track-sync.service` checks the latest
+           completed allowed-event producer on the configured repository/branch.
+           It verifies declarations, GitHub artifact digests, sizes and seals
+           before importing. Production trusts `dvicory/homelab` branch `main`;
+           qualification branches require separate evidence and API state.
+        3. The service imports desired hosts and referenced images by default,
+           then evaluates supported host inclusion paths from that exact trusted
+           source revision. Exported packages remain accounted for but require
+           explicit selection. The selected workload defaults to a daily timer;
+           `onCalendar=null` leaves an explicitly started oneshot.
+
+        Give its dedicated ingestion team only `VIEW_PORTFOLIO`,
+        `PORTFOLIO_MANAGEMENT` and `BOM_UPLOAD`. These are instance-wide stock
+        permissions, not per-project isolation. Use a dedicated private instance.
+        Enroll its API key and a read-only GitHub acquisition token through the
+        existing agenix/runtime-secret flow. The service requests
+        `dependency-track--dependency-track-sync--api-key.age` and
+        `dependency-track--dependency-track-sync--github-token.age` for the
+        compute instance; neither credential is generated.
+
+        Root projects only those two keys from the exact Kubernetes Secret.
+        systemd gives non-login UID/GID705 private credential files; the importer
+        has no root control files or trusted Nix-daemon access. A fixed root-owned
+        loopback broker supplies the API transport without handing out Kubernetes
+        credentials. Failed policy admission stops ingestion.
+        Inclusion tracing does not require machine-wide Nix feature settings;
+        the client requests its features without enabling builds or daemon trust.
+
+        Original ZIPs, sealed inventories, source receipts, origin reports and
+        the single-writer journal stay on the compute guest under
+        `/srv/state/dependency-track-evidence`, owned by 705:705. Routine operation
+        needs no operator-local build or artifact directory. Dashboard properties
+        keep compact run/commit references; full receipts stay in retained evidence.
+        A stale source, corrupt cache or failed import preserves the last complete
+        snapshot and records failed/unknown coverage. Check the unit journal and
+        `dependency-track-sync status --state-dir /srv/state/dependency-track-evidence`
+        rather than treating an old dashboard as current.
+
+        Software revisions follow actual Nix derivation/output or image/platform
+        identity, not report timestamps. Changed content for the same immutable
+        root fails closed. Cached projects must retain expected identity, owner,
+        parent and leaf layout before update or retirement. Failed ownership
+        checks keep failure status local instead of modifying another collection.
+        The UI uses readable Host, Package and Image names; short display
+        suffixes do not replace full managed identity checks. Within Nix
+        targets, Nix packages lists the derivation-backed package inventory;
+        Contents scan lists Trivy's executable metadata, package metadata and
+        dependency declarations. Neither view proves software is executing.
+        Component Details → Properties exposes the preserved Trivy `PkgType`
+        and `Type`: `gobinary`/`rustbinary` are binary-associated metadata,
+        `cargo` is a lockfile catalogue, `node-pkg` is package-manifest identity,
+        and `python-pkg` is distribution-style metadata. The stock UI has no
+        arbitrary-property evidence filter. Do not hide declarations or call
+        all contents compiled libraries. The source Application/Library
+        classifier does not establish deployment or exposure.
+
+        For supported host inventories, inclusion tracing runs automatically.
+        It currently covers `environment.systemPackages` and `systemd.package`,
+        not every option, exported package or image. The evaluated derivation
+        and output must match the admitted inventory. Component Details →
+        Properties shows Homelab inclusion paths; the chain-link menu opens
+        pinned source files. Unresolved paths stay unknown. Enrichment keeps the
+        original seals and software identities intact.
+
+        Update preparation remains independent of this dashboard. Findings do
+        not yet create CVE-driven update PRs, merge updates, activate software or
+        establish package affectedness.
+
+        ### Dependency-Track bootstrap, backup and recovery
+
+        The normal `databasePhase=restore` refuses a missing encrypted database
+        credential, missing/non-18 PostgreSQL data, or a missing API encryption
+        keyset. Only an explicitly admitted empty new service may select
+        `bootstrap`; switch back to `restore` after initialization and secret
+        generation. Never use bootstrap to repair missing state.
+
+        Bootstrap creates the restricted `dtrack` owner of its dedicated database
+        and schema. `postgres` administration uses local Unix-socket peer
+        authentication, with no password or TCP access. The API refuses
+        elevated role flags or dangerous memberships on bootstrap and restore;
+        recover correct roles and object ownership rather than weakening that
+        check. Recover the encrypted database and recovery-administrator
+        credentials with their matching retained data.
+
+        Retain the three host-owned `dependency-track-postgres` (70:70),
+        `dependency-track-api` (1000:0) and `dependency-track-evidence` (705:705)
+        directories, their configured encrypted storage, and the original
+        agenix database credential. PostgreSQL18 uses
+        `/var/lib/postgresql/18/docker`; the stock API key-encryption keyset is
+        inside `/data/.dependency-track/keys`. DT-normalized exports are not
+        substitutes for sealed originals, companions, provenance or the journal.
+        No automatic evidence deletion is configured.
+
+        For a cold backup, first record and hold automated sync for both the
+        root `apps` Application and `dependency-track`, as in
+        [Homarr recovery](operations/homarr.md#full-portable-capture).
+        Stop every ingestor, including its timer. Scale
+        both API and PostgreSQL Deployments to zero and wait until all their
+        Pods have terminated. Do not copy while a writer remains or Argo can
+        restart one. Snapshot/copy all three retained host directories and the
+        encrypted secret source, then restore the recorded sync policies and
+        ingestion schedule. Restore the directories and encrypted credential
+        sources together with their declared numeric ownership and private
+        modes on encrypted retained storage before reconstructing disposable
+        compute/Kubernetes state. Preserve the API encryption keyset byte-exact:
+        an API-key login proves hash authentication, not retained-secret decryption.
+        A different valid key with the same IDs can pass initialization.
+        Recreate static retained claims against the existing directories;
+        do not provision substitute storage or restore an old container cache,
+        root filesystem or Kubernetes object UID. Use `restore`, then start
+        PostgreSQL before the API. Require native login, root policy admission
+        and resumed inventory/provenance coverage. If managed secrets exist,
+        exercise a retained secret through its normal consumer as well.
+        Backup/restore rehearsal and retention/capacity qualification remain
+        rollout gates; no recovery SLA is introduced.
+
+        Images stay digest-bound to the tested stock API/frontend5.2.1 pair
+        and PostgreSQL18. Review API/frontend releases together. PostgreSQL
+        major or image-variant changes require an explicit migration and
+        identity review, never an independent automatic image upgrade.
+
         ## Verify
 
         With `KUBECONFIG` selecting the guest's cluster:
