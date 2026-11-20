@@ -1,6 +1,13 @@
 { inputs, ... }:
 {
   den.aspects.services.kubernetes = {
+    firewall = [
+      {
+        # Authenticated kubelet metrics stay on Flannel's local pod bridge.
+        networking.firewall.interfaces.cni0.allowedTCPPorts = [ 10250 ];
+      }
+    ];
+
     nixos =
       { config, pkgs, ... }:
       {
@@ -12,9 +19,6 @@
             message = "The K3s runtime must match the pinned package used to render Kubernetes manifests.";
           }
         ];
-        # Metrics collectors reach the authenticated kubelet through Flannel's
-        # local pod bridge, not the guest's external management interface.
-        networking.firewall.interfaces.cni0.allowedTCPPorts = [ 10250 ];
         services.k3s = {
           enable = true;
           role = "server";

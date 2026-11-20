@@ -9,6 +9,18 @@
 let
   host = self.nixosConfigurations.hvn-hyp1.config;
   guest = self.nixosConfigurations.compute-1.config;
+  incusFirewallRestricted =
+    firewall:
+    let
+      portClosed =
+        interface:
+        !(builtins.elem 8443 interface.allowedTCPPorts)
+        && builtins.all (range: !(range.from <= 8443 && range.to >= 8443)) interface.allowedTCPPortRanges;
+    in
+    portClosed firewall
+    && builtins.all (
+      name: name == host.services.tailscale.interfaceName || portClosed firewall.interfaces.${name}
+    ) (builtins.attrNames firewall.interfaces);
   hostEntity = config.den.hosts.x86_64-linux.hvn-hyp1;
   compute = hostEntity.settings.virtualization.compute;
   # The host's compute aspect, evaluated with a changed declaration.
@@ -41,7 +53,12 @@ let
     .success;
   withDevice =
     name: device: current:
-    current // { devices = current.devices // { ${name} = device; }; };
+    current
+    // {
+      devices = current.devices // {
+        ${name} = device;
+      };
+    };
   ungranted =
     builtins.fromJSON
       (evaluateWith (current: current // { accelerator = null; }))
@@ -161,7 +178,9 @@ let
         "unix-hotplug"
         "usb"
       ]
-      && project."restricted.devices.unix-char" == (if compute.accelerator != null then "allow" else "block");
+      &&
+        project."restricted.devices.unix-char"
+        == (if compute.accelerator != null then "allow" else "block");
     # gpu-render never enters the guest's ID map.
     accelerator-grant-leaves-id-map =
       descriptor.config."raw.idmap" == ungranted.config."raw.idmap"
@@ -215,16 +234,56 @@ let
         [
           compute.network
           devices.eth0.host_name
+          host.services.tailscale.interfaceName
           "*"
           "all"
         ]
         ++ builtins.attrNames config.den.hosts.x86_64-linux.hvn-hyp1.networking.interfaces
       );
-    # Rule content is covered by the compute-ingress-runtime VM test, which
-    # drives real packets through the generated nftables tables. What stays
-    # here is the firewall inventory the synthetic listener cannot exercise:
-    # the guest must open the NodePort and the host must not open ingress or
-    # management ports on its input chain.
+    incus-not-open-on-untrusted-interfaces = incusFirewallRestricted host.networking.firewall;
+    incus-tailnet-port-present =
+      builtins.elem 8443
+        host.networking.firewall.interfaces.${host.services.tailscale.interfaceName}.allowedTCPPorts;
+    tailscale-transport-present = builtins.elem host.services.tailscale.port host.networking.firewall.allowedUDPPorts;
+    independent-ssh-recovery =
+      host.services.openssh.enable && builtins.elem 22 host.networking.firewall.allowedTCPPorts;
+    bridge-service-ports-present =
+      builtins.elem 53 host.networking.firewall.interfaces.${compute.network}.allowedTCPPorts
+      &&
+        builtins.all
+          (port: builtins.elem port host.networking.firewall.interfaces.${compute.network}.allowedUDPPorts)
+          [
+            53
+            67
+          ];
+    kubelet-pod-bridge-port-present =
+      builtins.elem 10250 guest.networking.firewall.interfaces.cni0.allowedTCPPorts
+      && !(builtins.elem 10250 guest.networking.firewall.allowedTCPPorts);
+    incus-interface-port-rejected =
+      !(incusFirewallRestricted
+        (self.nixosConfigurations.hvn-hyp1.extendModules {
+          modules = [ { networking.firewall.interfaces.guard-test-lan.allowedTCPPorts = [ 8443 ]; } ];
+        }).config.networking.firewall
+      );
+    incus-interface-range-rejected =
+      !(incusFirewallRestricted
+        (self.nixosConfigurations.hvn-hyp1.extendModules {
+          modules = [
+            {
+              networking.firewall.interfaces.guard-test-lan.allowedTCPPortRanges = [
+                {
+                  from = 8442;
+                  to = 8444;
+                }
+              ];
+            }
+          ];
+        }).config.networking.firewall
+      );
+    # INPUT admission/denial, real Incus TLS UI/API, SSH recovery and the
+    # forwarded Gateway datapath are covered by compute-ingress-runtime.
+    # Inventory the guest's NodePort too: its namespace listener intentionally
+    # stands in for the guest, not for the guest's own firewall.
     household-direct-ingress-ports =
       let
         ingress = config.den.clusters.prod-home.ingress;

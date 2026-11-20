@@ -172,6 +172,18 @@ in
         }
       ];
 
+    firewall = { host, ... }: [
+      {
+        networking.firewall.interfaces.${host.settings.virtualization.compute.network} = {
+          allowedUDPPorts = [
+            53
+            67
+          ];
+          allowedTCPPorts = [ 53 ];
+        };
+      }
+    ];
+
     nixos =
       {
         host,
@@ -556,14 +568,6 @@ in
         environment.etc."homelab/compute.json" = {
           mode = "0444";
           text = builtins.toJSON descriptor + "\n";
-        };
-
-        networking.firewall.interfaces.${cfg.network} = {
-          allowedUDPPorts = [
-            53
-            67
-          ];
-          allowedTCPPorts = [ 53 ];
         };
 
         secretRequests."${cfg.instance}-host-key" = {

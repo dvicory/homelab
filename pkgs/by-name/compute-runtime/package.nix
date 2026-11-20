@@ -2,6 +2,8 @@
   lib,
   stdenv,
   buildGoModule,
+  go,
+  fetchurl,
   makeWrapper,
   kubectl,
   yq-go,
@@ -9,11 +11,25 @@
   openssh,
   util-linux,
 }:
-buildGoModule {
+let
+  # Keep a security-fixed compiler without overriding newer fleet versions.
+  securityGo =
+    if lib.versionAtLeast go.version "1.26.11" then
+      go
+    else
+      go.overrideAttrs {
+        version = "1.26.11";
+        src = fetchurl {
+          url = "https://go.dev/dl/go1.26.11.src.tar.gz";
+          hash = "sha256-1EEBsP8n7SpMda1GwXucdDWSCeLrLKfJ32y0/baOGWk=";
+        };
+      };
+in
+(buildGoModule.override { go = securityGo; }) {
   pname = "compute-runtime";
   version = "0-unstable";
   src = lib.cleanSource ./.;
-  vendorHash = "sha256-ZvluqlCu8Y6S/byXKRJBPxhUbrP54tb7leRXSRyH0i4=";
+  vendorHash = "sha256-hZXoEaZZFHXpvPB4Pmn8qqiYS1SXKCWGpmyqdSb+IRQ=";
 
   subPackages = [
     "cmd/household-bootstrap"

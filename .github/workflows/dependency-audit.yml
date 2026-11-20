@@ -1,0 +1,56 @@
+name: Go dependency audit
+
+on:
+  schedule:
+    - cron: "41 8 * * 1"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "pkgs/by-name/compute-runtime/**"
+      - "flake.lock"
+      - ".github/workflows/dependency-audit.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "pkgs/by-name/compute-runtime/**"
+      - "flake.lock"
+      - ".github/workflows/dependency-audit.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  govulncheck:
+    name: Audit compute-runtime advisories
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31.11.2
+
+      - name: Check reachable Go vulnerabilities against current advisories
+        id: reachable
+        env:
+          GOTOOLCHAIN: local
+          GOFLAGS: -mod=readonly
+          GOWORK: "off"
+          GOVULNDB: https://vuln.go.dev
+        run: |
+          nix shell --inputs-from path:. path:.#packages.x86_64-linux.compute-runtime.go nixpkgs#govulncheck --command bash -euc '
+            cd pkgs/by-name/compute-runtime
+            exec govulncheck ./...
+          '
+
+      - name: Check all module versions against OSV advisories
+        if: ${{ !cancelled() && steps.reachable.outcome != 'skipped' }}
+        run: |
+          nix shell --inputs-from path:. nixpkgs#osv-scanner --command \
+            osv-scanner scan source \
+              --lockfile=pkgs/by-name/compute-runtime/go.mod \
+              --all-vulns --no-call-analysis=go

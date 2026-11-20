@@ -22,7 +22,7 @@ spec:
   template:
     metadata:
       annotations:
-        checksum/configMaps: 12c80689fa61b4579cb65d0156ce7cb366638b5491d75f92521a3ad20ce21e2a
+        checksum/configMaps: 0877da01a23b035a15302bdb656c87c969972a5a40846e3815444ea17086a14e
       labels:
         app.kubernetes.io/controller: main
         app.kubernetes.io/instance: victoriametrics

@@ -10,3 +10,7 @@ updates:
       actions:
         patterns:
           - "*"
+  - package-ecosystem: gomod
+    directory: /pkgs/by-name/compute-runtime
+    schedule:
+      interval: weekly
