@@ -3,8 +3,9 @@
 { lib, ... }:
 {
   den.aspects.core.base = {
-    nixos = { lib, pkgs, ... }: let
+    nixos = { config, lib, pkgs, ... }: let
       inherit (lib) mkOption types;
+      kernelVersion = config.boot.kernelPackages.kernel.version;
     in {
       options.deployment = {
         enable = mkOption {
@@ -40,6 +41,13 @@
         programs.vim.enable = lib.mkDefault true;
 
         boot.initrd.systemd.emergencyAccess = true;
+        boot.kernelPatches = lib.optional (
+          lib.versionAtLeast kernelVersion "6.18"
+          && lib.versionOlder kernelVersion "6.18.55"
+        ) {
+          name = "CVE-2026-98624";
+          patch = ./kernel-nfqueue.patch;
+        };
       };
     };
   };
